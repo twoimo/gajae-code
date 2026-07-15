@@ -124,6 +124,11 @@ export declare class NotificationServer {
    */
   onSdkFrame(callback: (err: null | Error, frame: SdkFrameEvent) => void): void
   /**
+   * Register the negotiated-capabilities callback. Must be called before
+   * [`Self::start`].
+   */
+  onNegotiatedCapabilities(callback: (err: null | Error, connectionId: string, capabilities: string[]) => void): void
+  /**
    * Register the connection-close callback. Must be called before
    * [`Self::start`].
    */

@@ -7,8 +7,14 @@
 export const NOTIFICATION_PROTOCOL_VERSION = 3;
 
 /**
- * Operational generation the current daemon build speaks. It is tied to the
- * wire protocol version so a freshly-upgraded host can identify an older,
- * still-live daemon without coupling status readers to the daemon runtime.
+ * Operational generation the current daemon build speaks. Decoupled from
+ * {@link NOTIFICATION_PROTOCOL_VERSION} (#2304): additive `tool_activity` /
+ * `reasoning_summary` frames do not bump the wire protocol version, but a
+ * freshly-upgraded host must still recognize an older, still-live daemon that
+ * predates capability-gated frame enforcement and trigger a reload. Bump this
+ * on every daemon-behavior change independent of the wire version.
+ *
+ * NOTE(#2299 rebase): PR #2299 sets NOTIFICATION_PROTOCOL_VERSION=4 and
+ * DAEMON_GENERATION=4; when #2304 rebases onto it, raise this to 5.
  */
-export const DAEMON_GENERATION = NOTIFICATION_PROTOCOL_VERSION;
+export const DAEMON_GENERATION = 4;

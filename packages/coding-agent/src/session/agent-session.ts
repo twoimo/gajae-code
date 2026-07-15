@@ -191,6 +191,9 @@ import type {
 	MessageEndEvent,
 	MessageStartEvent,
 	MessageUpdateEvent,
+	ReasoningSummaryDeltaEvent,
+	ReasoningSummaryEndEvent,
+	ReasoningSummaryStartEvent,
 	SessionBeforeBranchResult,
 	SessionBeforeCompactResult,
 	SessionBeforeSwitchResult,
@@ -1595,6 +1598,8 @@ export class AgentSession {
 	#promptInFlightCount = 0;
 	#agentEventHandlersInFlight = 0;
 	#queuedExtensionEventCount = 0;
+	#extensionTurnGeneration = 0;
+	#closedExtensionTurnGeneration: number | undefined;
 	// Wire-level agent_end emission is deferred until both the prompt finalizer and
 	// async event handlers settle. Subscribers treat agent_end as readiness, so
 	// publishing it earlier lets a successor corrupt the prior prompt's lifecycle.
@@ -2515,10 +2520,14 @@ export class AgentSession {
 
 	#queuedExtensionEvents: Promise<void> = Promise.resolve();
 
-	#queueExtensionEvent(event: AgentSessionEvent): Promise<void> {
+	#queueExtensionEvent(event: AgentSessionEvent, turnGeneration?: number): Promise<void> {
 		this.#queuedExtensionEventCount++;
+		const isCurrent = () =>
+			turnGeneration === undefined ||
+			(turnGeneration === this.#extensionTurnGeneration && this.#closedExtensionTurnGeneration !== turnGeneration);
 		const emit = async () => {
-			await this.#emitExtensionEvent(event);
+			if (!isCurrent()) return;
+			await this.#emitExtensionEvent(event, isCurrent);
 		};
 		const queued = this.#queuedExtensionEvents.then(emit, emit);
 		this.#queuedExtensionEvents = queued.catch(() => {});
@@ -2553,13 +2562,19 @@ export class AgentSession {
 	}
 
 	async #emitSessionEvent(event: AgentSessionEvent): Promise<void> {
+		if (event.type === "turn_start") {
+			this.#extensionTurnGeneration++;
+			this.#closedExtensionTurnGeneration = undefined;
+		} else if (event.type === "turn_end") {
+			this.#closedExtensionTurnGeneration = this.#extensionTurnGeneration;
+		}
 		if (event.type === "message_update") {
 			// Fast path: message_update maps to no sidecar state, so we must not
 			// build the persistRuntimeState closure here (per-token hot path).
 			this.#emit(event);
 			if (this.#hasStreamingExtensionHandlers()) {
 				__agentSessionPerfCounters.messageUpdateExtensionQueues += 1;
-				void this.#queueExtensionEvent(event);
+				void this.#queueExtensionEvent(event, this.#extensionTurnGeneration);
 			}
 			return;
 		}
@@ -4116,7 +4131,7 @@ export class AgentSession {
 	}
 
 	/** Emit extension events based on session events */
-	async #emitExtensionEvent(event: AgentSessionEvent): Promise<void> {
+	async #emitExtensionEvent(event: AgentSessionEvent, continueWhile?: () => boolean): Promise<void> {
 		if (event.type === "turn_end") {
 			this.#requestWorkerIntegrationAttempt();
 		}
@@ -4128,7 +4143,11 @@ export class AgentSession {
 			this.#turnIndex = 0;
 			await this.#extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
-			await this.#extensionRunner.emit({ type: "agent_end", messages: event.messages });
+			await this.#extensionRunner.emit({
+				type: "agent_end",
+				messages: event.messages,
+				stopReason: event.stopReason,
+			});
 		} else if (event.type === "turn_start") {
 			const hookEvent: TurnStartEvent = {
 				type: "turn_start",
@@ -4157,7 +4176,32 @@ export class AgentSession {
 				message: event.message,
 				assistantMessageEvent: event.assistantMessageEvent,
 			};
-			await this.#extensionRunner.emit(extensionEvent);
+			await this.#extensionRunner.emit(extensionEvent, continueWhile);
+			if (continueWhile && !continueWhile()) return;
+			if (event.assistantMessageEvent.type === "reasoning_summary_start") {
+				const reasoningEvent: ReasoningSummaryStartEvent = {
+					type: "reasoning_summary_start",
+					message: event.message,
+					contentIndex: event.assistantMessageEvent.contentIndex,
+				};
+				await this.#extensionRunner.emit(reasoningEvent, continueWhile);
+			} else if (event.assistantMessageEvent.type === "reasoning_summary_delta") {
+				const reasoningEvent: ReasoningSummaryDeltaEvent = {
+					type: "reasoning_summary_delta",
+					message: event.message,
+					contentIndex: event.assistantMessageEvent.contentIndex,
+					delta: event.assistantMessageEvent.delta,
+				};
+				await this.#extensionRunner.emit(reasoningEvent, continueWhile);
+			} else if (event.assistantMessageEvent.type === "reasoning_summary_end") {
+				const reasoningEvent: ReasoningSummaryEndEvent = {
+					type: "reasoning_summary_end",
+					message: event.message,
+					contentIndex: event.assistantMessageEvent.contentIndex,
+					content: event.assistantMessageEvent.content,
+				};
+				await this.#extensionRunner.emit(reasoningEvent, continueWhile);
+			}
 		} else if (event.type === "message_end") {
 			const extensionEvent: MessageEndEvent = {
 				type: "message_end",
@@ -4679,7 +4723,16 @@ export class AgentSession {
 	 * Get a tool by name from the registry.
 	 */
 	getToolByName(name: string): AgentTool | undefined {
-		return this.#toolRegistry.get(name);
+		const direct = this.#toolRegistry.get(name);
+		if (direct) return direct;
+		// Fall back to the model-facing wire name: some tools expose a customWireName
+		// that differs from their internal registry key (e.g. `edit` presents as
+		// `apply_patch` to GPT-5 in apply_patch mode), so a lookup by the wire name a
+		// tool call actually carried must still resolve to the registered tool.
+		for (const tool of this.#toolRegistry.values()) {
+			if (tool.customWireName === name) return tool;
+		}
+		return undefined;
 	}
 
 	/**
@@ -6763,6 +6816,10 @@ export class AgentSession {
 			getQueuedMessages: () => this.getQueuedMessageEntries(),
 			getActiveTools: () => this.getActiveToolNames(),
 			getAllTools: () => this.getAllToolNames(),
+			resolveTool: name => {
+				const tool = this.getToolByName(name);
+				return tool ? { safeSummary: tool.safeSummary, safeSummaryFields: tool.safeSummaryFields } : undefined;
+			},
 			cycleModel: () => this.cycleModel(),
 			cycleThinkingLevel: () => this.cycleThinkingLevel(),
 			setQueueMode: (kind, mode) => {
@@ -13757,7 +13814,12 @@ export class AgentSession {
 	}
 
 	#hasStreamingExtensionHandlers(): boolean {
-		return this.hasExtensionHandlers("message_update");
+		return (
+			this.hasExtensionHandlers("message_update") ||
+			this.hasExtensionHandlers("reasoning_summary_start") ||
+			this.hasExtensionHandlers("reasoning_summary_delta") ||
+			this.hasExtensionHandlers("reasoning_summary_end")
+		);
 	}
 
 	/**

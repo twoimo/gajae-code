@@ -308,6 +308,13 @@ impl AckRegistry {
 	}
 }
 
+/// A negotiated client capability set paired with its connection id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityUpdate {
+	pub connection_id: String,
+	pub capabilities:  Vec<String>,
+}
+
 #[derive(Debug)]
 struct ServerState {
 	token:               String,
@@ -321,6 +328,8 @@ struct ServerState {
 	inbound_tx:          mpsc::UnboundedSender<ClientMessage>,
 	/// v3 frames, kept raw so the SDK host owns their protocol semantics.
 	frame_tx:            mpsc::UnboundedSender<(String, String)>,
+	/// Negotiated capability snapshots for host-side per-connection policy.
+	cap_tx:              mpsc::UnboundedSender<CapabilityUpdate>,
 	/// Connection lifecycle notifications for provider lease cleanup.
 	close_tx:            mpsc::UnboundedSender<String>,
 	connections:         Mutex<HashMap<String, Connection>>,
@@ -333,6 +342,7 @@ struct ServerState {
 }
 
 type FrameReceiver = mpsc::UnboundedReceiver<(String, String)>;
+type CapabilityReceiver = mpsc::UnboundedReceiver<CapabilityUpdate>;
 
 /// Handle to a running server. Dropping it does not stop the server; call
 /// [`ServerHandle::stop`] (idempotent) for deterministic shutdown.
@@ -348,6 +358,7 @@ pub struct ServerHandle {
 	reply_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::actions::ClaimedReply>>>>,
 	inbound_rx:    Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<ClientMessage>>>>,
 	frame_rx:      Arc<Mutex<Option<FrameReceiver>>>,
+	capability_rx: Arc<Mutex<Option<CapabilityReceiver>>>,
 	close_rx:      Arc<Mutex<Option<mpsc::UnboundedReceiver<String>>>>,
 }
 
@@ -573,6 +584,13 @@ impl ServerHandle {
 	#[must_use]
 	pub fn take_close_receiver(&self) -> Option<mpsc::UnboundedReceiver<String>> {
 		self.close_rx.lock().take()
+	}
+
+	/// Take negotiated client capability snapshots paired with their connection
+	/// id. Returns the receiver exactly once; subsequent calls return `None`.
+	#[must_use]
+	pub fn take_capability_receiver(&self) -> Option<mpsc::UnboundedReceiver<CapabilityUpdate>> {
+		self.capability_rx.lock().take()
 	}
 
 	/// Send raw JSON to one connected client. Returns false after that client
@@ -1020,6 +1038,7 @@ pub async fn start(config: ServerConfig) -> std::io::Result<ServerHandle> {
 	};
 	let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<ClientMessage>();
 	let (frame_tx, frame_rx) = mpsc::unbounded_channel();
+	let (cap_tx, cap_rx) = mpsc::unbounded_channel();
 	let (close_tx, close_rx) = mpsc::unbounded_channel();
 	let state = Arc::new(ServerState {
 		token: config.token,
@@ -1029,6 +1048,7 @@ pub async fn start(config: ServerConfig) -> std::io::Result<ServerHandle> {
 		reply_tx,
 		inbound_tx,
 		frame_tx,
+		cap_tx,
 		close_tx,
 		connections: Mutex::new(HashMap::new()),
 		acks: Mutex::new(AckRegistry::default()),
@@ -1049,6 +1069,7 @@ pub async fn start(config: ServerConfig) -> std::io::Result<ServerHandle> {
 		reply_rx: Arc::new(Mutex::new(reply_rx)),
 		inbound_rx: Arc::new(Mutex::new(Some(inbound_rx))),
 		frame_rx: Arc::new(Mutex::new(Some(frame_rx))),
+		capability_rx: Arc::new(Mutex::new(Some(cap_rx))),
 		close_rx: Arc::new(Mutex::new(Some(close_rx))),
 	})
 }
@@ -1129,6 +1150,7 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 			capabilities::SESSION_READY.into(),
 			capabilities::ASK_CONTROLS_V1.into(),
 			capabilities::ASK_SELECTED_ACK_V1.into(),
+			capabilities::TOOL_ACTIVITY_V1.into(),
 		],
 		connection_id:    Some(connection_id.clone()),
 	});
@@ -1275,7 +1297,15 @@ async fn handle_conn(stream: TcpStream, state: Arc<ServerState>, cancel: Cancell
 							&msg,
 							ServerMessage::ActionNeeded(needed)
 								if needed.kind != ActionKind::Idle || !needed.controls.is_empty()
-						);
+						)
+							&& (!matches!(
+								&msg,
+								ServerMessage::ToolActivity(_) | ServerMessage::ReasoningSummary(_)
+							) || state.connections.lock().get(&connection_id).is_some_and(|connection| {
+								connection.capabilities.iter().any(|capability| {
+									capability == capabilities::TOOL_ACTIVITY_V1
+								})
+							}));
 						if allowed && send_msg(&mut write, &msg).await.is_err() {
 							break;
 						}
@@ -1404,7 +1434,10 @@ where
 	if is_v3_frame(text) {
 		return state
 			.frame_tx
-			.send((connection_id.to_owned(), text.to_owned()))
+			.send((
+				connection_id.to_owned(),
+				attach_event_replay_capabilities(text, state, connection_id),
+			))
 			.is_ok();
 	}
 	let Ok(msg) = serde_json::from_str::<ClientMessage>(text) else {
@@ -1447,13 +1480,22 @@ where
 		},
 		ClientMessage::Hello(hello) => {
 			*awaiting = false;
-			if let Some(connection) = state.connections.lock().get_mut(connection_id) {
-				for capability in hello.capabilities {
-					if !connection.capabilities.contains(&capability) {
-						connection.capabilities.push(capability);
+			let capabilities =
+				if let Some(connection) = state.connections.lock().get_mut(connection_id) {
+					for capability in hello.capabilities {
+						if !connection.capabilities.contains(&capability) {
+							connection.capabilities.push(capability);
+						}
 					}
-				}
-				connection.negotiation = Negotiation::Negotiated;
+					connection.negotiation = Negotiation::Negotiated;
+					Some(connection.capabilities.clone())
+				} else {
+					None
+				};
+			if let Some(capabilities) = capabilities {
+				let _ = state
+					.cap_tx
+					.send(CapabilityUpdate { connection_id: connection_id.to_owned(), capabilities });
 			}
 			let _ = direct_tx.send(DirectCommand::ReevaluateAsk);
 			return true;
@@ -1545,6 +1587,40 @@ where
 	write.send(Message::Text(json)).await.map_err(|_| ())
 }
 
+/// Attaches the authoritative, locally negotiated capability set to forwarded
+/// `event_replay` frames. Hello is handled before later frames on a connection,
+/// so this does not depend on an asynchronously mirrored host cache.
+fn attach_event_replay_capabilities(
+	text: &str,
+	state: &ServerState,
+	connection_id: &str,
+) -> String {
+	let Ok(mut frame) = serde_json::from_str::<serde_json::Value>(text) else {
+		return text.to_owned();
+	};
+	if frame.get("type").and_then(serde_json::Value::as_str) != Some("event_replay") {
+		return text.to_owned();
+	}
+	let capabilities = state
+		.connections
+		.lock()
+		.get(connection_id)
+		.map_or_else(Vec::new, |connection| connection.capabilities.clone());
+	if let Some(object) = frame.as_object_mut() {
+		object.insert(
+			"capabilities".to_owned(),
+			serde_json::Value::Array(
+				capabilities
+					.into_iter()
+					.map(serde_json::Value::String)
+					.collect(),
+			),
+		);
+		return serde_json::to_string(&frame).unwrap_or_else(|_| text.to_owned());
+	}
+	text.to_owned()
+}
+
 fn is_v3_frame(text: &str) -> bool {
 	let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
 		return false;
@@ -1592,7 +1668,9 @@ mod tests {
 	use tokio_tungstenite::connect_async;
 
 	use super::*;
-	use crate::protocol::{ActionKind, AskControl, ClientHello, Ping, Reply};
+	use crate::protocol::{
+		ActionKind, AskControl, ClientHello, Ping, Reply, ToolActivity, ToolActivityPhase,
+	};
 
 	// Tokio's mock clock is process-global. Acquire the lock before constructing
 	// a paused runtime so concurrent libtest workers cannot share its clock.
@@ -1759,6 +1837,93 @@ mod tests {
 	#[test]
 	fn event_replay_is_a_v3_frame() {
 		assert!(is_v3_frame(r#"{"type":"event_replay","id":"replay-1"}"#));
+	}
+
+	#[tokio::test]
+	async fn hello_publishes_negotiated_capabilities() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut updates = handle
+			.take_capability_receiver()
+			.expect("capability receiver");
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		send_hello(&mut ws, vec![capabilities::TOOL_ACTIVITY_V1.into()]).await;
+
+		let update = tokio::time::timeout(Duration::from_secs(2), updates.recv())
+			.await
+			.expect("timed out waiting for capability update")
+			.expect("capability receiver closed");
+		assert_eq!(update.capabilities, vec![capabilities::TOOL_ACTIVITY_V1]);
+		assert!(!update.connection_id.is_empty());
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn event_replay_forwards_authoritative_capabilities() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut frames = handle.take_frame_receiver().expect("frame receiver");
+		let mut updates = handle
+			.take_capability_receiver()
+			.expect("capability receiver");
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		send_hello(&mut ws, vec![capabilities::TOOL_ACTIVITY_V1.into()]).await;
+		updates.recv().await.expect("capability update");
+		ws.send(Message::Text(r#"{"type":"event_replay","id":"replay-1"}"#.into()))
+			.await
+			.unwrap();
+
+		let (_, frame) = tokio::time::timeout(Duration::from_secs(2), frames.recv())
+			.await
+			.expect("timed out waiting for replay frame")
+			.expect("frame receiver closed");
+		let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
+		assert_eq!(frame["capabilities"], serde_json::json!([capabilities::TOOL_ACTIVITY_V1]));
+		handle.stop();
+	}
+
+	#[tokio::test]
+	async fn tool_activity_is_sent_only_to_capable_clients() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut updates = handle
+			.take_capability_receiver()
+			.expect("capability receiver");
+		let mut non_capable = connect(&handle, "secret").await;
+		next_server_hello(&mut non_capable).await;
+		send_hello(&mut non_capable, vec![]).await;
+		let mut capable = connect(&handle, "secret").await;
+		next_server_hello(&mut capable).await;
+		send_hello(&mut capable, vec![capabilities::TOOL_ACTIVITY_V1.into()]).await;
+		wait_for_clients(&handle, 2).await;
+		for _ in 0..2 {
+			tokio::time::timeout(Duration::from_secs(2), updates.recv())
+				.await
+				.expect("timed out waiting for capability update")
+				.expect("capability receiver closed");
+		}
+
+		handle
+			.push_frame(ServerMessage::ToolActivity(ToolActivity {
+				session_id:     "s".into(),
+				tool_call_id:   "call-1".into(),
+				tool_name:      "functions.read".into(),
+				phase:          ToolActivityPhase::Started,
+				args_summary:   None,
+				result_summary: None,
+				is_error:       None,
+			}))
+			.unwrap();
+
+		assert!(matches!(
+			next_server_msg(&mut capable).await,
+			ServerMessage::ToolActivity(activity) if activity.tool_call_id == "call-1"
+		));
+		assert!(
+			tokio::time::timeout(Duration::from_millis(100), non_capable.next())
+				.await
+				.is_err()
+		);
+		handle.stop();
 	}
 
 	#[tokio::test]
@@ -2241,6 +2406,7 @@ mod tests {
 			capabilities::SESSION_READY,
 			capabilities::ASK_CONTROLS_V1,
 			capabilities::ASK_SELECTED_ACK_V1,
+			capabilities::TOOL_ACTIVITY_V1,
 		]);
 
 		match next_server_msg(&mut ws).await {

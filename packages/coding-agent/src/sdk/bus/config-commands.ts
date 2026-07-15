@@ -5,7 +5,7 @@
  * removed), but the user can still adjust per-surface behaviour from inside a
  * session thread with small slash commands:
  *
- * - `/verbose`            switch the mirror to verbose (full tool output + reasoning)
+ * - `/verbose`            switch the mirror to bounded tool-owned summaries + provider-displayable reasoning summaries
  * - `/lean`               switch back to lean (assistant text + tool names)
  * - `/verbosity lean|verbose`
  * - `/redact on|off`      toggle redaction of streamed content

@@ -1345,6 +1345,9 @@ async function streamAssistantResponse(
 						case "thinking_start":
 						case "thinking_delta":
 						case "thinking_end":
+						case "reasoning_summary_start":
+						case "reasoning_summary_delta":
+						case "reasoning_summary_end":
 						case "toolcall_start":
 						case "toolcall_delta":
 						case "toolcall_end":
