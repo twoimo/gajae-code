@@ -303,7 +303,7 @@ export function evaluate(
 ): Evaluation {
 	const protectedChanges: string[] = [];
 	const malformedDeclarations: string[] = [];
-	const bootstrapping = !base.has(guardScript);
+	const bootstrapping = base.get(guardScript) === undefined;
 	for (const [family, files] of Object.entries(inventory) as [Family, Inventory[Family]][]) {
 		for (const [file, symbols] of Object.entries(files)) {
 			const beforeDeclarations = extractDeclarations(base.get(file) ?? "", symbols);
@@ -387,10 +387,15 @@ export async function run(baseInput: string | undefined, headInput: string | und
 		baseFiles.push([file, await blob(base, file)]);
 		headFiles.push([file, await blob(head, file)]);
 	}
+	if (process.env.GJC_DAEMON_GUARD_DEBUG === "1") {
+		for (const [file, source] of headFiles) console.error(`daemon-generation-guard: head ${file} ${source?.length ?? -1}`);
+		console.error(`daemon-generation-guard: base-guard ${baseFiles.find(([file]) => file === guardScript)?.[1]?.length ?? -1}`);
+	}
 	if (process.env.GJC_DAEMON_GUARD_DEBUG === "1") console.error("daemon-generation-guard: blobs loaded");
-	const decision = evaluate(new Map(baseFiles), new Map(headFiles));
+	const baseMap = new Map(baseFiles);
+	const decision = evaluate(baseMap, new Map(headFiles));
 	if (process.env.GJC_DAEMON_GUARD_DEBUG === "1") console.error("daemon-generation-guard: declarations evaluated");
-	if (decision.guardPolicyChanged && !decision.guardContractBumped)
+	if (baseMap.get(guardScript) !== undefined && decision.guardPolicyChanged && !decision.guardContractBumped)
 		throw new Error(`telegram-daemon-generation-guard: guard policy change requires a strictly higher GUARD_CONTRACT_VERSION`);
 	if (decision.malformedDeclarations.length > 0)
 		throw new Error(`telegram-daemon-generation-guard: v${GUARD_CONTRACT_VERSION} protected declaration is missing or malformed: ${decision.malformedDeclarations.join(", ")}`);
