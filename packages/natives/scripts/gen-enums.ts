@@ -168,7 +168,7 @@ function patchCompatibilityDeclarations(dts: string): string {
 }
 
 export async function generateEnumExports(): Promise<void> {
-	const generatedDts = preservePlatformSpecificDeclarations(await Bun.file(dtsPath).text());
+	const generatedDts = await Bun.file(dtsPath).text();
 	const existing = await Bun.file(jsPath).text();
 	const generatedBlock = buildGeneratedBlock(generatedDts);
 
