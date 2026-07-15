@@ -14,12 +14,13 @@ import { ExtensionUiController } from "../src/modes/controllers/extension-ui-con
 import {
 	BrokerWorkflowGateEmitter,
 	FileGateStore,
+	MemoryGateStore,
 	type WorkflowGateEmitter,
 } from "../src/modes/shared/agent-wire/workflow-gate-broker";
 import type { InteractiveModeContext } from "../src/modes/types";
 import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
 import { SessionIndex } from "../src/sdk/broker/session-index";
-import { createNotificationsExtension } from "../src/sdk/bus";
+import { createNotificationsExtension, PresentationArbiter } from "../src/sdk/bus";
 import { SessionSdkHost } from "../src/sdk/host";
 import {
 	attachLifecycleStartupCapability,
@@ -108,6 +109,7 @@ function context(
 		...(workflowGate ? { workflowGate } : {}),
 		sessionManager: {
 			getSessionId: () => sessionId,
+			getCwd: () => cwd,
 			getSessionName: () => "SDK wiring",
 			getUsageStatistics: () => ({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0, premiumRequests: 0, cost: 0 }),
 		},
@@ -335,6 +337,30 @@ test("lifecycle startup settles failure when native callback registration throws
 		expect(fs.existsSync(path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`))).toBe(false);
 	} finally {
 		hook.mockRestore();
+	}
+});
+
+test("lifecycle startup settles native capability incompatibility before constructing the host", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-native-incompatible-"));
+	dirs.push(cwd);
+	const capability = new SdkStartupCapability();
+	const original = (NotificationServer.prototype as unknown as { retireIfUnclaimed?: unknown }).retireIfUnclaimed;
+	try {
+		(NotificationServer.prototype as unknown as { retireIfUnclaimed?: unknown }).retireIfUnclaimed = undefined;
+		start(context(cwd, "native-incompatible"), undefined, () => {}, false, new Map(), {
+			startupCapability: capability,
+			lifecycleRequired: true,
+		});
+		const result = await capability.promise;
+		expect(result).toMatchObject({
+			status: "failed",
+			failure: { phase: "startup", reason: "failed" },
+		});
+		if (result.status === "failed")
+			expect(result.failure.message).toContain("required workflow arbitration methods are missing");
+		expect(fs.existsSync(path.join(cwd, ".gjc", "state", "sdk", "native-incompatible.json"))).toBe(false);
+	} finally {
+		(NotificationServer.prototype as unknown as { retireIfUnclaimed?: unknown }).retireIfUnclaimed = original;
 	}
 });
 
@@ -2042,10 +2068,8 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-workflow-gate-"));
 	dirs.push(cwd);
 	const sessionId = `workflow-gate-${Date.now()}`;
-	const emitter = new BrokerWorkflowGateEmitter(
-		sessionId,
-		new FileGateStore(path.join(cwd, ".gjc", "state", "workflow-gates.json")),
-	);
+	const gateStore = new FileGateStore(path.join(cwd, ".gjc", "state", "workflow-gates.json"));
+	const emitter = new BrokerWorkflowGateEmitter(sessionId, gateStore);
 	process.env.GJC_NOTIFICATIONS = "1";
 	start(context(cwd, sessionId, "main", {}, emitter));
 	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
@@ -2081,19 +2105,706 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 		schema: { type: "string", enum: ["approve"] },
 	});
 	await waitFor(() => gateId !== "", "workflow gate");
+	Object.assign(emitter, { listWorkflowGateQueryRecords: undefined });
 	expect(await request("gates", { type: "query_request", id: "gates", query: "Q12" })).toMatchObject({
 		ok: true,
-		page: { items: [{ gate_id: gateId }] },
+		page: { items: [{ gate_id: gateId, id: `pending:${gateId}`, tag: "pending" }] },
 	});
+	const initialGateId = gateId;
+	const queuedAdvance = emitter.emitGate({
+		stage: "ralplan",
+		kind: "approval",
+		schema: { type: "string", enum: ["approve"] },
+	});
+	await waitFor(() => gateId !== initialGateId, "queued workflow gate");
+	const queuedGateId = gateId;
+	expect(
+		await request("queued-answer", {
+			type: "control_request",
+			id: "queued-answer",
+			operation: "workflow.gate_answer",
+			input: { id: queuedGateId, response: "approve", expectedSessionId: sessionId },
+		}),
+	).toMatchObject({ ok: true, result: { status: "accepted" } });
+	expect(await queuedAdvance).toBe("approve");
+	expect(gateStore.get(queuedGateId)).toMatchObject({ status: "accepted", advanced: true });
+	expect(
+		await request("wrong-session", {
+			type: "control_request",
+			id: "wrong-session",
+			operation: "workflow.gate_answer",
+			input: { id: initialGateId, response: "approve", expectedSessionId: "another-session" },
+		}),
+	).toMatchObject({ ok: false, error: { code: "resource_gone" } });
 	expect(
 		await request("answer", {
 			type: "control_request",
 			id: "answer",
 			operation: "workflow.gate_answer",
-			input: { id: gateId, response: "approve" },
+			input: { id: initialGateId, response: "approve", expectedSessionId: sessionId },
 		}),
 	).toMatchObject({ ok: true, result: { status: "accepted" } });
 	expect(await advance).toBe("approve");
+	const originalResolveGate = emitter.resolveGate!.bind(emitter);
+	const originalListPendingGates = emitter.listPendingGates!.bind(emitter);
+	const originalClearPreparedTerminalization = emitter.clearPreparedTerminalization!.bind(emitter);
+	let rejectDirectOnce = true;
+	let clearedPreparedProofs = 0;
+	Object.assign(emitter, {
+		resolveGate: async (response: Parameters<NonNullable<WorkflowGateEmitter["resolveGate"]>>[0]) => {
+			if (rejectDirectOnce) {
+				rejectDirectOnce = false;
+				throw new Error("transient direct-control failure");
+			}
+			return originalResolveGate(response);
+		},
+		listPendingGates: () => originalListPendingGates(),
+		clearPreparedTerminalization: (id: string) => {
+			clearedPreparedProofs += 1;
+			originalClearPreparedTerminalization(id);
+		},
+	});
+	const failedDirectPriorGateId = gateId;
+	const failedDirectAdvance = emitter.emitGate({
+		stage: "ralplan",
+		kind: "approval",
+		schema: { type: "string", enum: ["approve"] },
+		options: [{ value: "approve", label: "Approve" }],
+	});
+	await waitFor(() => gateId !== failedDirectPriorGateId, "failed-direct workflow gate");
+	const failedDirectGateId = gateId;
+	const actionFramesForGate = () =>
+		frames.filter(frame => frame.type === "action_needed" && frame.workflowGateId === failedDirectGateId);
+	await waitFor(() => actionFramesForGate().length === 1, "initial failed-direct presentation");
+	const initialActionId = String(actionFramesForGate()[0]?.id);
+	expect(
+		await request("failed-direct", {
+			type: "control_request",
+			id: "failed-direct",
+			operation: "workflow.gate_answer",
+			input: { id: failedDirectGateId, response: "approve", expectedSessionId: sessionId },
+		}),
+	).toMatchObject({ ok: false });
+	expect(clearedPreparedProofs).toBe(1);
+	await waitFor(() => actionFramesForGate().length >= 2, "reissued failed-direct presentation");
+	const reissuedActionId = String(actionFramesForGate().at(-1)?.id);
+	expect(reissuedActionId).not.toBe(initialActionId);
+	expect(
+		await emitter.resolveGateFromNotification!(
+			{ gate_id: failedDirectGateId, answer: "approve", idempotency_key: "failed-direct-generic" },
+			{
+				interactionActionId: reissuedActionId,
+				replyReceiptId: "failed-direct-receipt",
+				answerJson: JSON.stringify("approve"),
+				requestSelectedAck: async () => ({ status: "delivered", messageId: 1 }),
+				resolveClaim: () => {},
+				closeClaimInvalid: reason => {
+					throw new Error(`Unexpected invalid generic reply: ${reason}`);
+				},
+			},
+		),
+	).toMatchObject({ status: "accepted" });
+	expect(await failedDirectAdvance).toBe("approve");
+
+	const nextPriorGateId = gateId;
+	const nextAdvance = emitter.emitGate({
+		stage: "ralplan",
+		kind: "approval",
+		schema: { type: "string", enum: ["approve"] },
+		options: [{ value: "approve", label: "Approve" }],
+	});
+	await waitFor(() => gateId !== nextPriorGateId, "post-reissue workflow gate");
+	const nextGateId = gateId;
+	await waitFor(
+		() => frames.some(frame => frame.type === "action_needed" && frame.workflowGateId === nextGateId),
+		"post-reissue presentation",
+	);
+	const nextAction = frames.findLast(frame => frame.type === "action_needed" && frame.workflowGateId === nextGateId);
+	expect(
+		await emitter.resolveGateFromNotification!(
+			{ gate_id: nextGateId, answer: "approve", idempotency_key: "post-reissue-generic" },
+			{
+				interactionActionId: String(nextAction?.id),
+				replyReceiptId: "post-reissue-receipt",
+				answerJson: JSON.stringify("approve"),
+				requestSelectedAck: async () => ({ status: "delivered", messageId: 2 }),
+				resolveClaim: () => {},
+				closeClaimInvalid: reason => {
+					throw new Error(`Unexpected invalid generic reply: ${reason}`);
+				},
+			},
+		),
+	).toMatchObject({ status: "accepted" });
+	expect(await nextAdvance).toBe("approve");
+
+	Object.assign(emitter, {
+		resolveGate: async () => {
+			throw new Error("durable resolution transport failed");
+		},
+		listPendingGates: () => {
+			throw new Error("durable reconciliation unavailable");
+		},
+	});
+	for (const [operation, input] of [
+		["workflow.gate_answer", (id: string) => ({ id, response: "approve", expectedSessionId: sessionId })],
+		["workflow.plan_approve", (id: string) => ({ id, choice: "approve", expectedSessionId: sessionId })],
+	] as const) {
+		const priorGateId = gateId;
+		void emitter
+			.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string", enum: ["approve"] } })
+			.catch(() => {});
+		await waitFor(() => gateId !== priorGateId, `uncertain ${operation} gate`);
+		expect(
+			await request(`uncertain-${operation}`, {
+				type: "control_request",
+				id: `uncertain-${operation}`,
+				operation,
+				input: input(gateId),
+			}),
+		).toMatchObject({ ok: false, error: { code: "terminal_uncertain" } });
+	}
+});
+
+test("session teardown drains admitted direct gate resolution before detaching its controller", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-direct-resolution-drain-"));
+	dirs.push(cwd);
+	const sessionId = `direct-resolution-drain-${Date.now()}`;
+	const emitter = new BrokerWorkflowGateEmitter(sessionId, new FileGateStore(path.join(cwd, "gates.json")));
+	const resolution = Promise.withResolvers<{ status: "accepted" }>();
+	let resolutionStarted = false;
+	let controllerDetached = false;
+	const registerController = spyOn(emitter, "registerGateTerminalController").mockImplementation(() => () => {
+		controllerDetached = true;
+	});
+	const resolveGate = spyOn(emitter, "resolveGate").mockImplementation(async response => {
+		resolutionStarted = true;
+		await resolution.promise;
+		return {
+			status: "accepted",
+			gate_id: response.gate_id,
+			answer_hash: "fixture",
+			resolved_at: new Date().toISOString(),
+		};
+	});
+	process.env.GJC_NOTIFICATIONS = "1";
+	const sessionContext = context(cwd, sessionId, "main", {}, emitter);
+	const handlers = start(sessionContext);
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	try {
+		await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+		const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+		const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+		sockets.push(socket);
+		await new Promise<void>((resolve, reject) => {
+			socket.addEventListener("open", () => resolve(), { once: true });
+			socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+		});
+		let gateId = "";
+		emitter.onGateEmitted!(gate => {
+			gateId = gate.gate_id;
+		});
+		void emitter.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string" } }).catch(() => {});
+		await waitFor(() => gateId !== "", "workflow gate");
+		socket.send(
+			JSON.stringify({
+				type: "control_command",
+				sessionId,
+				token: endpoint.token,
+				requestId: "answer",
+				command: {
+					type: "control_request",
+					id: "answer",
+					operation: "workflow.gate_answer",
+					input: { id: gateId, response: "approve", expectedSessionId: sessionId },
+				},
+			}),
+		);
+		await waitFor(() => resolutionStarted, "direct gate resolution");
+		const shutdown = handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
+		await Bun.sleep(0);
+		expect(controllerDetached).toBe(false);
+		resolution.resolve({ status: "accepted" });
+		await shutdown;
+		expect(controllerDetached).toBe(true);
+	} finally {
+		resolveGate.mockRestore();
+		registerController.mockRestore();
+	}
+});
+test("PresentationArbiter drops a retired presentation before terminal persistence recovery", async () => {
+	const publications: string[] = [];
+	const closed: string[] = [];
+	const store = new MemoryGateStore();
+	const originalPut = store.put.bind(store);
+	let failTerminalizedWrite = true;
+	const put = spyOn(store, "put").mockImplementation(record => {
+		if (failTerminalizedWrite && record.terminalized) {
+			failTerminalizedWrite = false;
+			throw new Error("terminalized record write failed");
+		}
+		originalPut(record);
+	});
+	const emitter = new BrokerWorkflowGateEmitter("terminal-recovery", store);
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				const action = JSON.parse(json) as { id: string };
+				publications.push(action.id);
+				return { actionId: action.id, registrationEpoch: publications.length };
+			},
+			retireIfUnclaimed: () => ({ status: "retired" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	emitter.registerGateTerminalController!({
+		completeGateInteractions: gateId => arbiter.complete(gateId),
+		cancelGateInteractions: gateId => arbiter.cancel(gateId, "terminalization failed"),
+	});
+	const gateIds: string[] = [];
+	emitter.onGateEmitted!(gate => {
+		gateIds.push(gate.gate_id);
+		arbiter.retain({
+			gateId: gate.gate_id,
+			workflowGateId: gate.gate_id,
+			sessionId: "session",
+			question: gate.gate_id,
+			options: ["approve"],
+			controls: [],
+			multi: false,
+			allowEmpty: false,
+			selectedOptions: [],
+			onClosed: () => closed.push(gate.gate_id),
+		});
+	});
+	const firstAdvance = emitter.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string" } });
+	const secondAdvance = emitter.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string" } });
+	const [firstGateId, secondGateId] = gateIds;
+
+	try {
+		await expect(
+			emitter.resolveGate!({ gate_id: firstGateId!, answer: "approve", idempotency_key: firstGateId! }),
+		).rejects.toThrow("terminalized record write failed");
+		expect(publications).toHaveLength(2);
+		expect(closed).toEqual([firstGateId]);
+		expect(store.get(firstGateId!)).toMatchObject({ status: "accepted", terminalized: false, advanced: false });
+
+		await expect(emitter.recoverAcceptedGates!()).resolves.toEqual([firstGateId]);
+		expect(await firstAdvance).toBe("approve");
+		expect(arbiter.complete(firstGateId!)).toBe("already_terminal");
+		expect(closed).toEqual([firstGateId]);
+		expect(arbiter.routeFor(publications[1]!)).toBe(secondGateId);
+	} finally {
+		put.mockRestore();
+		void secondAdvance.catch(() => {});
+	}
+});
+
+test("SDK host omits direct workflow controls for a legacy workflow-gate emitter", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-legacy-workflow-gate-"));
+	dirs.push(cwd);
+	const sessionId = `legacy-workflow-gate-${Date.now()}`;
+	const legacyEmitter = {
+		isUnattended: () => true,
+		emitGate: async () => undefined,
+		resolveGate: async () => ({
+			gate_id: "legacy-gate",
+			status: "accepted" as const,
+			answer_hash: "fixture",
+			resolved_at: new Date().toISOString(),
+		}),
+	} as WorkflowGateEmitter;
+	process.env.GJC_NOTIFICATIONS = "1";
+	start(context(cwd, sessionId, "main", {}, legacyEmitter));
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	const frames: Record<string, unknown>[] = [];
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	socket.send(
+		JSON.stringify({
+			type: "control_command",
+			sessionId,
+			token: endpoint.token,
+			requestId: "capabilities",
+			command: { type: "query_request", id: "capabilities", query: "runtime.capabilities" },
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "control_command_result" && frame.requestId === "capabilities"),
+		"capabilities response",
+	);
+	const response = JSON.parse(
+		String(frames.find(frame => frame.type === "control_command_result" && frame.requestId === "capabilities")?.message),
+	) as { page: { items: Array<{ operations: string[] }> } };
+	const operations = response.page.items[0]!.operations;
+	expect(operations).not.toContain("workflow.gate_answer");
+	expect(operations).not.toContain("workflow.plan_approve");
+	expect(operations).toContain("model.cycle");
+});
+
+test("PresentationArbiter serializes ordinary and workflow asks, fences queued controls, and fails closed on uncertainty", async () => {
+	const publications: Array<Record<string, unknown>> = [];
+	const retired: Array<{ actionId: string; registrationEpoch: number }> = [];
+	let failures = 1;
+	const server = {
+		registerArbitratedAsk(json: string) {
+			const action = JSON.parse(json) as Record<string, unknown>;
+			if (failures > 0) {
+				failures -= 1;
+				throw new Error("publication unavailable");
+			}
+			publications.push(action);
+			return { actionId: action.id as string, registrationEpoch: publications.length };
+		},
+		retireIfUnclaimed(lease: { actionId: string; registrationEpoch: number }) {
+			retired.push(lease);
+			return { status: "retired" as const };
+		},
+	} as never;
+	const arbiter = new PresentationArbiter(server, () => false, "test");
+	const gate = (gateId: string, multi = false) => ({
+		gateId,
+		...(gateId.startsWith("workflow") ? { workflowGateId: gateId } : {}),
+		sessionId: "session",
+		question: gateId,
+		options: ["one", "two"],
+		controls: [],
+		multi,
+		allowEmpty: false,
+		selectedOptions: [],
+	});
+	arbiter.retain(gate("ordinary"));
+	arbiter.retain(gate("workflow-first", true));
+	await Bun.sleep(PresentationArbiter.retryBaseDelayMs + 10);
+	expect(publications.map(action => action.workflowGateId)).toEqual([undefined]);
+	arbiter.complete("ordinary");
+	expect(publications.map(action => action.workflowGateId)).toEqual([undefined, "workflow-first"]);
+	const firstActionId = publications[1]!.id as string;
+	expect(arbiter.toggle(firstActionId, "one")).toBe(true);
+	expect(publications).toHaveLength(3);
+	arbiter.retain(gate("workflow-second"));
+	const queued = arbiter.prepareDirectControl("workflow-second");
+	expect(queued).toEqual({ status: "queued", ordinal: 1 });
+	arbiter.complete("workflow-first");
+	expect(publications).toHaveLength(3);
+	arbiter.finishDirectControl("workflow-second", queued as { status: "queued"; ordinal: number }, "rejected");
+	await Promise.resolve();
+	expect(publications).toHaveLength(4);
+	const secondActionId = publications[3]!.id as string;
+	const uncertain = arbiter.prepareDirectControl("workflow-second");
+	expect(uncertain).toEqual({ status: "retired", ordinal: 0 });
+	expect(retired.map(lease => lease.actionId)).toContain(secondActionId);
+	arbiter.finishDirectControl("workflow-second", uncertain as { status: "retired"; ordinal: number }, "unknown");
+	await Promise.resolve();
+	expect(publications).toHaveLength(4);
+});
+
+test("PresentationArbiter terminalizes a queued direct control with explicit non-published proof", () => {
+	const publications: string[] = [];
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				const action = JSON.parse(json) as { id: string };
+				publications.push(action.id);
+				return { actionId: action.id, registrationEpoch: publications.length };
+			},
+			retireIfUnclaimed: () => ({ status: "retired" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	for (const gateId of ["published", "queued"]) {
+		arbiter.retain({
+			gateId,
+			workflowGateId: gateId,
+			sessionId: "session",
+			question: gateId,
+			options: ["approve"],
+			controls: [],
+			multi: false,
+			allowEmpty: false,
+			selectedOptions: [],
+		});
+	}
+
+	expect(publications).toHaveLength(1);
+	expect(arbiter.prepareDirectControl("queued")).toEqual({ status: "queued", ordinal: 1 });
+	expect(arbiter.complete("queued")).toBe("not_published");
+	expect(publications).toHaveLength(1);
+});
+
+test("PresentationArbiter clears only the exact interactive route across settlement and terminal teardown", () => {
+	const published: string[] = [];
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				const action = JSON.parse(json) as { id: string };
+				published.push(action.id);
+				return { actionId: action.id, registrationEpoch: published.length };
+			},
+			retireIfUnclaimed: () => ({ status: "retired" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	const retainInteractive = (gateId: string, onClosed: () => void) => {
+		let actionId: string | undefined;
+		arbiter.retain({
+			gateId,
+			sessionId: "session",
+			question: "Continue?",
+			options: ["yes"],
+			controls: [],
+			multi: false,
+			allowEmpty: false,
+			selectedOptions: [],
+			onActivated: actionId_ => {
+				actionId = actionId_;
+			},
+			onClosed,
+		});
+		if (!actionId) throw new Error("Expected an active interactive route");
+		return actionId;
+	};
+
+	let closed = 0;
+	const first = retainInteractive("settled", () => {
+		closed += 1;
+	});
+	arbiter.reissueAfterFailure(first);
+	const replacement = published.at(-1);
+	if (!replacement) throw new Error("Expected replacement route");
+	expect(replacement).not.toBe(first);
+	arbiter.completeInteractive("settled", first);
+	expect(arbiter.routeFor(replacement)).toBe("settled");
+	expect(arbiter.presentationFor(replacement)).toBeDefined();
+	arbiter.completeInteractive("settled", replacement);
+	arbiter.completeInteractive("settled", replacement);
+	expect(arbiter.routeFor(replacement)).toBeUndefined();
+	expect(arbiter.presentationFor(replacement)).toBeUndefined();
+	expect(closed).toBe(1);
+
+	const failed = retainInteractive("failed", () => {});
+	arbiter.completeInteractive("failed", failed);
+	expect(arbiter.routeFor(failed)).toBeUndefined();
+	expect(arbiter.presentationFor(failed)).toBeUndefined();
+
+	const cancelled = retainInteractive("cancelled", () => {});
+	arbiter.cancel("cancelled", "interactive_abort");
+	expect(arbiter.routeFor(cancelled)).toBeUndefined();
+	expect(arbiter.presentationFor(cancelled)).toBeUndefined();
+
+	const switched = retainInteractive("switched", () => {});
+	arbiter.dispose();
+	expect(arbiter.routeFor(switched)).toBeUndefined();
+	expect(arbiter.presentationFor(switched)).toBeUndefined();
+});
+
+test("PresentationArbiter rejects claimed or stale retirement as terminal proof and clears the fenced head on cancellation", () => {
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				const action = JSON.parse(json) as { id: string };
+				return { actionId: action.id, registrationEpoch: 1 };
+			},
+			retireIfUnclaimed: () => ({ status: "claimed" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	let closed = 0;
+	arbiter.retain({
+		gateId: "claimed-gate",
+		workflowGateId: "claimed-gate",
+		sessionId: "session",
+		question: "Continue?",
+		options: ["yes"],
+		controls: [],
+		multi: false,
+		allowEmpty: false,
+		selectedOptions: [],
+		onClosed: () => {
+			closed++;
+		},
+	});
+	expect(() => arbiter.complete("claimed-gate")).toThrow("lacks exact terminal proof");
+	expect(arbiter.hasActivePresentation()).toBe(true);
+	arbiter.cancel("claimed-gate", "terminalization_failed");
+	expect(arbiter.hasActivePresentation()).toBe(false);
+	expect(closed).toBe(1);
+});
+
+test("PresentationArbiter fences an exhausted ordinary interactive head until explicit cancellation", async () => {
+	let registrationsFail = false;
+	const published: string[] = [];
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				if (registrationsFail) throw new Error("unavailable");
+				const action = JSON.parse(json) as { id: string };
+				published.push(action.id);
+				return { actionId: action.id, registrationEpoch: published.length };
+			},
+			retireIfUnclaimed: () => ({ status: "retired" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	const answer = Promise.withResolvers<string | undefined>();
+	const pendingInteractive = new Map<string, { actionId?: string; resolve: (result: string | undefined) => void }>();
+	let settles = 0;
+	const pending: { actionId?: string; resolve: (result: string | undefined) => void } = {
+		resolve: (result: string | undefined) => {
+			settles++;
+			answer.resolve(result);
+		},
+	};
+	arbiter.retain({
+		gateId: "ordinary",
+		sessionId: "session",
+		question: "Continue?",
+		options: ["yes"],
+		controls: [],
+		multi: false,
+		allowEmpty: false,
+		selectedOptions: [],
+		onActivated: actionId => {
+			if (pending.actionId && pendingInteractive.get(pending.actionId) === pending)
+				pendingInteractive.delete(pending.actionId);
+			pending.actionId = actionId;
+			pendingInteractive.set(actionId, pending);
+		},
+		onClosed: () => {
+			if (pending.actionId && pendingInteractive.get(pending.actionId) === pending)
+				pendingInteractive.delete(pending.actionId);
+			pending.resolve(undefined);
+		},
+	});
+	const first = published[0];
+	if (!first) throw new Error("Expected an active interactive route");
+	arbiter.retain({
+		gateId: "queued",
+		sessionId: "session",
+		question: "Queued?",
+		options: ["yes"],
+		controls: [],
+		multi: false,
+		allowEmpty: false,
+		selectedOptions: [],
+	});
+	registrationsFail = true;
+	arbiter.reissueAfterFailure(first);
+	await Bun.sleep(PresentationArbiter.retryBaseDelayMs * 4);
+	registrationsFail = false;
+	await Bun.sleep(PresentationArbiter.retryBaseDelayMs);
+	expect(arbiter.routeFor(first)).toBeUndefined();
+	expect(pendingInteractive.size).toBe(1);
+	expect(settles).toBe(0);
+	expect(published).toEqual([first]);
+
+	arbiter.cancel("ordinary", "interactive_abort");
+	const queued = published[1];
+	if (!queued) throw new Error("Expected queued presentation after cancellation");
+	expect(arbiter.presentationFor(queued)?.question).toBe("Queued?");
+	expect(pendingInteractive.size).toBe(0);
+	expect(await answer.promise).toBeUndefined();
+	expect(settles).toBe(1);
+});
+
+test("PresentationArbiter terminally cancels an exhausted ordinary head exactly once before promotion", async () => {
+	const publications: string[] = [];
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				const action = JSON.parse(json) as { id: string; question: string };
+				if (action.question === "Unavailable?") throw new Error("unavailable");
+				publications.push(action.id);
+				return { actionId: action.id, registrationEpoch: publications.length };
+			},
+			retireIfUnclaimed: () => ({ status: "retired" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	const settled = Promise.withResolvers<string | undefined>();
+	let closes = 0;
+	arbiter.retain({
+		gateId: "unavailable",
+		sessionId: "session",
+		question: "Unavailable?",
+		options: ["yes"],
+		controls: [],
+		multi: false,
+		allowEmpty: false,
+		selectedOptions: [],
+		onClosed: () => {
+			closes++;
+			settled.resolve(undefined);
+		},
+	});
+	arbiter.retain({
+		gateId: "queued",
+		sessionId: "session",
+		question: "Queued?",
+		options: ["yes"],
+		controls: [],
+		multi: false,
+		allowEmpty: false,
+		selectedOptions: [],
+	});
+
+	await Bun.sleep(PresentationArbiter.retryBaseDelayMs * 4);
+	expect(publications).toEqual([]);
+	expect(closes).toBe(0);
+
+	await expect(settled.promise).resolves.toBeUndefined();
+	expect(closes).toBe(1);
+	expect(publications).toHaveLength(1);
+	expect(arbiter.presentationFor(publications[0]!)).toMatchObject({ question: "Queued?" });
+	arbiter.cancel("unavailable", "late_cancellation");
+	expect(closes).toBe(1);
+});
+
+test("PresentationArbiter fences already-terminal direct controls and resets exhausted head recovery", async () => {
+	const publications: string[] = [];
+	let registrationsFail = true;
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				if (registrationsFail) throw new Error("unavailable");
+				const action = JSON.parse(json) as { id: string };
+				publications.push(action.id);
+				return { actionId: action.id, registrationEpoch: publications.length };
+			},
+			retireIfUnclaimed: () => ({ status: "already_terminal" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	arbiter.retain({
+		gateId: "head",
+		workflowGateId: "head",
+		sessionId: "session",
+		question: "Continue?",
+		options: ["yes"],
+		controls: [],
+		multi: false,
+		allowEmpty: false,
+		selectedOptions: [],
+	});
+	await Bun.sleep(PresentationArbiter.retryBaseDelayMs * 4);
+	registrationsFail = false;
+	arbiter.recover();
+	expect(publications).toHaveLength(1);
+	const direct = arbiter.prepareDirectControl("head");
+	expect(direct).toEqual({ status: "stale" });
 });
 
 test("AC2/AC8: SDK host completes successful session mutations over its live WebSocket", async () => {

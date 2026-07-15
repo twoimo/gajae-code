@@ -1,11 +1,16 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test, vi } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
 import type { Model } from "@gajae-code/ai";
 import { CliParseError } from "@gajae-code/utils/cli";
 import { parseArgs } from "../src/cli/args";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
 import { Settings } from "../src/config/settings";
-import { applyStartupModelProfiles, applyStartupModelProfilesOrExit } from "../src/main";
+import {
+	applyStartupModelProfiles,
+	applyStartupModelProfilesForRoot,
+	applyStartupModelProfilesOrExit,
+	isStartupModelProfileCredentialRecoveryEligible,
+} from "../src/main";
 import { parseCliCredentialSelector } from "../src/runtime-credential-selector";
 import type { AgentSession } from "../src/session/agent-session";
 
@@ -69,6 +74,7 @@ function fakeSession(initial = model("initial-provider", "initial")) {
 		seedDefaultFallbackResolution(activeIndex: number, skips: Array<{ selector: string; reason: string }>) {
 			session.seedDefaultFallbackResolutionCalls.push({ activeIndex, skips });
 		},
+		async dispose() {},
 	};
 	return session as unknown as AgentSession & {
 		setModelTemporaryCalls: typeof session.setModelTemporaryCalls;
@@ -126,6 +132,54 @@ describe("CLI credential selector args", () => {
 	});
 });
 
+describe("MCP config CLI args", () => {
+	test("parses absolute config paths in both supported syntaxes", () => {
+		expect(parseArgs(["--mcp-config", "/tmp/gjc-mcp.json"]).mcpConfig).toBe("/tmp/gjc-mcp.json");
+		expect(parseArgs(["--mcp-config=/tmp/gjc-mcp.json"]).mcpConfig).toBe("/tmp/gjc-mcp.json");
+	});
+
+	test("rejects missing or non-absolute config paths", () => {
+		for (const args of [
+			["--mcp-config"],
+			["--mcp-config", "relative/mcp.json"],
+			["--mcp-config="],
+			["--mcp-config=relative/mcp.json"],
+		]) {
+			expect(() => parseArgs(args)).toThrow(CliParseError);
+			expect(() => parseArgs(args)).toThrow("--mcp-config requires <absolute-path>");
+		}
+	});
+	test("rejects repeated config paths in every supported syntax", () => {
+		for (const argv of [
+			["--mcp-config", "/tmp/gjc-mcp.json", "--mcp-config", "/tmp/gjc-mcp.json"],
+			["--mcp-config", "/tmp/gjc-mcp.json", "--mcp-config", "/tmp/other-mcp.json"],
+			["--mcp-config", "/tmp/gjc-mcp.json", "--mcp-config=/tmp/other-mcp.json"],
+			["--mcp-config=/tmp/gjc-mcp.json", "--mcp-config", "/tmp/other-mcp.json"],
+		]) {
+			let thrown: unknown;
+			try {
+				parseArgs(argv);
+			} catch (error) {
+				thrown = error;
+			}
+
+			expect(thrown).toBeInstanceOf(CliParseError);
+			expect(thrown).toHaveProperty("message", "--mcp-config can only be specified once");
+		}
+	});
+
+	test("rejects non-standalone config routes during parsing", () => {
+		const rejectedArgs = [
+			["--mcp-config", "/tmp/gjc-mcp.json", "--mode", "acp"],
+			["--mcp-config", "/tmp/gjc-mcp.json", "--export", "/tmp/session.jsonl"],
+			["--mcp-config", "/tmp/gjc-mcp.json", "--list-models"],
+		];
+		for (const args of rejectedArgs) {
+			expect(() => parseArgs(args)).toThrow(CliParseError);
+		}
+	});
+});
+
 test("explicit CLI --model/--thinking are reapplied after --mpreset activation", async () => {
 	const session = fakeSession(model("cli-provider", "explicit"));
 	const settings = Settings.isolated();
@@ -179,6 +233,34 @@ test("deferred explicit CLI --model is reapplied after --mpreset activation", as
 	).toEqual(["profile-provider/default:high", "cli-provider/explicit:undefined"]);
 	expect(session.setModelTemporaryCalls.at(-1)?.model).toBe(explicitModel);
 	expect(session.model).toBe(explicitModel);
+});
+
+test("startup profile activation failure disposes the session before exit", async () => {
+	const session = fakeSession();
+	let disposed = false;
+	session.dispose = async () => {
+		await Promise.resolve();
+		disposed = true;
+	};
+	const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null | undefined): never => {
+		if (!disposed) throw new Error("process exited before session cleanup");
+		throw new Error(`exit ${code}`);
+	});
+	const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+	try {
+		await expect(
+			applyStartupModelProfilesOrExit({
+				session,
+				settings: Settings.isolated(),
+				modelRegistry: fakeRegistry([]) as never,
+				parsedArgs: { mpreset: "missing-profile" },
+			}),
+		).rejects.toThrow("exit 1");
+		expect(exitSpy).toHaveBeenCalledWith(1);
+	} finally {
+		stderrSpy.mockRestore();
+		exitSpy.mockRestore();
+	}
 });
 
 test("explicit CLI --model rebases the resumed session default chain", async () => {
@@ -292,7 +374,7 @@ test("interactive startup surfaces missing-credential profile errors as recovera
 			parsedArgs: {},
 			startupModel: undefined,
 			startupThinkingLevel: undefined,
-			interactive: true,
+			recoverCredentialError: true,
 		});
 
 		expect(exitSpy).not.toHaveBeenCalled();
@@ -335,7 +417,7 @@ test("noninteractive startup keeps the exit-on-missing-credential contract", asy
 				parsedArgs: {},
 				startupModel: undefined,
 				startupThinkingLevel: undefined,
-				interactive: false,
+				recoverCredentialError: false,
 			}),
 		).rejects.toBe(exit);
 		expect(exitSpy).toHaveBeenCalledWith(1);
@@ -344,4 +426,151 @@ test("noninteractive startup keeps the exit-on-missing-credential contract", asy
 		stderrSpy.mockRestore();
 		exitSpy.mockRestore();
 	}
+});
+
+test("credential recovery does not mask unrelated model-profile activation errors", async () => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "missing-profile" });
+	const exit = new Error("exit 1");
+	const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+		throw exit;
+	}) as never);
+	const stderrSpy = spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+	try {
+		await expect(
+			applyStartupModelProfilesOrExit({
+				session,
+				settings,
+				modelRegistry: fakeRegistry([]) as never,
+				parsedArgs: {},
+				startupModel: undefined,
+				startupThinkingLevel: undefined,
+				recoverCredentialError: true,
+			}),
+		).rejects.toBe(exit);
+		expect(exitSpy).toHaveBeenCalledWith(1);
+	} finally {
+		stderrSpy.mockRestore();
+		exitSpy.mockRestore();
+	}
+});
+
+describe("startup model-profile credential recovery eligibility", () => {
+	test.each([
+		["ordinary input-free interactive startup", true, undefined, [], undefined, true],
+		["print or text startup", false, undefined, [], undefined, false],
+		["explicit startup prompt", true, "hello", [], undefined, false],
+		["slash or positional startup message", true, undefined, ["/login"], undefined, false],
+		["image-only startup", true, "", [], undefined, false],
+		["automatic resume continuation", true, undefined, [], "continue-tail", false],
+		["idle resume picker selection", true, undefined, [], "open-idle", true],
+	] as const)("%s", (_name, isInteractive, initialMessage, initialMessages, resumeAction, expected) => {
+		expect(
+			isStartupModelProfileCredentialRecoveryEligible({
+				isInteractive,
+				initialMessage,
+				initialMessages,
+				resumeAction,
+			}),
+		).toBe(expected);
+	});
+});
+
+test("root startup recovers a missing credential only for an input-free interactive route", async () => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "codex-medium" });
+	const registry = {
+		...fakeRegistry([
+			{
+				name: "codex-medium",
+				requiredProviders: ["openai-codex"],
+				modelMapping: { default: "openai-codex/default:high" },
+				source: "user",
+			},
+		]),
+		getApiKeyForProvider: async () => undefined,
+	} as never;
+
+	const result = await applyStartupModelProfilesForRoot({
+		session,
+		settings,
+		modelRegistry: registry,
+		parsedArgs: {},
+		startupModel: undefined,
+		startupThinkingLevel: undefined,
+		isInteractive: true,
+		initialMessage: undefined,
+		initialMessages: [],
+		resumeAction: undefined,
+	});
+
+	expect(result.recoverableError).toContain('Model profile "codex-medium" requires credentials for: openai-codex');
+});
+
+test.each([
+	["print or text", false, undefined, [], undefined],
+	["explicit prompt", true, "hello", [], undefined],
+	["positional or slash input", true, undefined, ["do work"], undefined],
+	["image-only input", true, "", [], undefined],
+	["automatic resume continuation", true, undefined, [], "continue-tail"],
+] as const)("root startup keeps %s credential failures fatal", async (_name, isInteractive, initialMessage, initialMessages, resumeAction) => {
+	const session = fakeSession();
+	const settings = Settings.isolated({ "modelProfile.default": "codex-medium" });
+	const registry = {
+		...fakeRegistry([
+			{
+				name: "codex-medium",
+				requiredProviders: ["openai-codex"],
+				modelMapping: { default: "openai-codex/default:high" },
+				source: "user",
+			},
+		]),
+		getApiKeyForProvider: async () => undefined,
+	} as never;
+	const exit = new Error("exit 1");
+	const exitSpy = spyOn(process, "exit").mockImplementation((() => {
+		throw exit;
+	}) as never);
+	const stderrSpy = spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+	try {
+		await expect(
+			applyStartupModelProfilesForRoot({
+				session,
+				settings,
+				modelRegistry: registry,
+				parsedArgs: {},
+				startupModel: undefined,
+				startupThinkingLevel: undefined,
+				isInteractive,
+				initialMessage,
+				initialMessages,
+				resumeAction,
+			}),
+		).rejects.toBe(exit);
+	} finally {
+		stderrSpy.mockRestore();
+		exitSpy.mockRestore();
+	}
+});
+
+test("thinking-only startup uses authoritative override semantics", async () => {
+	const settings = Settings.isolated();
+	const session = fakeSession();
+
+	await applyStartupModelProfiles({
+		session,
+		settings,
+		modelRegistry: fakeRegistry([]) as never,
+		parsedArgs: { thinking: ThinkingLevel.High },
+		startupModel: undefined,
+		startupThinkingLevel: undefined,
+	});
+
+	expect(session.setModelTemporaryCalls).toEqual([
+		expect.objectContaining({
+			model: session.model,
+			thinkingLevel: ThinkingLevel.High,
+			options: { cause: "startup-override" },
+		}),
+	]);
 });

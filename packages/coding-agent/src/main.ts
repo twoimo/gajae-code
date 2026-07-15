@@ -26,7 +26,7 @@ import { buildInitialMessage } from "./cli/initial-message";
 import { runListModelsCommand } from "./cli/list-models";
 import { selectSession } from "./cli/session-picker";
 import { findConfigFile } from "./config";
-import { activateModelProfile } from "./config/model-profile-activation";
+import { activateModelProfile, ModelProfileCredentialError } from "./config/model-profile-activation";
 import { ModelRegistry, ModelsConfigFile } from "./config/model-registry";
 import { resolveCliModel, resolveModelRoleValue, resolveModelScope, type ScopedModel } from "./config/model-resolver";
 import { selectorHead } from "./config/model-selector-value";
@@ -193,6 +193,7 @@ export function resolveAcpStartupOptions(
 		| "hooks"
 		| "messages"
 		| "mpreset"
+		| "mcpConfig"
 		| "model"
 		| "models"
 		| "noLsp"
@@ -234,6 +235,7 @@ export function resolveAcpStartupOptions(
 		...(parsed.hooks?.length ? ["--hook"] : []),
 		...(parsed.messages.length > 0 ? ["initial prompt"] : []),
 		...(parsed.models?.length ? ["--models"] : []),
+		...(parsed.mcpConfig !== undefined ? ["--mcp-config"] : []),
 		...(parsed.noLsp ? ["--no-lsp"] : []),
 		...(parsed.noPty ? ["--no-pty"] : []),
 		...(parsed.noRules ? ["--no-rules"] : []),
@@ -420,22 +422,48 @@ export async function applyStartupModelProfiles(args: {
 }
 
 export async function applyStartupModelProfilesOrExit(
-	args: Parameters<typeof applyStartupModelProfiles>[0] & { interactive?: boolean },
+	args: Parameters<typeof applyStartupModelProfiles>[0] & { recoverCredentialError?: boolean },
 ): Promise<{ recoverableError?: string }> {
 	try {
 		await applyStartupModelProfiles(args);
 		return {};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		// In interactive mode, never strand the user before the TUI (and its
-		// documented `/login` recovery) is reachable. Surface the error as a
-		// startup notification instead of exiting so the CLI still launches.
-		if (args.interactive) {
+		if (args.recoverCredentialError === true && error instanceof ModelProfileCredentialError) {
 			return { recoverableError: message };
 		}
 		process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
+		await args.session.dispose();
 		process.exit(1);
 	}
+}
+
+export function isStartupModelProfileCredentialRecoveryEligible(options: {
+	isInteractive: boolean;
+	initialMessage: string | undefined;
+	initialMessages: readonly string[];
+	resumeAction: "continue-tail" | "open-idle" | undefined;
+}): boolean {
+	return (
+		options.isInteractive &&
+		options.initialMessage === undefined &&
+		options.initialMessages.length === 0 &&
+		options.resumeAction !== "continue-tail"
+	);
+}
+
+export async function applyStartupModelProfilesForRoot(
+	args: Parameters<typeof applyStartupModelProfiles>[0] & {
+		isInteractive: boolean;
+		initialMessage: string | undefined;
+		initialMessages: readonly string[];
+		resumeAction: "continue-tail" | "open-idle" | undefined;
+	},
+): Promise<{ recoverableError?: string }> {
+	return applyStartupModelProfilesOrExit({
+		...args,
+		recoverCredentialError: isStartupModelProfileCredentialRecoveryEligible(args),
+	});
 }
 
 interface InteractiveModeFactoryOptions {
@@ -790,6 +818,7 @@ async function buildSessionOptions(
 	const options: CreateAgentSessionOptions = {
 		cwd: parsed.cwd ?? getProjectDir(),
 	};
+	if (parsed.mcpConfig !== undefined) options.mcpConfigPath = parsed.mcpConfig;
 
 	const systemPromptSource = parsed.systemPrompt;
 	const resolvedSystemPrompt = await resolvePromptInput(systemPromptSource, "system prompt");
@@ -1243,6 +1272,7 @@ export async function runRootCommand(
 	sessionOptions.authStorage = authStorage;
 	sessionOptions.modelRegistry = modelRegistry;
 	sessionOptions.hasUI = isInteractive;
+	sessionOptions.notificationHostModeSupported = isInteractive;
 	sessionOptions.settings = settingsInstance;
 	const hasRootStartupProfile = Boolean(settingsInstance.get("modelProfile.default") || parsedArgs.mpreset);
 
@@ -1302,18 +1332,30 @@ export async function runRootCommand(
 
 		// Research-mode (RLM) preset: hard tool-boundary assertion after the registry is assembled.
 		if (deps.rlmPreset?.onSessionCreated) {
-			await deps.rlmPreset.onSessionCreated(session);
+			try {
+				await deps.rlmPreset.onSessionCreated(session);
+			} catch (error) {
+				try {
+					await session.dispose();
+				} catch {
+					logger.warn("Failed to dispose session after RLM post-create error");
+				}
+				throw error;
+			}
 		}
 
 		if (!(parsedArgs.authBootstrap === true && isInteractive)) {
-			const { recoverableError } = await applyStartupModelProfilesOrExit({
+			const { recoverableError } = await applyStartupModelProfilesForRoot({
 				session,
 				settings: settingsInstance,
 				modelRegistry,
 				parsedArgs,
 				startupModel: sessionOptions.model,
 				startupThinkingLevel: sessionOptions.thinkingLevel,
-				interactive: isInteractive,
+				isInteractive,
+				initialMessage,
+				initialMessages: parsedArgs.messages,
+				resumeAction: bareResumeAction,
 			});
 			if (recoverableError) {
 				notifs.push({ kind: "error", message: recoverableError });
@@ -1348,52 +1390,70 @@ export async function runRootCommand(
 			process.stderr.write(
 				`${chalk.yellow(`\nAdvanced manual config remains available at ${ModelsConfigFile.path()}`)}\n`,
 			);
+			await session.dispose();
+			stopThemeWatcher();
+			await postmortem.quit(1);
 			process.exit(1);
 		}
 
 		if (isInteractive) {
-			startupUpdate.startBeforeInteractiveInitialization();
-			const changelogMarkdown = await logger.time(
-				"main:getChangelogForDisplay",
-				deps.getChangelogForDisplay ?? getChangelogForDisplay,
-				parsedArgs,
-			);
+			let exitForTiming = false;
+			try {
+				startupUpdate.startBeforeInteractiveInitialization();
+				const changelogMarkdown = await logger.time(
+					"main:getChangelogForDisplay",
+					deps.getChangelogForDisplay ?? getChangelogForDisplay,
+					parsedArgs,
+				);
 
-			const scopedModelsForDisplay = sessionOptions.scopedModels ?? scopedModels;
-			if (scopedModelsForDisplay.length > 0) {
-				const modelList = scopedModelsForDisplay
-					.map(scopedModel => {
-						const thinkingStr = !scopedModel.thinkingLevel ? `:${scopedModel.thinkingLevel}` : "";
-						return `${scopedModel.model.id}${thinkingStr}`;
-					})
-					.join(", ");
-				process.stdout.write(`${chalk.dim(`Model scope: ${modelList} ${chalk.gray("(Alt+N to cycle)")}`)}\n`);
-			}
-
-			if ($env.PI_TIMING) {
-				logger.printTimings();
-				if ($env.PI_TIMING === "x") {
-					process.exit(0);
+				const scopedModelsForDisplay = sessionOptions.scopedModels ?? scopedModels;
+				if (scopedModelsForDisplay.length > 0) {
+					const modelList = scopedModelsForDisplay
+						.map(scopedModel => {
+							const thinkingStr = !scopedModel.thinkingLevel ? `:${scopedModel.thinkingLevel}` : "";
+							return `${scopedModel.model.id}${thinkingStr}`;
+						})
+						.join(", ");
+					process.stdout.write(`${chalk.dim(`Model scope: ${modelList} ${chalk.gray("(Alt+N to cycle)")}`)}\n`);
 				}
+
+				if ($env.PI_TIMING) {
+					logger.printTimings();
+					exitForTiming = $env.PI_TIMING === "x";
+				}
+
+				if (!exitForTiming) {
+					logger.endTiming();
+					await runInteractiveMode(
+						session,
+						VERSION,
+						changelogMarkdown,
+						notifs,
+						startupUpdate,
+						parsedArgs.messages,
+						setToolUIContext,
+						lspServers,
+						mcpManager,
+						eventBus,
+						initialMessage,
+						initialImages,
+						deps.createInteractiveMode,
+						bareResumeAction,
+					);
+				}
+			} catch (error) {
+				try {
+					await session.dispose();
+				} catch {
+					logger.warn("Failed to dispose session after interactive error");
+				}
+				throw error;
 			}
 
-			logger.endTiming();
-			await runInteractiveMode(
-				session,
-				VERSION,
-				changelogMarkdown,
-				notifs,
-				startupUpdate,
-				parsedArgs.messages,
-				setToolUIContext,
-				lspServers,
-				mcpManager,
-				eventBus,
-				initialMessage,
-				initialImages,
-				deps.createInteractiveMode,
-				bareResumeAction,
-			);
+			if (exitForTiming) {
+				await session.dispose();
+				process.exit(0);
+			}
 		} else {
 			const runPrint = deps.runPrintMode ?? (await import("./modes/print-mode")).runPrintMode;
 			await runPrint(session, {
