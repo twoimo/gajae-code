@@ -823,6 +823,61 @@ describe("cooperative handoff when the captured owner exits before the recheck",
 	});
 });
 
+describe("TelegramDaemonController captured-owner signal races", () => {
+	for (const [name, mutate] of [
+		["malformed state", () => ({ pid: "not-a-pid" })],
+		["different bot identity", () => freshState({ tokenFingerprint: "different-bot" })],
+		["different chat identity", () => freshState({ chatId: "different-chat" })],
+		["different acquisition", () => freshState({ acquisitionId: "successor-acquisition" })],
+		["different PID", () => freshState({ pid: 1000 })],
+		["different generation", () => freshState({ generation: DAEMON_GENERATION + 1 })],
+	] as const) {
+		test(`does not SIGTERM after a ${name} mutation`, async () => {
+			const agentDir = tempAgentDir();
+			const s = settings(agentDir);
+			writeState(agentDir, freshState());
+			fs.writeFileSync(daemonPaths(agentDir).lock, "");
+			const signals: NodeJS.Signals[] = [];
+			const ctrl = new TelegramDaemonController(s, {
+				pidAlive: () => true,
+				randomId: () => {
+					writeState(agentDir, mutate());
+					return "request-race";
+				},
+				sendSignal: (_pid, signal) => signals.push(signal),
+			});
+
+			const result = await ctrl.stop();
+			expect(result.ok).toBe(false);
+			expect(result.message).toContain("ownership changed");
+			expect(signals).toEqual([]);
+		});
+	}
+
+	test("does not SIGKILL after an acquisition mutation during the graceful wait", async () => {
+		const agentDir = tempAgentDir();
+		const s = settings(agentDir);
+		writeState(agentDir, freshState());
+		fs.writeFileSync(daemonPaths(agentDir).lock, "");
+		const signals: NodeJS.Signals[] = [];
+		let mutated = false;
+		const ctrl = new TelegramDaemonController(s, {
+			pidAlive: () => true,
+			sendSignal: (_pid, signal) => signals.push(signal),
+			sleep: async () => {
+				if (mutated) return;
+				mutated = true;
+				writeState(agentDir, freshState({ acquisitionId: "successor-acquisition" }));
+			},
+			waitStepMs: 1,
+		});
+
+		const result = await ctrl.stop({ force: true, gracefulTimeoutMs: 2, killTimeoutMs: 2 });
+		expect(result.ok).toBe(false);
+		expect(signals).toEqual(["SIGTERM"]);
+	});
+});
+
 describe("TelegramDaemonController.stop", () => {
 	test("stops a running owner without spawning a replacement", async () => {
 		const agentDir = tempAgentDir();

@@ -154,14 +154,19 @@ describe("daemon generation release guard", () => {
 		const duplicate = mutableInventory();
 		duplicate.telegram[telegramContract]!.push("DAEMON_GENERATION");
 		expect(() => validateInventory(duplicate)).toThrow("invalid telegram contract inventory");
-		expect(() => validateManifest({ contractVersion: 5, inventory: duplicate })).toThrow("invalid telegram contract inventory");
+		expect(() => validateManifest({ contractVersion: GUARD_CONTRACT_VERSION, inventory: duplicate })).toThrow("invalid telegram contract inventory");
 		const moved = mutableInventory();
 		moved.telegram["moved.ts"] = moved.telegram[telegramContract]!;
 		delete moved.telegram[telegramContract];
-		expect(() => validateManifest({ contractVersion: 5, inventory: moved })).toThrow("does not match the protected inventory");
+		expect(() => validateManifest({ contractVersion: GUARD_CONTRACT_VERSION, inventory: moved })).toThrow("does not match the protected inventory");
 		const narrowed = mutableInventory();
 		narrowed.telegram[telegramDaemon]!.pop();
-		expect(() => validateManifest({ contractVersion: 5, inventory: narrowed })).toThrow("does not match the protected inventory");
+		expect(() => validateManifest({ contractVersion: GUARD_CONTRACT_VERSION, inventory: narrowed })).toThrow("does not match the protected inventory");
+	});
+
+	test("protects the signal revalidation and provisional-PID binding predicates", () => {
+		const telegram = protectedInventory.telegram["packages/coding-agent/src/sdk/bus/telegram-daemon.ts"] ?? [];
+		expect(telegram).toEqual(expect.arrayContaining(["acquireTransitionLock", "bindProvisionalDaemonPid", "hasSafeDaemonStateShape", "isPhysicalMatchingOwner"]));
 	});
 
 	test("fails closed for malformed protected declarations", () => {

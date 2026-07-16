@@ -513,7 +513,7 @@ function ownerIdentityMatches(state: DaemonState, tokenFingerprint: string, chat
 	return state.tokenFingerprint === tokenFingerprint && state.chatId === chatId;
 }
 
-function hasSafeDaemonStateShape(state: DaemonState | undefined): state is DaemonState {
+export function hasSafeDaemonStateShape(state: DaemonState | undefined): state is DaemonState {
 	return Boolean(
 		state &&
 			Number.isSafeInteger(state.pid) &&
@@ -828,18 +828,51 @@ export async function renewDaemonHeartbeat(input: {
 	}
 }
 
+/** Acquire the lifecycle transition lock with bounded retry for bind/retire races. */
+async function acquireTransitionLock(input: {
+	fs: TelegramDaemonFs;
+	path: string;
+	sleep?: (ms: number) => Promise<void>;
+	retries?: number;
+	retryDelayMs?: number;
+}): Promise<boolean> {
+	const sleep = input.sleep ?? (async (ms: number) => await Bun.sleep(ms));
+	const retries = Math.max(input.retries ?? 5, 0);
+	const retryDelayMs = Math.max(input.retryDelayMs ?? 20, 0);
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		if (await tryOpenWx(input.fs, input.path)) return true;
+		if (attempt < retries) await sleep(retryDelayMs);
+	}
+	return false;
+}
+
 /** Retire only the unchanged provisional acquisition after bounded readiness fails. */
 export async function retireProvisionalDaemonOwnership(input: {
 	settings: Settings;
 	ownerId: string;
 	acquisitionId?: string;
+	/** Detached child PID, when the launcher successfully reported it. */
 	pid: number;
+	/** PID which created the provisional reservation before the child was bound. */
+	launcherPid?: number;
 	fs?: TelegramDaemonFs;
 	now?: () => number;
+	sleep?: (ms: number) => Promise<void>;
+	stealRetries?: number;
+	stealRetryDelayMs?: number;
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	if (!(await tryOpenWx(fsImpl, paths.steal))) return false;
+	if (
+		!(await acquireTransitionLock({
+			fs: fsImpl,
+			path: paths.steal,
+			sleep: input.sleep,
+			retries: input.stealRetries,
+			retryDelayMs: input.stealRetryDelayMs,
+		}))
+	)
+		return false;
 	try {
 		const state = await readJson<DaemonState>(fsImpl, paths.state);
 		const acquisitionId = input.acquisitionId ?? input.ownerId;
@@ -847,7 +880,7 @@ export async function retireProvisionalDaemonOwnership(input: {
 			!state ||
 			state.ownerId !== input.ownerId ||
 			state.acquisitionId !== acquisitionId ||
-			state.pid !== input.pid ||
+			(state.pid !== input.pid && state.pid !== input.launcherPid) ||
 			state.generation !== DAEMON_GENERATION ||
 			!Number.isSafeInteger(state.generation) ||
 			state.ownershipPhase !== "provisional"
@@ -872,10 +905,22 @@ async function bindProvisionalDaemonPid(input: {
 	acquisitionId: string;
 	pid: number;
 	fs?: TelegramDaemonFs;
+	sleep?: (ms: number) => Promise<void>;
+	stealRetries?: number;
+	stealRetryDelayMs?: number;
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	if (!(await tryOpenWx(fsImpl, paths.steal))) return false;
+	if (
+		!(await acquireTransitionLock({
+			fs: fsImpl,
+			path: paths.steal,
+			sleep: input.sleep,
+			retries: input.stealRetries,
+			retryDelayMs: input.stealRetryDelayMs,
+		}))
+	)
+		return false;
 	try {
 		const state = await readJson<DaemonState>(fsImpl, paths.state);
 		if (
@@ -971,21 +1016,36 @@ export async function confirmTelegramDaemonSpawn(input: {
 		ownerId: input.spawned.acquisition.ownerId,
 		acquisitionId: input.spawned.acquisition.acquisitionId,
 		pid: input.spawned.acquisition.pid ?? input.pid,
+		launcherPid: input.spawned.acquisition.launcherPid ?? input.pid,
 		fs: input.fs,
 		now: input.now,
+		sleep: input.sleep,
 	});
 	if (retired) return false;
 	const state = await readDaemonState(input.settings, input.fs);
-	return (
-		(input.spawned.acquisition.pid === undefined || state?.pid === input.spawned.acquisition.pid) &&
+	if (
 		isCurrentCompatibleOwner({
 			state,
 			now: (input.now ?? Date.now)(),
 			tokenFingerprint: input.tokenFingerprint,
 			chatId: input.chatId,
 			pidAlive: input.pidAlive ?? defaultPidAlive,
-		})
-	);
+		}) &&
+		(state?.ownerId !== input.spawned.acquisition.ownerId ||
+			state.acquisitionId !== input.spawned.acquisition.acquisitionId ||
+			state.pid === input.spawned.acquisition.pid)
+	)
+		return true;
+	if (
+		state?.ownerId === input.spawned.acquisition.ownerId &&
+		state.acquisitionId === input.spawned.acquisition.acquisitionId &&
+		(state.pid === input.spawned.acquisition.pid ||
+			state.pid === input.spawned.acquisition.launcherPid ||
+			state.pid === input.pid) &&
+		state.ownershipPhase === "retired"
+	)
+		return false;
+	throw new Error("Telegram daemon provisional ownership could not be retired safely");
 }
 
 export async function releaseDaemonOwnership(input: {
@@ -1084,6 +1144,8 @@ export interface TelegramSpawnOwnerInput {
 export interface TelegramSpawnAcquisition {
 	readonly ownerId: string;
 	readonly acquisitionId: string;
+	/** PID of the launcher which reserved provisional ownership before spawn. */
+	readonly launcherPid?: number;
 	/** Actual detached child which must publish the ready owner state. */
 	readonly pid?: number;
 }
@@ -1164,9 +1226,11 @@ export async function spawnTelegramDaemonOwner(
 			reloadRequired: ownership.reloadRequired,
 		};
 	}
+	const launcherPid = deps.pid ?? process.pid;
 	const provisionalAcquisition: TelegramSpawnAcquisition = Object.freeze({
 		ownerId: ownership.ownerId as string,
 		acquisitionId: ownership.acquisitionId as string,
+		launcherPid,
 	});
 	// One source of truth for runtime detection + spawn args (no duplicate resolve).
 	const { command, args, runtime } = buildTelegramDaemonSpawnArgs({
@@ -1194,6 +1258,7 @@ export async function spawnTelegramDaemonOwner(
 		acquisitionId: acquisition.acquisitionId,
 		pid,
 		fs: deps.fs,
+		sleep: deps.sleep,
 	});
 	return { result: "owner_spawned", acquisition, runtime, warnings: [] };
 }

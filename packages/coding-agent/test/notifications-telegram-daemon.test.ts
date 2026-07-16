@@ -1111,6 +1111,139 @@ describe("telegram daemon", () => {
 		expect(ownership).toEqual({ acquired: false, attached: false, reloadRequired: true });
 	});
 
+	test("#2028 binds a provisional launcher PID after a briefly contended transition lock", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		let now = 0;
+		const child = readyTelegramSpawnFixture({
+			settings: s,
+			firstChildPid: 4243,
+			now: () => now,
+			onSpawn: () => fs.writeFileSync(paths.steal, "held"),
+		});
+		let sleeps = 0;
+
+		await expect(
+			ensureTelegramDaemonRunningDetailed(
+				{ settings: s, cwd: agentDir, sessionId: "bind-after-contention" },
+				{
+					pid: 4242,
+					now: () => now,
+					pidAlive: pid => pid === 4243,
+					spawn: child.spawn,
+					readinessTimeoutMs: 1,
+					waitStepMs: 1,
+					sleep: async () => {
+						if (++sleeps === 1) fs.unlinkSync(paths.steal);
+						else {
+							now++;
+							await child.sleep();
+						}
+					},
+				},
+			),
+		).resolves.toBe("spawned");
+		expect(sleeps).toBeGreaterThanOrEqual(2);
+		expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({
+			pid: 4243,
+			ownershipPhase: "ready",
+		});
+	});
+
+	test("#2028 retires an unbound launcher reservation after bounded bind contention so ensure can recover", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		let now = 0;
+		let spawns = 0;
+		let ownerId = "";
+		let sleeps = 0;
+		const deps = {
+			pid: 4242,
+			now: () => now,
+			pidAlive: (pid: number) => pid === 4244,
+			spawn: (_command: string, args: string[]) => {
+				spawns++;
+				ownerId = args[args.indexOf("--owner-id") + 1]!;
+				if (spawns === 1) fs.writeFileSync(paths.steal, "held");
+				return { pid: spawns === 1 ? 4243 : 4244, unref() {} };
+			},
+			readinessTimeoutMs: 1,
+			waitStepMs: 1,
+			sleep: async () => {
+				now++;
+				if (++sleeps === 6) {
+					fs.unlinkSync(paths.steal);
+					return;
+				}
+				if (spawns === 2) {
+					await renewDaemonHeartbeat({ settings: s, ownerId, acquisitionId: ownerId, pid: 4244, now: () => now });
+				}
+			},
+		};
+
+		await expect(
+			ensureTelegramDaemonRunningDetailed({ settings: s, cwd: agentDir, sessionId: "failed-bind" }, deps),
+		).rejects.toThrow("Telegram daemon did not become ready after spawning");
+		expect(sleeps).toBe(6);
+		expect(fs.existsSync(paths.lock)).toBe(false);
+		expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({
+			pid: 4242,
+			ownershipPhase: "retired",
+		});
+
+		await expect(
+			ensureTelegramDaemonRunningDetailed({ settings: s, cwd: agentDir, sessionId: "recovered-bind" }, deps),
+		).resolves.toBe("spawned");
+		expect(spawns).toBe(2);
+		expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({
+			pid: 4244,
+			ownershipPhase: "ready",
+		});
+	});
+
+	test("#2028 accepts a ready child that publishes before the delayed bind takes the transition lock", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		let now = 0;
+		let ownerId = "";
+
+		await expect(
+			ensureTelegramDaemonRunningDetailed(
+				{ settings: s, cwd: agentDir, sessionId: "ready-before-bind" },
+				{
+					pid: 4242,
+					now: () => now,
+					pidAlive: pid => pid === 4243,
+					spawn: (_command, args) => {
+						ownerId = args[args.indexOf("--owner-id") + 1]!;
+						fs.writeFileSync(paths.steal, "held");
+						return { pid: 4243, unref() {} };
+					},
+					readinessTimeoutMs: 1,
+					waitStepMs: 1,
+					sleep: async () => {
+						fs.unlinkSync(paths.steal);
+						now++;
+						await renewDaemonHeartbeat({
+							settings: s,
+							ownerId,
+							acquisitionId: ownerId,
+							pid: 4243,
+							now: () => now,
+						});
+					},
+				},
+			),
+		).resolves.toBe("spawned");
+		expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({
+			pid: 4243,
+			ownershipPhase: "ready",
+		});
+	});
+
 	test("child ready publication wins the readiness-versus-retire race", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
