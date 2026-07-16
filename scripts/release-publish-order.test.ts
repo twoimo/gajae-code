@@ -432,9 +432,8 @@ describe("native release binary coverage", () => {
 		expect(workflow).toContain("pattern: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}*-h${{ needs.rust-hash.outputs.hash }}");
 	});
 
-	test("tag publication uses the fail-closed named-job evidence chain and SDK closure", async () => {
+	test("tag publication uses the fail-closed named-job evidence chain", async () => {
 		const workflow = await Bun.file(path.join(repoRoot, ".github/workflows/ci.yml")).text();
-		const sdkClosure = workflowJob(workflow, "sdk_closure");
 		const releaseBinary = workflowJob(workflow, "release_binary");
 		const expectedEvidence = workflowJob(workflow, "release_npm_expected");
 		const npmPublish = workflowJob(workflow, "release_npm_publish");
@@ -442,10 +441,11 @@ describe("native release binary coverage", () => {
 		const githubVerify = workflowJob(workflow, "release_github_verify");
 		const finalize = workflowJob(workflow, "release_github_finalize");
 
-		expect(sdkClosure).toContain("run: bun run check:sdk-closure");
-		expect(sdkClosure).toContain("startsWith(github.ref, 'refs/tags/v') && !cancelled()");
-		expect(releaseBinary).toContain("needs: [check, sdk_closure, native_linux, native_release, rust-hash]");
-		expect(releaseBinary).toContain("needs.sdk_closure.result == 'success'");
+		// The SDK closure suite is deliberately NOT a release gate: it runs in
+		// Dev CI / main `check` (relevance-gated). Release tags gate on the
+		// build, test, and evidence chain below (maintainer decision, 0.11.0).
+		expect(workflow).not.toContain("sdk_closure:");
+		expect(releaseBinary).toContain("needs: [check, native_linux, native_release, rust-hash]");
 
 		expect(expectedEvidence).toContain("needs: [release_github_draft, release_context, release_source_verify, rust-hash]");
 		expect(expectedEvidence).toContain("needs.release_source_verify.result == 'success'");
@@ -460,6 +460,10 @@ describe("native release binary coverage", () => {
 		expect(githubVerify).toContain("needs: [release_github_final_evidence, release_context, release_source_verify]");
 		expect(githubVerify).toContain("needs.release_github_final_evidence.result == 'success'");
 		expect(githubVerify).toContain("needs.release_source_verify.result == 'success'");
+		// release_github_verify runs gh without a checkout; GH_REPO is the only
+		// repository context. Removing it fails post-publish with
+		// "not a git repository" and skips stable finalization (v0.11.0).
+		expect(githubVerify.split("GH_REPO: ${{ github.repository }}").length - 1).toBe(2);
 		expect(finalize).toContain("needs: [release_npm_publish, release_github_final_evidence, release_github_verify, release_context, release_source_verify]");
 		expect(finalize).toContain("needs.release_npm_publish.result == 'success'");
 		expect(finalize).toContain("needs.release_github_final_evidence.result == 'success'");
@@ -503,7 +507,9 @@ describe("native release binary coverage", () => {
 	test("install tarball smoke includes linux x64 optional natives package", async () => {
 		const installer = await Bun.file(path.join(repoRoot, "scripts/install-tests/run-ci.sh")).text();
 		expect(installer).toContain("stage_linux_x64_optional_package");
-		expect(installer).toContain("for pkg in utils natives-linux-x64 natives ai agent tui stats coding-agent gajae-code");
+		expect(installer).toContain(
+			"for pkg in utils natives-linux-x64 natives ai agent bridge-client tui stats coding-agent gajae-code",
+		);
 		expect(installer).toContain("@gajae-code/natives-linux-x64");
 		expect(installer).toContain("gajae-code-natives-[0-9]*.tgz");
 	});

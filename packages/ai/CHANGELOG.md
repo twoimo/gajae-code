@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.11.0] - 2026-07-15
 ### Added
 
 - Exported the canonical thinking-control mode runtime vocabulary so packed SDK consumers can validate provider metadata against the same public `@gajae-code/ai` contract.

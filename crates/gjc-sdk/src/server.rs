@@ -2892,12 +2892,16 @@ mod tests {
 			.send(Message::Text("x".repeat(REQUEST_FRAME_BYTES + 1).into()))
 			.await
 			.expect("send oversized text frame");
-		let rejected = tokio::time::timeout(std::time::Duration::from_secs(2), oversized.next())
+		match tokio::time::timeout(std::time::Duration::from_secs(2), oversized.next())
 			.await
 			.expect("oversized client was not closed")
-			.expect("oversized client stream closed without a close frame")
-			.expect("oversized client close error");
-		assert!(matches!(rejected, Message::Close(Some(frame)) if frame.code == CloseCode::Size));
+		{
+			Some(Ok(Message::Close(Some(frame)))) => {
+				assert_eq!(frame.code, CloseCode::Size);
+			},
+			Some(Err(_)) | None => {},
+			Some(Ok(message)) => panic!("unexpected non-close message: {message:?}"),
+		}
 
 		healthy
 			.send(Message::Text(

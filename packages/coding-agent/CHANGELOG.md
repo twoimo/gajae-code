@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-15
+
 ### Fixed
 - Discord inbound lease recovery now exposes a deterministic scheduler seam, preserves exponential retry wakeups after transient endpoint lookup failures, and cancels pending recovery exactly on daemon stop instead of relying on wall-clock sleeps in regression coverage.
 - Input-free interactive TTY startup now keeps the TUI reachable when configured model profiles are missing required provider credentials, skips only the blocked profiles, and preserves later `--mpreset` and explicit model/thinking precedence; redirected terminals, input-bearing, resume-continuation, image-only, print/text, and unrelated activation failures remain fail-closed (#2277).
@@ -28,7 +30,7 @@
 - Removed the `--mode rpc`, `--mode rpc-ui`, and `--mode bridge` external ingress modes. Machine clients must use the SDK WebSocket interfaces documented in `docs/sdk.md`; no RPC or Bridge compatibility path remains.
 - Documented the current GPT-5.6 Codex and combo profile mappings as product judgments, including the durable `opus-codex` `anthropic/claude-sonnet-5` planner override and `fable-opus-codex` `anthropic/claude-opus-4-8:medium` planner.
 - Resolved the SDK v3 workflow-gate shipping classification (#2171): `workflowGateId` and Q12 diagnostics are additive SDK v3 surfaces, while `action_needed.id` remains the transient, generic `reply.id` authority. `expectedSessionId` omission remains accepted and audited for the entire SDK v3 line; new clients must send it, and mandatory enforcement or removal can occur no earlier than SDK v4 only after at least one full published deprecation release/window with deployed-client notice. Explicit session mismatches fail closed before resolution; mismatched sessions, stale/reissued actions, and unsafe ambiguity never regain authority.
-- Documented release pairing: the `@gajae-code/coding-agent` runtime and `@gajae-code/natives` native addon ship from the same source release at exact matching package versions (currently `0.10.2`), with the native loader version sentinel enforcing the pair. Mixed native/runtime versions are unsupported and cannot claim SDK compatibility.
+- Documented release pairing: the `@gajae-code/coding-agent` runtime and `@gajae-code/natives` native addon ship from the same source release at exact matching package versions, with the native loader version sentinel enforcing the pair. Mixed native/runtime versions are unsupported and cannot claim SDK compatibility.
 ### Fixed
 - Startup continuation now participates in the existing managed fallback and in-flight recovery envelope, preventing a retryable resumed turn from publishing `agent_end`/idle before retry success, exhaustion, cancellation, or startup failure has settled (#2092).
 

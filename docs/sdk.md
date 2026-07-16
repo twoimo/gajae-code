@@ -289,7 +289,7 @@ state remain private: these APIs do not create a public authority value.
 
 ### Runtime and native addon release pairing
 
-The `@gajae-code/coding-agent` runtime and `@gajae-code/natives` native addon ship from the same source release at exact matching package versions (currently `0.10.2`). The native loader requires the matching version sentinel; mixed native/runtime versions are unsupported and must not claim SDK compatibility.
+The `@gajae-code/coding-agent` runtime and `@gajae-code/natives` native addon ship from the same source release at exact matching package versions. The native loader requires the matching version sentinel; mixed native/runtime versions are unsupported and must not claim SDK compatibility.
 
 ## Minimal client example
 

@@ -142,11 +142,12 @@ jobs:
          - name: Run GJC state gates
            run: bun scripts/ci-gjc-state-gates.ts
 
-   # Fast lint + type check (no Rust, no native build needed)
+   # Lint + type check. check:sdk-closure loads the native addon, so this job
+   # provisions the linux-x64 native artifact the same way `test` does.
    check:
       timeout-minutes: 30
-      needs: [relevance]
-      if: ${{ !startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+      needs: [relevance, native_linux, rust-hash]
+      if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && needs.native_linux.result != 'failure' }}
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -163,31 +164,28 @@ jobs:
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - if: needs.relevance.outputs.relevant == 'true'
            run: bun install --frozen-lockfile
+         - name: Resolve native source run
+           if: needs.relevance.outputs.relevant == 'true'
+           id: source
+           shell: bash
+           run: |
+              if [ "${{ needs.native_linux.result }}" = "success" ]; then
+                echo "run-id=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+              else
+                echo "run-id=${{ needs.rust-hash.outputs.run-id }}" >> "$GITHUB_OUTPUT"
+              fi
+         - name: Download native addons
+           if: needs.relevance.outputs.relevant == 'true'
+           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+           with:
+              pattern: pi-natives-linux-x64-*-h${{ needs.rust-hash.outputs.hash }}
+              path: packages/natives/native
+              merge-multiple: true
+              run-id: ${{ steps.source.outputs.run-id }}
+              github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Type check workspace
            if: needs.relevance.outputs.relevant == 'true'
            run: bun run ci:check:full
-
-   sdk_closure:
-      name: sdk-closure
-      timeout-minutes: 90
-      if: ${{ startsWith(github.ref, 'refs/tags/v') && !cancelled() }}
-      runs-on: ubuntu-22.04
-      steps:
-         - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-         - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
-           with:
-              node-version: "24"
-         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
-           with:
-              bun-version: "1.3"
-         - name: Cache bun dependencies
-           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
-           with:
-              path: ~/.bun/install/cache
-              key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
-         - run: bun install --frozen-lockfile
-         - name: Run SDK closure
-           run: bun run check:sdk-closure
 
    # Linux x64 baseline + modern: required by `test`, so it runs on every PR
    # unless rust-hash found a cached run. Tags always rebuild for fresh artifacts.
@@ -511,9 +509,8 @@ jobs:
       timeout-minutes: 60
       if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && !cancelled() &&
          needs.native_linux.result == 'success' && needs.native_release.result ==
-         'success' && (needs.check.result == 'success' || needs.check.result == 'skipped') &&
-         needs.sdk_closure.result == 'success' }}
-      needs: [check, sdk_closure, native_linux, native_release, rust-hash]
+         'success' && (needs.check.result == 'success' || needs.check.result == 'skipped') }}
+      needs: [check, native_linux, native_release, rust-hash]
       strategy:
          fail-fast: false
          matrix:
@@ -918,6 +915,7 @@ jobs:
          - name: Verify the draft holds every required binary and final evidence asset
            env:
               GH_TOKEN: ${{ github.token }}
+              GH_REPO: ${{ github.repository }}
               RELEASE_TAG: ${{ needs.release_context.outputs.tag }}
            shell: bash
            run: |
@@ -930,6 +928,7 @@ jobs:
          - name: Download and verify the published macOS arm64 binary from the draft
            env:
               GH_TOKEN: ${{ github.token }}
+              GH_REPO: ${{ github.repository }}
               RELEASE_TAG: ${{ needs.release_context.outputs.tag }}
            shell: bash
            run: |
