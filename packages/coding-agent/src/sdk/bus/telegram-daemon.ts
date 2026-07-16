@@ -86,6 +86,11 @@ export interface DaemonState {
 	startedAt: number;
 	heartbeatAt: number;
 	roots: string[];
+	/**
+	 * Present only for the Windows source-launch handoff. `pid` starts as this
+	 * short-lived launcher PID and may be rebound exactly once to the daemon PID.
+	 */
+	launcherPid?: number;
 	version: 1;
 	/**
 	 * Operational daemon generation of the process that owns the lock, distinct
@@ -497,6 +502,8 @@ export async function acquireDaemonOwnership(input: {
 	pid?: number;
 	pidAlive?: (pid: number) => boolean;
 	randomId?: () => string;
+	/** Permit one Windows source launcher PID to daemon PID handoff. */
+	allowPidRebind?: boolean;
 	/** A caller-supplied opaque owner identity, used when the launcher PID is not durable. */
 	ownerId?: string;
 }): Promise<{
@@ -515,6 +522,24 @@ export async function acquireDaemonOwnership(input: {
 	await ensureDir(fsImpl, paths.dir);
 	const ownerId =
 		input.ownerId ?? input.randomId?.() ?? `${pid}-${now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+	const initializationPath = `${paths.lock}.initializing.json`;
+	const writeState = async (state: DaemonState): Promise<void> => {
+		await writeJsonAtomic(fsImpl, paths.state, state);
+		await fsImpl.unlink(initializationPath).catch(() => undefined);
+	};
+	const initializationIsPositivelyStale = async (): Promise<boolean> => {
+		const initialization = await readJson<{ pid?: unknown; startedAt?: unknown }>(fsImpl, initializationPath);
+		return Boolean(
+			initialization &&
+				typeof initialization.pid === "number" &&
+				Number.isSafeInteger(initialization.pid) &&
+				initialization.pid > 0 &&
+				typeof initialization.startedAt === "number" &&
+				Number.isFinite(initialization.startedAt) &&
+				now() - initialization.startedAt > HEARTBEAT_TTL_MS &&
+				!pidAlive(initialization.pid),
+		);
+	};
 	const roots = input.roots ?? (await readJson<{ roots?: string[] }>(fsImpl, paths.roots))?.roots ?? [];
 
 	// A fresh, identity-matching live owner running an OLDER generation than this
@@ -552,7 +577,8 @@ export async function acquireDaemonOwnership(input: {
 	const existingDecision = attachDecision(existing);
 	if (existingDecision) return existingDecision;
 	if (await tryOpenWx(fsImpl, paths.lock)) {
-		await writeJsonAtomic(fsImpl, paths.state, {
+		await writeJsonAtomic(fsImpl, initializationPath, { pid, startedAt: now() });
+		await writeState({
 			pid,
 			ownerId,
 			tokenFingerprint: input.tokenFingerprint,
@@ -562,6 +588,7 @@ export async function acquireDaemonOwnership(input: {
 			roots,
 			version: DAEMON_VERSION,
 			generation: DAEMON_GENERATION,
+			...(input.allowPidRebind ? { launcherPid: pid } : {}),
 		} satisfies DaemonState);
 		return { acquired: true, ownerId };
 	}
@@ -578,7 +605,7 @@ export async function acquireDaemonOwnership(input: {
 	}
 	const afterLockDecision = attachDecision(afterLock);
 	if (afterLockDecision) return afterLockDecision;
-	if (!afterLock) return { acquired: false, attached: true };
+	if (!afterLock && !(await initializationIsPositivelyStale())) return { acquired: false, attached: true };
 	if (!(await tryOpenWx(fsImpl, paths.steal))) return { acquired: false, attached: true };
 	try {
 		const rechecked = await readJson<DaemonState>(fsImpl, paths.state);
@@ -597,9 +624,13 @@ export async function acquireDaemonOwnership(input: {
 		if (rechecked && pidAlive(rechecked.pid)) {
 			return { acquired: false, attached: true };
 		}
+		if (!rechecked && !(await initializationIsPositivelyStale())) {
+			return { acquired: false, attached: true };
+		}
 		await fsImpl.unlink(paths.lock).catch(() => undefined);
 		if (!(await tryOpenWx(fsImpl, paths.lock))) return { acquired: false, attached: true };
-		await writeJsonAtomic(fsImpl, paths.state, {
+		await writeJsonAtomic(fsImpl, initializationPath, { pid, startedAt: now() });
+		await writeState({
 			pid,
 			ownerId,
 			tokenFingerprint: input.tokenFingerprint,
@@ -609,6 +640,7 @@ export async function acquireDaemonOwnership(input: {
 			roots,
 			version: DAEMON_VERSION,
 			generation: DAEMON_GENERATION,
+			...(input.allowPidRebind ? { launcherPid: pid } : {}),
 		} satisfies DaemonState);
 		return { acquired: true, ownerId };
 	} finally {
@@ -639,6 +671,7 @@ export async function renewDaemonHeartbeat(input: {
 		!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId)
 	)
 		return false;
+	if (state.pid !== input.pid && (state.launcherPid === undefined || state.pid !== state.launcherPid)) return false;
 	await writeJsonAtomic(fsImpl, paths.state, {
 		...state,
 		pid: input.pid,
@@ -670,6 +703,7 @@ export async function releaseDaemonOwnership(input: {
 		return;
 	await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
 	await fsImpl.unlink(paths.lock).catch(() => undefined);
+	await fsImpl.unlink(`${paths.lock}.initializing.json`).catch(() => undefined);
 }
 
 /** Read the persisted daemon ownership state (or undefined when absent). */
@@ -807,6 +841,7 @@ export async function spawnTelegramDaemonOwner(
 		pidAlive: deps.pidAlive,
 		randomId: ownerId ? undefined : deps.randomId,
 		ownerId,
+		allowPidRebind: ownerId !== undefined,
 	});
 	// Build args from the shared runtime resolver.
 	const { command, args, runtime } = buildTelegramDaemonSpawnArgs({

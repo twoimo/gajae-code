@@ -34,7 +34,7 @@ import {
 	TelegramUpdatePoller,
 	unregisterNotificationRoot,
 } from "../src/sdk/bus/telegram-daemon";
-import { runDaemonInternal, runDaemonSmoke } from "../src/sdk/bus/telegram-daemon-cli";
+import { ownerPidFromOwnerId, runDaemonInternal, runDaemonSmoke } from "../src/sdk/bus/telegram-daemon-cli";
 import { NOTIFICATION_PROTOCOL_VERSION } from "../src/sdk/bus/telegram-daemon-contract";
 
 const THREADED_FALLBACK_NOTICE =
@@ -509,6 +509,71 @@ describe("telegram daemon", () => {
 		);
 		expect(results.filter(r => r.acquired)).toHaveLength(1);
 	});
+	test("ownerless interrupted initialization only recovers with stale dead-launcher evidence", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		let failStateWrite = true;
+		const crashingFs: TelegramDaemonFs = {
+			mkdir: (file, opts) => fs.promises.mkdir(file, opts).then(() => undefined),
+			readFile: (file, encoding) => fs.promises.readFile(file, encoding),
+			writeFile: async (file, data, opts) => {
+				if (file.startsWith(`${paths.state}.`) && file.endsWith(".tmp") && failStateWrite) {
+					failStateWrite = false;
+					throw new Error("simulated crash between lock and state publication");
+				}
+				await fs.promises.writeFile(file, data, opts);
+			},
+			rename: (oldPath, newPath) => fs.promises.rename(oldPath, newPath).then(() => undefined),
+			unlink: file => fs.promises.unlink(file),
+			open: async (file, flags, mode) => fs.promises.open(file, flags, mode),
+			readdir: file => fs.promises.readdir(file),
+			chmod: (file, mode) => fs.promises.chmod(file, mode),
+		};
+		await expect(
+			acquireDaemonOwnership({
+				settings: s,
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 111,
+				now: () => 0,
+				fs: crashingFs,
+			}),
+		).rejects.toThrow("simulated crash");
+		expect(fs.existsSync(paths.lock)).toBe(true);
+		expect(fs.existsSync(`${paths.lock}.initializing.json`)).toBe(true);
+		expect(fs.existsSync(paths.state)).toBe(false);
+
+		expect(
+			await acquireDaemonOwnership({
+				settings: s,
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 222,
+				now: () => 30_000,
+				pidAlive: () => false,
+			}),
+		).toMatchObject({ acquired: true });
+	});
+	test("ownerless lock does not steal from a live initializer", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		fs.mkdirSync(paths.dir, { recursive: true });
+		fs.writeFileSync(paths.lock, "");
+		fs.writeFileSync(`${paths.lock}.initializing.json`, JSON.stringify({ pid: 111, startedAt: 0 }));
+
+		expect(
+			await acquireDaemonOwnership({
+				settings: s,
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 222,
+				now: () => 30_000,
+				pidAlive: pid => pid === 111,
+			}),
+		).toEqual({ acquired: false, attached: true });
+	});
 
 	test("fresh heartbeat is not stolen", async () => {
 		const agentDir = tempAgentDir();
@@ -858,6 +923,7 @@ describe("telegram daemon", () => {
 			chatId: "42",
 			pid: 111,
 			randomId: () => "owner",
+			allowPidRebind: true,
 		});
 		class OneShotDaemon extends TelegramNotificationDaemon {
 			#options: TelegramDaemonOptions;
@@ -921,15 +987,26 @@ describe("telegram daemon", () => {
 			}),
 		).toBe(true);
 		expect((await readDaemonState(s))?.pid).toBe(8123);
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "daemon-launch-token",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 9123,
+			}),
+		).toBe(false);
+		expect((await readDaemonState(s))?.pid).toBe(8123);
 	});
-	test("Unix source and compiled launches keep their non-opaque owner ids", async () => {
+	test("Unix source and compiled launches use PID-prefixed owner IDs and recover dead launchers", async () => {
 		const sourceAgentDir = tempAgentDir();
 		const source = await spawnTelegramDaemonOwner(
 			{ settings: settings(sourceAgentDir), tokenFingerprint: "fp", chatId: "42" },
 			{
 				execPath: "/usr/local/bin/bun",
 				platform: "linux",
-				randomId: () => "source-owner",
+				pid: 4242,
+				randomId: () => "4242-nonce",
 				spawn: () => ({ unref() {} }),
 			},
 		);
@@ -939,13 +1016,26 @@ describe("telegram daemon", () => {
 			{
 				execPath: "/opt/gjc/gjc",
 				platform: "win32",
-				randomId: () => "compiled-owner",
+				pid: 5252,
+				randomId: () => "5252-nonce",
 				spawn: () => ({ unref() {} }),
 			},
 		);
 
-		expect(source).toMatchObject({ result: "owner_spawned", ownerId: "source-owner" });
-		expect(compiled).toMatchObject({ result: "owner_spawned", ownerId: "compiled-owner" });
+		expect(source).toMatchObject({ result: "owner_spawned", ownerId: "4242-nonce" });
+		expect(compiled).toMatchObject({ result: "owner_spawned", ownerId: "5252-nonce" });
+		expect(ownerPidFromOwnerId(source.ownerId!)).toBe(4242);
+		expect(ownerPidFromOwnerId(compiled.ownerId!)).toBe(5252);
+		expect(
+			await acquireDaemonOwnership({
+				settings: settings(sourceAgentDir),
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 4343,
+				randomId: () => "4343-replacement",
+				pidAlive: pid => pid !== 4242,
+			}),
+		).toMatchObject({ acquired: true, ownerId: "4343-replacement" });
 	});
 
 	test("daemon heartbeat rejects omitted identity or PID at runtime", async () => {
