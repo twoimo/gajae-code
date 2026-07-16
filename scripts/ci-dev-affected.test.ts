@@ -49,8 +49,8 @@ describe("dev-ci canonical-plan workflow contract", () => {
 	test("transports and validates the planner artifact before conditional setup", async () => {
 		const workflow = await Bun.file(path.join(import.meta.dir, "..", ".github", "workflows", "dev-ci.yml")).text();
 		expect(workflow).toContain("ref: ${{ github.event.pull_request.head.sha || github.sha }}");
-		expect(workflow.match(/ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/g)).toHaveLength(6);
-		expect(workflow.match(/Verify checked-out source head/g)).toHaveLength(2);
+		expect(workflow.match(/ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/g)).toHaveLength(5);
+		expect(workflow.match(/Verify checked-out source head/g)).toHaveLength(1);
 		expect(workflow).toContain("name: dev-affected-plan-${{ github.run_id }}-${{ github.run_attempt }}");
 		expect(workflow.match(/\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/g)).toHaveLength(8);
 		expect(workflow).toContain("include-hidden-files: true");
@@ -58,6 +58,7 @@ describe("dev-ci canonical-plan workflow contract", () => {
 		expect(workflow).toContain("CI_DEV_PLAN_DIGEST: ${{ needs.affected-plan.outputs.plan_digest }}");
 		expect(workflow).toContain("CI_DEV_PLAN_SOURCE_SHA: ${{ needs.affected-plan.outputs.plan_source_sha }}");
 		expect(workflow).toContain("CI_DEV_MATRIX_NEXTEST: ${{ matrix.nextest }}");
+		expect(workflow).toContain("timeout-minutes: ${{ matrix.key == 'root-check' && 30 || 90 }}");
 		expect(workflow).toContain("run: bun scripts/ci-dev-affected.ts --validate-plan");
 		expect(workflow.indexOf("run: bun scripts/ci-dev-affected.ts --validate-plan")).toBeLessThan(workflow.indexOf("if: ${{ matrix.rust }}"));
 		expect(workflow).toContain("if: ${{ matrix.nextest }}");
@@ -186,13 +187,13 @@ describe("describeTasks matrix emission", () => {
 		}
 	});
 
-	test("root-check shards need native artifacts for schema generation", () => {
+	test("full-workspace root-check uses the bounded CI command without native artifacts", () => {
 		const entries = describeTasks(planTasks(["tsconfig.json"], packages));
 		const nativeBuild = entries.find(entry => entry.key === "native-linux-x64");
 		const rootCheck = entries.find(entry => entry.key === "root-check");
 
 		expect(nativeBuild?.nativeBuild).toBe(true);
-		expect(rootCheck).toMatchObject({ native: true, nativeBuild: false });
+		expect(rootCheck).toMatchObject({ command: ["bun", "run", "ci:check:full"], native: false, nativeBuild: false });
 	});
 
 	test("rust tasks are flagged rust and need no native addon", () => {
@@ -362,7 +363,7 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		const { stdout, exitCode } = await runScript(["--matrix-json"], "packages/coding-agent/README.md", {
 			CI_DEV_PLAN_MODE: "pr",
 			CI_DEV_SOURCE_SHA: "a".repeat(40),
-			PATH: path.dirname(process.execPath),
+			PATH: path.dirname(Bun.which("bun") ?? process.execPath),
 		});
 		expect(exitCode).toBe(0);
 		expect(JSON.parse(stdout.trim())).toEqual([]);
@@ -686,15 +687,14 @@ describe("planTargetedTasks PR-mode targeting", () => {
 		expect(keys).toContain("wrapper-version");
 	});
 
-	test("root-level codeish changes that fall back to root-check provide native artifacts", () => {
+	test("root-level codeish fallback uses the bounded CI command without native artifacts", () => {
 		const tasks = targeted(["scripts/unmapped-tool.ts"]);
 		const keys = tasks.map(task => task.key);
 		expect(keys).toContain("root-check");
-		expect(keys.filter(key => key === "native-linux-x64" || key === "native-build")).toEqual(["native-linux-x64"]);
+		expect(keys.filter(key => key === "native-linux-x64" || key === "native-build")).toEqual([]);
 
-		const entries = describeTasks(tasks);
-		expect(entries.find(entry => entry.key === "root-check")?.native).toBe(true);
-		expect(entries.find(entry => entry.key === "native-linux-x64")?.nativeBuild).toBe(true);
+		const rootCheck = describeTasks(tasks).find(entry => entry.key === "root-check");
+		expect(rootCheck).toMatchObject({ command: ["bun", "run", "ci:check:full"], native: false, nativeBuild: false });
 	});
 
 	test("docs/changelog-only changes plan nothing expensive", () => {
@@ -758,6 +758,16 @@ describe("push-mode broad planning still runs the fuller suite", () => {
 		expect(keys.filter(key => key === "release-publish-dry-run")).toHaveLength(1);
 		expect(keys.filter(key => key === "test:scripts/release-evidence.test.ts")).toHaveLength(1);
 		expect(tasks.find(task => task.key === "test:scripts/release-evidence.test.ts")?.command).toEqual(["bun", "test", "scripts/release-evidence.test.ts"]);
+	});
+
+	test("tooling-script root-check uses the bounded CI command without native artifacts", () => {
+		const tasks = planTasks(["scripts/unmapped-tool.ts"], [codingAgent]);
+		const keys = tasks.map(task => task.key);
+		expect(keys).toContain("root-check");
+		expect(keys.filter(key => key === "native-linux-x64" || key === "native-build")).toEqual([]);
+
+		const rootCheck = describeTasks(tasks).find(entry => entry.key === "root-check");
+		expect(rootCheck).toMatchObject({ command: ["bun", "run", "ci:check:full"], native: false, nativeBuild: false });
 	});
 
 	test("push mode selects the bridge-client SDK package smoke exactly once for package and SDK client changes", () => {

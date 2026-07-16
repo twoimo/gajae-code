@@ -253,7 +253,6 @@ function isNativeBuildKey(key: string): boolean {
 // build task, so the shard can always download the artifact built once upstream.
 function taskNeedsNative(key: string): boolean {
 	return (
-		key === "root-check" ||
 		key === "root-test" ||
 		key === "cli-smoke" ||
 		key === "wrapper-version" ||
@@ -523,7 +522,7 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 	}
 
 	if (fullWorkspace) {
-		add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "check:ts"]);
+		add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "ci:check:full"]);
 		addNativeBuild(tasks);
 		addWorkspaceTestTasks(tasks, packages);
 	} else if (!ciOnly && !workflowHarnessOnly) {
@@ -542,8 +541,7 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 	}
 
 	if (toolingScriptChanged && !fullWorkspace && !ciOnly && !workflowHarnessOnly) {
-		add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "check:ts"]);
-		ensureNativeBuild(tasks);
+		add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "ci:check:full"]);
 	}
 	if (wrapperChanged) {
 		add(tasks, "wrapper-version", "Unscoped wrapper CLI version smoke", ["bun", "packages/gajae-code/bin/gjc.js", "--version"]);
@@ -600,7 +598,7 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 	let needYamlParse = false;
 
 	if (fullWorkspace) {
-		add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "check:ts"]);
+		add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "ci:check:full"]);
 		addNativeBuild(tasks);
 		addWorkspaceTestTasks(tasks, packages);
 	}
@@ -678,7 +676,7 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 		// Unmapped root-level code/config (no owning package, no mapped test):
 		// fall back to the root tooling typecheck rather than the full suite.
 		if (isCodeIshPath(changedPath)) {
-			add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "check:ts"]);
+			add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "ci:check:full"]);
 		}
 	}
 

@@ -142,12 +142,11 @@ jobs:
          - name: Run GJC state gates
            run: bun scripts/ci-gjc-state-gates.ts
 
-   # Lint + type check. check:sdk-closure loads the native addon, so this job
-   # provisions the linux-x64 native artifact the same way `test` does.
+   # Bounded TypeScript/tooling check; exhaustive SDK closure remains in local check:ts.
    check:
       timeout-minutes: 30
-      needs: [relevance, native_linux, rust-hash]
-      if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && needs.native_linux.result != 'failure' }}
+      needs: [relevance]
+      if: ${{ !cancelled() && !startsWith(github.ref, 'refs/tags/v') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -164,25 +163,6 @@ jobs:
               key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - if: needs.relevance.outputs.relevant == 'true'
            run: bun install --frozen-lockfile
-         - name: Resolve native source run
-           if: needs.relevance.outputs.relevant == 'true'
-           id: source
-           shell: bash
-           run: |
-              if [ "${{ needs.native_linux.result }}" = "success" ]; then
-                echo "run-id=${{ github.run_id }}" >> "$GITHUB_OUTPUT"
-              else
-                echo "run-id=${{ needs.rust-hash.outputs.run-id }}" >> "$GITHUB_OUTPUT"
-              fi
-         - name: Download native addons
-           if: needs.relevance.outputs.relevant == 'true'
-           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
-           with:
-              pattern: pi-natives-linux-x64-*-h${{ needs.rust-hash.outputs.hash }}
-              path: packages/natives/native
-              merge-multiple: true
-              run-id: ${{ steps.source.outputs.run-id }}
-              github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: Type check workspace
            if: needs.relevance.outputs.relevant == 'true'
            run: bun run ci:check:full
