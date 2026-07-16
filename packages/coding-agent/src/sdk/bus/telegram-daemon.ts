@@ -661,23 +661,26 @@ export async function renewDaemonHeartbeat(input: {
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	const state = await readJson<DaemonState>(fsImpl, paths.state);
-	if (
-		!state ||
-		typeof input.tokenFingerprint !== "string" ||
-		typeof input.chatId !== "string" ||
-		typeof input.pid !== "number" ||
-		state.ownerId !== input.ownerId ||
-		!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId)
-	)
-		return false;
-	if (state.pid !== input.pid && (state.launcherPid === undefined || state.pid !== state.launcherPid)) return false;
-	await writeJsonAtomic(fsImpl, paths.state, {
-		...state,
-		pid: input.pid,
-		heartbeatAt: (input.now ?? Date.now)(),
+	return withFileLock(paths.state, async () => {
+		const state = await readJson<DaemonState>(fsImpl, paths.state);
+		if (
+			!state ||
+			state.stoppedAt !== undefined ||
+			typeof input.tokenFingerprint !== "string" ||
+			typeof input.chatId !== "string" ||
+			typeof input.pid !== "number" ||
+			state.ownerId !== input.ownerId ||
+			!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId)
+		)
+			return false;
+		if (state.pid !== input.pid && (state.launcherPid === undefined || state.pid !== state.launcherPid)) return false;
+		await writeJsonAtomic(fsImpl, paths.state, {
+			...state,
+			pid: input.pid,
+			heartbeatAt: (input.now ?? Date.now)(),
+		});
+		return true;
 	});
-	return true;
 }
 
 export async function releaseDaemonOwnership(input: {
@@ -693,17 +696,19 @@ export async function releaseDaemonOwnership(input: {
 }): Promise<void> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	const state = await readJson<DaemonState>(fsImpl, paths.state);
-	if (
-		!state ||
-		state.ownerId !== input.ownerId ||
-		!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) ||
-		state.pid !== input.pid
-	)
-		return;
-	await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
-	await fsImpl.unlink(paths.lock).catch(() => undefined);
-	await fsImpl.unlink(`${paths.lock}.initializing.json`).catch(() => undefined);
+	await withFileLock(paths.state, async () => {
+		const state = await readJson<DaemonState>(fsImpl, paths.state);
+		if (
+			!state ||
+			state.ownerId !== input.ownerId ||
+			!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) ||
+			state.pid !== input.pid
+		)
+			return;
+		await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
+		await fsImpl.unlink(paths.lock).catch(() => undefined);
+		await fsImpl.unlink(`${paths.lock}.initializing.json`).catch(() => undefined);
+	});
 }
 
 /** Read the persisted daemon ownership state (or undefined when absent). */

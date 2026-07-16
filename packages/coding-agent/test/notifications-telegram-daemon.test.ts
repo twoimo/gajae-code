@@ -998,6 +998,77 @@ describe("telegram daemon", () => {
 		).toBe(false);
 		expect((await readDaemonState(s))?.pid).toBe(8123);
 	});
+	test("serializes concurrent launcher PID handoffs so exactly one daemon binds", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 7132,
+			ownerId: "daemon-launch-token",
+			allowPidRebind: true,
+		});
+
+		const [firstBound, secondBound] = await Promise.all([
+			renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "daemon-launch-token",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 8123,
+			}),
+			renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "daemon-launch-token",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 9123,
+			}),
+		]);
+
+		expect([firstBound, secondBound].filter(Boolean)).toHaveLength(1);
+		expect((await readDaemonState(s))?.pid).toBe(firstBound ? 8123 : 9123);
+	});
+	test("serializes release with launcher PID handoff", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 7132,
+			ownerId: "daemon-launch-token",
+			allowPidRebind: true,
+		});
+
+		const [bound] = await Promise.all([
+			renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "daemon-launch-token",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 8123,
+			}),
+			releaseDaemonOwnership({
+				settings: s,
+				ownerId: "daemon-launch-token",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 7132,
+			}),
+		]);
+		const state = await readDaemonState(s);
+
+		if (bound) {
+			expect(state).toMatchObject({ pid: 8123 });
+			expect(state?.stoppedAt).toBeUndefined();
+			expect(fs.existsSync(daemonPaths(agentDir).lock)).toBe(true);
+		} else {
+			expect(state).toMatchObject({ pid: 7132, stoppedAt: expect.any(Number) });
+			expect(fs.existsSync(daemonPaths(agentDir).lock)).toBe(false);
+		}
+	});
 	test("Unix source and compiled launches use PID-prefixed owner IDs and recover dead launchers", async () => {
 		const sourceAgentDir = tempAgentDir();
 		const source = await spawnTelegramDaemonOwner(
