@@ -435,16 +435,26 @@ export async function registerNotificationRoot(input: {
 				)) ?? {};
 			const roots = new Set(current.roots ?? []);
 			const managedRoots = new Set(current.managedRoots ?? []);
+			const sessions = { ...(current.sessions ?? {}) };
+			const previousRoot = sessions[input.sessionId];
 			const rootAlreadyPresent = roots.has(root);
 			roots.add(root);
 			// Roots present before session registration are legacy/unmanaged and must
 			// survive a later session rollback or unregister.
 			if (!rootAlreadyPresent) managedRoots.add(root);
+			sessions[input.sessionId] = root;
+			if (previousRoot && previousRoot !== root && managedRoots.has(previousRoot)) {
+				const previousStillReferenced = Object.values(sessions).includes(previousRoot);
+				if (!previousStillReferenced) {
+					roots.delete(previousRoot);
+					managedRoots.delete(previousRoot);
+				}
+			}
 			await writeJsonAtomic(fsImpl, paths.roots, {
 				version: 1,
 				roots: Array.from(roots).sort(),
 				managedRoots: Array.from(managedRoots).sort(),
-				sessions: { ...(current.sessions ?? {}), [input.sessionId]: root },
+				sessions,
 			});
 		},
 		{ staleMs: 10_000 },

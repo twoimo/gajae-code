@@ -441,6 +441,54 @@ describe("telegram daemon", () => {
 		expect(registry.roots).toContain(secondRoot);
 	});
 
+	test("re-registering a session prunes its unreferenced managed root", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const first = path.join(agentDir, "first");
+		const second = path.join(agentDir, "second");
+		const firstRoot = path.join(first, ".gjc", "state");
+		const secondRoot = path.join(second, ".gjc", "state");
+		await registerNotificationRoot({ settings: s, cwd: first, sessionId: "session" });
+		await registerNotificationRoot({ settings: s, cwd: second, sessionId: "session" });
+		let registry = JSON.parse(fs.readFileSync(daemonPaths(agentDir).roots, "utf8")) as {
+			version: number;
+			roots: string[];
+			managedRoots: string[];
+			sessions: Record<string, string>;
+		};
+		expect(registry).toEqual({
+			version: 1,
+			roots: [secondRoot],
+			managedRoots: [secondRoot],
+			sessions: { session: secondRoot },
+		});
+		expect(registry.roots).not.toContain(firstRoot);
+		await unregisterNotificationRoot({ settings: s, cwd: second, sessionId: "session" });
+		registry = JSON.parse(fs.readFileSync(daemonPaths(agentDir).roots, "utf8"));
+		expect(registry).toEqual({ version: 1, roots: [], managedRoots: [], sessions: {} });
+	});
+
+	test("re-registering one session preserves a managed root referenced by another session", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const shared = path.join(agentDir, "shared");
+		const replacement = path.join(agentDir, "replacement");
+		const sharedRoot = path.join(shared, ".gjc", "state");
+		const replacementRoot = path.join(replacement, ".gjc", "state");
+		await registerNotificationRoot({ settings: s, cwd: shared, sessionId: "moving" });
+		await registerNotificationRoot({ settings: s, cwd: shared, sessionId: "staying" });
+		await registerNotificationRoot({ settings: s, cwd: replacement, sessionId: "moving" });
+		const registry = JSON.parse(fs.readFileSync(daemonPaths(agentDir).roots, "utf8")) as {
+			version: number;
+			roots: string[];
+			managedRoots: string[];
+			sessions: Record<string, string>;
+		};
+		expect(registry.roots).toEqual([replacementRoot, sharedRoot].sort());
+		expect(registry.managedRoots).toEqual([replacementRoot, sharedRoot].sort());
+		expect(registry.sessions).toEqual({ moving: replacementRoot, staying: sharedRoot });
+	});
+
 	test("legacy unmanaged roots survive register and unregister", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
