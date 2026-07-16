@@ -30,7 +30,7 @@ import {
 	hasSafeDaemonStateShape,
 	isCurrentCompatibleOwner,
 	isFreshLiveOwner,
-	isPhysicalMatchingOwner,
+	isSignalableMatchingOwner,
 	readDaemonRoots,
 	readDaemonState,
 	spawnTelegramDaemonOwner,
@@ -289,7 +289,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 			return "ownership_changed";
 		// A matching captured owner that stopped or exited between the request and
 		// signal recheck has already completed the cooperative handoff.
-		if (!isPhysicalMatchingOwner({ state: current, tokenFingerprint, chatId, pidAlive: this.pidAlive }))
+		if (!isSignalableMatchingOwner({ state: current, tokenFingerprint, chatId, pidAlive: this.pidAlive }))
 			return "already_gone";
 		this.sendSignal(captured.pid, signal);
 		return "signaled";
@@ -338,17 +338,19 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 
 		const state = await readDaemonState(this.settings, this.fsImpl);
 		const replaceableLiveOwner =
-			action === "reload" &&
-			state !== undefined &&
-			(isFreshLiveOwner({ state, now: this.now(), tokenFingerprint: fp, chatId, pidAlive: this.pidAlive }) ||
-				// A physically-live matching owner whose heartbeat is stale (hung) may be
-				// past-TTL yet still holding the poller. Autostart/generation-upgrade reloads
-				// stay conservative and refuse it, but an explicit `reload --force` must be
-				// able to signal and replace it rather than deadlock behind the live PID.
-				(opts.force === true &&
-					isPhysicalMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive })));
+			(action === "reload" &&
+				state !== undefined &&
+				isFreshLiveOwner({ state, now: this.now(), tokenFingerprint: fp, chatId, pidAlive: this.pidAlive }) &&
+				isSignalableMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive })) ||
+			// A physically-live matching owner whose heartbeat is stale (hung) may be
+			// past-TTL yet still holding the poller. Autostart/generation-upgrade reloads
+			// stay conservative and refuse it, but an explicit `reload --force` must be
+			// able to signal and replace it rather than deadlock behind the live PID.
+			(opts.force === true &&
+				isSignalableMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive }));
 		const stoppableLiveOwner =
-			action === "stop" && isPhysicalMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive });
+			action === "stop" &&
+			isSignalableMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive });
 		// A stale pre-generation owner may only be moved by reload; manual stop
 		// also targets a physically live matching legacy owner, but never spawns.
 		if (before.health !== "running" && !replaceableLiveOwner && !stoppableLiveOwner) {
@@ -386,7 +388,7 @@ export class TelegramDaemonController implements BuiltInDaemonController {
 		// Running owner: capture identity, request cooperative stop, signal, wait.
 		if (
 			!hasSafeDaemonStateShape(state) ||
-			!isPhysicalMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive })
+			!isSignalableMatchingOwner({ state, tokenFingerprint: fp, chatId, pidAlive: this.pidAlive })
 		) {
 			return this.result(
 				action,

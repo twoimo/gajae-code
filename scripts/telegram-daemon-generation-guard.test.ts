@@ -14,8 +14,8 @@ const telegramDaemon = "packages/coding-agent/src/sdk/bus/telegram-daemon.ts";
 const chatControl = "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts";
 const inventory = {
 	telegram: { [telegramContract]: ["DAEMON_GENERATION"], [telegramDaemon]: ["acquireDaemonOwnership"] },
-	discord: { [chatControl]: ["CHAT_DAEMON_GENERATIONS", "chatDaemonGeneration", "operate"] },
-	slack: { [chatControl]: ["CHAT_DAEMON_GENERATIONS", "chatDaemonGeneration", "operate"] },
+	discord: { [chatControl]: ["CHAT_DAEMON_GENERATIONS", "chatDaemonGeneration", "hasSafeChatDaemonStateShape", "classify", "operate"] },
+	slack: { [chatControl]: ["CHAT_DAEMON_GENERATIONS", "chatDaemonGeneration", "hasSafeChatDaemonStateShape", "classify", "operate"] },
 } as const;
 
 function files(input: {
@@ -39,7 +39,8 @@ function files(input: {
 			[
 				`export const CHAT_DAEMON_GENERATIONS = { discord: ${input.discordGeneration ?? 1}, slack: ${input.slackGeneration ?? 1} } as const;`,
 				"export function chatDaemonGeneration(kind: \"discord\" | \"slack\") { return CHAT_DAEMON_GENERATIONS[kind]; }",
-				input.chatLifecycle === undefined ? "" : `class ChatDaemonController { async operate() { ${input.chatLifecycle} } }`,
+				"export function hasSafeChatDaemonStateShape(value: unknown) { return value !== null; }",
+				`class ChatDaemonController { classify() { return "compatible"; } async operate() { ${input.chatLifecycle ?? ""} } }`,
 			].join("\n"),
 		],
 	]);
@@ -81,6 +82,23 @@ describe("daemon generation release guard", () => {
 
 		const bumped = decide(files({ discordGeneration: 1, slackGeneration: 1, chatLifecycle: "return true;" }), files({ discordGeneration: 2, slackGeneration: 1, chatLifecycle: "return false;" }));
 		expect(bumped.chatGenerationBumped.discord).toBe(true);
+	});
+
+	test("requires both chat generation bumps when the shared state validator changes", () => {
+		const base = files({ discordGeneration: 3, slackGeneration: 3 });
+		const head = files({ discordGeneration: 4, slackGeneration: 4 });
+		head.set(
+			chatControl,
+			(head.get(chatControl) ?? "").replace("return value !== null", "return Boolean(value)"),
+		);
+		const result = decide(base, head);
+		expect(result.protectedChanges).toEqual(
+			expect.arrayContaining([
+				`discord:${chatControl}:hasSafeChatDaemonStateShape`,
+				`slack:${chatControl}:hasSafeChatDaemonStateShape`,
+			]),
+		);
+		expect(result.chatGenerationBumped).toEqual({ discord: true, slack: true });
 	});
 
 	test("AST extraction ignores strings and comments while preserving typed declarations", () => {
@@ -246,6 +264,8 @@ describe("daemon generation release guard", () => {
 		expect(discordFiles).not.toContain("ensureSlackDaemon");
 		expect(slackFiles).toContain("ensureSlackDaemon");
 		expect(slackFiles).not.toContain("ensureDiscordDaemon");
+		expect(discordFiles).toEqual(expect.arrayContaining(["hasSafeChatDaemonStateShape", "classify"]));
+		expect(slackFiles).toEqual(expect.arrayContaining(["hasSafeChatDaemonStateShape", "classify"]));
 		// A Discord-only change to its wrapper is a Discord-only protected change and
 		// must not also demand a Slack generation bump.
 		const inv = {

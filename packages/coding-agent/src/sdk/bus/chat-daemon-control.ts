@@ -22,8 +22,8 @@ export type ChatDaemonAction = "stop" | "reload";
  * These are intentionally separate from per-session endpoint generations.
  */
 export const CHAT_DAEMON_GENERATIONS: Readonly<Record<ChatDaemonKind, number>> = {
-	discord: 1,
-	slack: 1,
+	discord: 2,
+	slack: 2,
 };
 
 export function chatDaemonGeneration(kind: ChatDaemonKind): number {
@@ -42,6 +42,47 @@ export interface ChatDaemonState {
 	transportHealthy: boolean;
 	generation: number;
 	stoppedAt?: number;
+}
+
+/**
+ * State files are untrusted persisted input. A record must be completely valid
+ * before its PID can be treated as an owner, stopped, or safe to replace.
+ */
+export function hasSafeChatDaemonStateShape(value: unknown): value is ChatDaemonState {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const state = value as Record<string, unknown>;
+	return (
+		state.version === 1 &&
+		(state.kind === "discord" || state.kind === "slack") &&
+		typeof state.pid === "number" &&
+		Number.isSafeInteger(state.pid) &&
+		state.pid > 0 &&
+		typeof state.ownerId === "string" &&
+		state.ownerId.length > 0 &&
+		typeof state.identity === "string" &&
+		state.identity.length > 0 &&
+		typeof state.incarnation === "string" &&
+		state.incarnation.length > 0 &&
+		typeof state.startedAt === "number" &&
+		Number.isFinite(state.startedAt) &&
+		typeof state.heartbeatAt === "number" &&
+		Number.isFinite(state.heartbeatAt) &&
+		typeof state.transportHealthy === "boolean" &&
+		typeof state.generation === "number" &&
+		Number.isSafeInteger(state.generation) &&
+		state.generation >= 0 &&
+		(state.stoppedAt === undefined || (typeof state.stoppedAt === "number" && Number.isFinite(state.stoppedAt)))
+	);
+}
+
+function hasChatDaemonStatePid(value: unknown): value is { pid: number } {
+	return (
+		!!value &&
+		typeof value === "object" &&
+		typeof (value as { pid?: unknown }).pid === "number" &&
+		Number.isSafeInteger((value as { pid: number }).pid) &&
+		(value as { pid: number }).pid > 0
+	);
 }
 
 export interface ChatDaemonControlRequest {
@@ -410,9 +451,10 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		return (this.deps.pidIncarnation ?? defaultPidIncarnation)(pid);
 	}
 	private isDefinitelyStoppedState(state: ChatDaemonState | undefined): boolean {
-		if (!state || state.stoppedAt || !this.alive(state.pid)) return true;
+		if (!state || !hasSafeChatDaemonStateShape(state)) return false;
+		if (state.stoppedAt !== undefined || !this.alive(state.pid)) return true;
 		const incarnation = this.incarnation(state.pid);
-		return Boolean(incarnation && state.incarnation && incarnation !== state.incarnation);
+		return Boolean(incarnation && incarnation !== state.incarnation);
 	}
 	private stateHealth(state: ChatDaemonState | undefined, identity: string): DaemonHealth {
 		if (this.isDefinitelyStoppedState(state)) return "stopped";
@@ -423,11 +465,10 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	}
 	private isPhysicalLiveState(state: ChatDaemonState): boolean {
 		return (
-			state.version === 1 &&
+			hasSafeChatDaemonStateShape(state) &&
 			state.kind === this.kind &&
-			!state.stoppedAt &&
+			state.stoppedAt === undefined &&
 			this.alive(state.pid) &&
-			Boolean(state.incarnation) &&
 			this.incarnation(state.pid) === state.incarnation
 		);
 	}
@@ -436,15 +477,17 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		return !this.isDefinitelyStoppedState(state) && !this.isPhysicalLiveState(state);
 	}
 	private isHealthyFreshState(state: ChatDaemonState): boolean {
-		return state.transportHealthy && Date.now() - state.heartbeatAt <= HEARTBEAT_TTL_MS;
+		return (
+			hasSafeChatDaemonStateShape(state) &&
+			state.transportHealthy &&
+			Date.now() - state.heartbeatAt <= HEARTBEAT_TTL_MS
+		);
 	}
 	private classify(state: ChatDaemonState | undefined, identity: string | undefined): ChatDaemonStateClassification {
 		if (!state) return "absent";
+		if (!hasSafeChatDaemonStateShape(state)) return "malformed";
 		if (this.isDefinitelyStoppedState(state)) return "stopped";
 		if (!identity || state.kind !== this.kind || state.identity !== identity) return "unauthorized";
-		if (state.generation === undefined) return "replaceable";
-		if (typeof state.generation !== "number" || !Number.isSafeInteger(state.generation) || state.generation < 0)
-			return "malformed";
 		return state.generation < chatDaemonGeneration(this.kind) ? "replaceable" : "compatible";
 	}
 	private isCurrentCompatibleState(state: ChatDaemonState, identity: string): boolean {
@@ -626,6 +669,10 @@ export async function acquireChatDaemonOwnership(input: {
 	};
 	const incarnation = input.incarnation ?? probe.pidIncarnation(pid) ?? "unavailable";
 	await fs.promises.mkdir(paths.dir, { recursive: true, mode: 0o700 });
+	const existing = await readJson<unknown>(paths.state);
+	// A missing lock is not authority to overwrite an untrusted state file whose
+	// PID is live; that record may belong to an owner whose shape we cannot prove.
+	if (hasChatDaemonStatePid(existing) && probe.pidAlive(existing.pid)) return false;
 	if (!(await createChatDaemonOwnerLock(paths.lock, { pid, incarnation, createdAt: Date.now() }))) {
 		if (!(await reclaimChatDaemonOwnerLock(paths.lock, paths.state, probe))) return false;
 		if (!(await createChatDaemonOwnerLock(paths.lock, { pid, incarnation, createdAt: Date.now() }))) return false;
@@ -727,8 +774,10 @@ async function canReclaimChatDaemonOwnerLock(
 	stateFile: string,
 	probe: ChatDaemonOwnershipProbe,
 ): Promise<boolean> {
-	const state = await readJson<ChatDaemonState>(stateFile);
-	if (state && probe.pidAlive(state.pid) && probe.pidIncarnation(state.pid) === state.incarnation) return false;
+	const state = await readJson<unknown>(stateFile);
+	// Do not reclaim a publication lock when even a malformed record names a live
+	// PID. Its provenance is ambiguous, so replacing it could start a second owner.
+	if (hasChatDaemonStatePid(state) && probe.pidAlive(state.pid)) return false;
 	return await isStaleChatDaemonLock(lock, probe);
 }
 
@@ -757,10 +806,10 @@ export async function renewChatDaemonHeartbeat(input: {
 }): Promise<boolean> {
 	const paths = chatDaemonPaths(input.agentDir, input.kind);
 	return await withStateWriteLock(paths.state, async () => {
-		const state = await readJson<ChatDaemonState>(paths.state);
-		const pid = input.pid ?? state?.pid;
+		const state = await readJson<unknown>(paths.state);
+		if (!hasSafeChatDaemonStateShape(state)) return false;
+		const pid = input.pid ?? state.pid;
 		if (
-			!state ||
 			state.ownerId !== input.ownerId ||
 			pid !== state.pid ||
 			!input.incarnation ||
@@ -780,9 +829,10 @@ export async function releaseChatDaemonOwnership(input: {
 }): Promise<void> {
 	const paths = chatDaemonPaths(input.agentDir, input.kind);
 	await withStateWriteLock(paths.state, async () => {
-		const state = await readJson<ChatDaemonState>(paths.state);
+		const state = await readJson<unknown>(paths.state);
 		if (
-			state?.ownerId !== input.ownerId ||
+			!hasSafeChatDaemonStateShape(state) ||
+			state.ownerId !== input.ownerId ||
 			(input.pid !== undefined && state.pid !== input.pid) ||
 			(input.incarnation !== undefined && state.incarnation !== input.incarnation)
 		)

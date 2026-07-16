@@ -1260,7 +1260,59 @@ describe("telegram daemon", () => {
 			settings: s,
 			spawned: {
 				result: "owner_spawned",
-				acquisition: Object.freeze({ ownerId: "race-child", acquisitionId: "race-child" }),
+				acquisition: Object.freeze({
+					ownerId: "race-child",
+					acquisitionId: "race-child",
+					launcherPid: 4242,
+					pid: 4243,
+				}),
+				runtime: { mode: "compiled", execPath: process.execPath, reloadPicksUpSourceEdits: false },
+				warnings: [],
+			},
+			tokenFingerprint: "e60b05c186ca",
+			chatId: "42",
+			pid: 4242,
+			now: () => now,
+			pidAlive: pid => pid === 4243,
+			waitStepMs: 1,
+			timeoutMs: 1,
+			sleep: async () => {
+				now++;
+				await renewDaemonHeartbeat({
+					settings: s,
+					ownerId: "race-child",
+					acquisitionId: "race-child",
+					pid: 4243,
+					now: () => now,
+				});
+			},
+		});
+		expect(ready).toBe(true);
+		expect(JSON.parse(fs.readFileSync(daemonPaths(agentDir).state, "utf8"))).toMatchObject({
+			pid: 4243,
+			ownershipPhase: "ready",
+		});
+	});
+
+	test("no-PID spawn never accepts a ready-like launcher publication and retires its reservation", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		let now = 0;
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "e60b05c186ca",
+			chatId: "42",
+			pid: 4242,
+			randomId: () => "no-child-pid",
+			now: () => now,
+		});
+
+		const ready = await confirmTelegramDaemonSpawn({
+			settings: s,
+			spawned: {
+				result: "owner_spawned",
+				acquisition: Object.freeze({ ownerId: "no-child-pid", acquisitionId: "no-child-pid", launcherPid: 4242 }),
 				runtime: { mode: "compiled", execPath: process.execPath, reloadPicksUpSourceEdits: false },
 				warnings: [],
 			},
@@ -1275,15 +1327,20 @@ describe("telegram daemon", () => {
 				now++;
 				await renewDaemonHeartbeat({
 					settings: s,
-					ownerId: "race-child",
-					acquisitionId: "race-child",
+					ownerId: "no-child-pid",
+					acquisitionId: "no-child-pid",
 					pid: 4242,
 					now: () => now,
 				});
 			},
 		});
-		expect(ready).toBe(true);
-		expect(JSON.parse(fs.readFileSync(daemonPaths(agentDir).state, "utf8")).ownershipPhase).toBe("ready");
+
+		expect(ready).toBe(false);
+		expect(fs.existsSync(paths.lock)).toBe(false);
+		expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({
+			pid: 4242,
+			ownershipPhase: "retired",
+		});
 	});
 
 	test("provisional retirement cannot release a successor that wins the ownership race", async () => {

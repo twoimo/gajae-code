@@ -24,6 +24,7 @@ import {
 	chatDaemonPaths,
 	ensureDiscordDaemon,
 	ensureSlackDaemon,
+	hasSafeChatDaemonStateShape,
 } from "../src/sdk/bus/chat-daemon-control";
 import { tokenFingerprint } from "../src/sdk/bus/config";
 import { DAEMON_GENERATION, daemonPaths, renewDaemonHeartbeat } from "../src/sdk/bus/telegram-daemon";
@@ -878,6 +879,28 @@ describe("TelegramDaemonController captured-owner signal races", () => {
 	});
 });
 
+describe("TelegramDaemonController provisional launcher signal fencing", () => {
+	for (const action of ["stop", "reload"] as const) {
+		test(`${action} never signals a live generation-4 provisional launcher`, async () => {
+			const agentDir = tempAgentDir();
+			const s = settings(agentDir);
+			writeState(agentDir, freshState({ ownershipPhase: "provisional" }));
+			fs.writeFileSync(daemonPaths(agentDir).lock, "");
+			const signals: NodeJS.Signals[] = [];
+			const result = await new TelegramDaemonController(s, {
+				pidAlive: pid => pid === 999,
+				sendSignal: (_pid, signal) => signals.push(signal),
+				spawn: () => {
+					throw new Error("provisional ownership must block spawning");
+				},
+			})[action]({ spawnIfStopped: false });
+
+			expect(result.ok).toBe(true);
+			expect(signals).toEqual([]);
+		});
+	}
+});
+
 describe("TelegramDaemonController.stop", () => {
 	test("stops a running owner without spawning a replacement", async () => {
 		const agentDir = tempAgentDir();
@@ -971,9 +994,9 @@ describe("ChatDaemonController ownership safety", () => {
 			pidIncarnation: () => "reused",
 			sendSignal: (_pid, signal) => signals.push(signal),
 		});
-		expect((await controller.status()).health).toBe("stopped");
+		expect((await controller.status()).health).toBe("stale");
 		const result = await controller.stop();
-		expect(result.ok).toBe(true);
+		expect(result.ok).toBe(false);
 		expect(signals).toEqual([]);
 	});
 
@@ -1323,7 +1346,6 @@ describe("ChatDaemonController ownership safety", () => {
 		}
 
 		test.each([
-			["missing", undefined, "owner_spawned", "stale"],
 			["lower", chatDaemonGeneration(kind) - 1, "owner_spawned", "stale"],
 			["equal", chatDaemonGeneration(kind), "attached", "running"],
 			["newer", chatDaemonGeneration(kind) + 1, "attached", "running"],
@@ -1383,6 +1405,56 @@ describe("ChatDaemonController ownership safety", () => {
 			expect(await controller.ensure()).toBe(expected);
 			expect(signals).toEqual(expected === "attached" ? [] : ["SIGTERM"]);
 			expect(spawns).toBe(expected === "attached" ? 0 : 1);
+		});
+
+		test.each([
+			["version", 2],
+			["kind", "telegram"],
+			["pid", 0],
+			["ownerId", ""],
+			["identity", ""],
+			["incarnation", ""],
+			["startedAt", "now"],
+			["heartbeatAt", Number.NaN],
+			["transportHealthy", "true"],
+			["generation", "1"],
+			["stoppedAt", "truthy-nonnumeric"],
+		] as const)("fails closed for malformed live state field: %s", async (field, value) => {
+			const agentDir = tempAgentDir();
+			const paths = chatDaemonPaths(agentDir, kind);
+			fs.mkdirSync(paths.dir, { recursive: true });
+			const state = {
+				version: 1,
+				kind,
+				pid: 93,
+				ownerId: "owner-a",
+				identity: identity(),
+				incarnation: "stable",
+				startedAt: Date.now(),
+				heartbeatAt: Date.now(),
+				transportHealthy: true,
+				generation: chatDaemonGeneration(kind),
+				[field]: value,
+			};
+			expect(hasSafeChatDaemonStateShape(state)).toBe(false);
+			fs.writeFileSync(paths.state, JSON.stringify(state));
+			const signals: NodeJS.Signals[] = [];
+			let spawns = 0;
+			const controller = new ChatDaemonController(configuredSettings(agentDir), kind, {
+				pidAlive: pid => pid === 93,
+				pidIncarnation: () => "stable",
+				sendSignal: (_pid, signal) => signals.push(signal),
+				spawn: () => {
+					spawns++;
+					return { unref() {} };
+				},
+			});
+			expect((await controller.status()).health).toBe("stale");
+			await expect(controller.ensure()).rejects.toThrow("unauthorized");
+			expect((await controller.stop()).ok).toBe(false);
+			expect((await controller.reload()).ok).toBe(false);
+			expect(signals).toEqual([]);
+			expect(spawns).toBe(0);
 		});
 
 		test("fails closed without signaling a malformed generation", async () => {
@@ -1458,8 +1530,8 @@ describe("ChatDaemonController ownership safety", () => {
 		});
 
 		test.each([
-			["ensure after dead malformed", "ensure", null, identity(), false],
-			["reload after stopped malformed", "reload", null, identity(), true],
+			["ensure after dead valid state", "ensure", chatDaemonGeneration(kind), identity(), false],
+			["reload after safely stopped state", "reload", chatDaemonGeneration(kind), identity(), true],
 			["ensure after dead different identity", "ensure", chatDaemonGeneration(kind), "other-identity", false],
 			["reload after stopped different identity", "reload", chatDaemonGeneration(kind), "other-identity", true],
 		] as const)("spawns fresh for %s persisted state", async (_name, action, generation, stateIdentity, stopped) => {
@@ -1515,8 +1587,6 @@ describe("ChatDaemonController ownership safety", () => {
 		});
 
 		test.each([
-			["missing", undefined, "stop"],
-			["missing", undefined, "reload"],
 			["lower", chatDaemonGeneration(kind) - 1, "stop"],
 			["lower", chatDaemonGeneration(kind) - 1, "reload"],
 		] as const)("signals matching unhealthy legacy owners for %s %s", async (_name, generation, action) => {

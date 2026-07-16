@@ -575,6 +575,24 @@ export function isPhysicalMatchingOwner(input: {
 	);
 }
 
+/** True only for a signalable legacy owner or this generation's ready bound child. */
+export function isSignalableMatchingOwner(input: {
+	state: DaemonState | undefined;
+	tokenFingerprint: string;
+	chatId: string;
+	pidAlive: (pid: number) => boolean;
+}): boolean {
+	const { state } = input;
+	return Boolean(
+		isPhysicalMatchingOwner(input) &&
+			(isRecognizedLegacyGeneration(state?.generation) ||
+				(state?.generation === DAEMON_GENERATION &&
+					state.ownershipPhase === "ready" &&
+					typeof state.acquisitionId === "string" &&
+					state.acquisitionId.length > 0)),
+	);
+}
+
 export function isFreshLiveOwner(input: {
 	state: DaemonState | undefined;
 	now: number;
@@ -860,6 +878,8 @@ export async function retireProvisionalDaemonOwnership(input: {
 	sleep?: (ms: number) => Promise<void>;
 	stealRetries?: number;
 	stealRetryDelayMs?: number;
+	/** Only no-child confirmation may retire a ready-like launcher publication. */
+	allowReadyWithoutChildPid?: boolean;
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
@@ -883,7 +903,8 @@ export async function retireProvisionalDaemonOwnership(input: {
 			(state.pid !== input.pid && state.pid !== input.launcherPid) ||
 			state.generation !== DAEMON_GENERATION ||
 			!Number.isSafeInteger(state.generation) ||
-			state.ownershipPhase !== "provisional"
+			(state.ownershipPhase !== "provisional" &&
+				!(input.allowReadyWithoutChildPid === true && state.ownershipPhase === "ready"))
 		)
 			return false;
 		await writeJsonAtomic(fsImpl, paths.state, {
@@ -963,9 +984,11 @@ export async function waitForTelegramDaemonReady(input: {
 	for (let poll = 0; poll <= maxPolls; poll++) {
 		const state = await readDaemonState(input.settings, input.fs);
 		if (
+			Number.isSafeInteger(input.pid) &&
+			(input.pid as number) > 0 &&
 			state?.ownerId === input.ownerId &&
 			state.acquisitionId === input.acquisitionId &&
-			(input.pid === undefined || state.pid === input.pid) &&
+			state.pid === input.pid &&
 			isCurrentCompatibleOwner({
 				state,
 				now: now(),
@@ -996,11 +1019,13 @@ export async function confirmTelegramDaemonSpawn(input: {
 	timeoutMs?: number;
 }): Promise<boolean> {
 	if (input.spawned.result !== "owner_spawned") return true;
+	const childPid = input.spawned.acquisition.pid;
+	const hasExactChildPid = Number.isSafeInteger(childPid) && (childPid as number) > 0;
 	const ready = await waitForTelegramDaemonReady({
 		settings: input.settings,
 		ownerId: input.spawned.acquisition.ownerId,
 		acquisitionId: input.spawned.acquisition.acquisitionId,
-		pid: input.spawned.acquisition.pid,
+		pid: hasExactChildPid ? childPid : undefined,
 		tokenFingerprint: input.tokenFingerprint,
 		chatId: input.chatId,
 		fs: input.fs,
@@ -1011,12 +1036,14 @@ export async function confirmTelegramDaemonSpawn(input: {
 		timeoutMs: input.timeoutMs,
 	});
 	if (ready) return true;
+	const launcherPid = input.spawned.acquisition.launcherPid ?? input.pid;
 	const retired = await retireProvisionalDaemonOwnership({
 		settings: input.settings,
 		ownerId: input.spawned.acquisition.ownerId,
 		acquisitionId: input.spawned.acquisition.acquisitionId,
-		pid: input.spawned.acquisition.pid ?? input.pid,
-		launcherPid: input.spawned.acquisition.launcherPid ?? input.pid,
+		pid: hasExactChildPid ? (childPid as number) : launcherPid,
+		launcherPid,
+		allowReadyWithoutChildPid: !hasExactChildPid,
 		fs: input.fs,
 		now: input.now,
 		sleep: input.sleep,
@@ -1024,6 +1051,7 @@ export async function confirmTelegramDaemonSpawn(input: {
 	if (retired) return false;
 	const state = await readDaemonState(input.settings, input.fs);
 	if (
+		hasExactChildPid &&
 		isCurrentCompatibleOwner({
 			state,
 			now: (input.now ?? Date.now)(),
@@ -1033,15 +1061,13 @@ export async function confirmTelegramDaemonSpawn(input: {
 		}) &&
 		(state?.ownerId !== input.spawned.acquisition.ownerId ||
 			state.acquisitionId !== input.spawned.acquisition.acquisitionId ||
-			state.pid === input.spawned.acquisition.pid)
+			state.pid === childPid)
 	)
 		return true;
 	if (
 		state?.ownerId === input.spawned.acquisition.ownerId &&
 		state.acquisitionId === input.spawned.acquisition.acquisitionId &&
-		(state.pid === input.spawned.acquisition.pid ||
-			state.pid === input.spawned.acquisition.launcherPid ||
-			state.pid === input.pid) &&
+		(state.pid === childPid || state.pid === launcherPid || state.pid === input.pid) &&
 		state.ownershipPhase === "retired"
 	)
 		return false;
