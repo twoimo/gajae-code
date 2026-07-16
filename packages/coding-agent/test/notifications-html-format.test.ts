@@ -72,6 +72,13 @@ describe("markdownToTelegramHtml (AC5)", () => {
 			"<b>공식</b>: 이차방정식 근의 공식\n<b>표현</b>: \\\\(x=\\\\frac{-b\\\\pm\\\\sqrt{b^2-4ac}}{2a}\\\\)",
 		);
 	});
+	test("wide header-only GFM tables retain their grid", () => {
+		const header = "This header is intentionally wider than forty-two columns";
+		const html = markdownToTelegramHtml(`| ${header} |\n| --- |`);
+
+		expect(html).toContain(`<pre>${header}\n`);
+		expect(html).toContain(`${"-".repeat(header.length)}</pre>`);
+	});
 
 	test("table cell content is escaped and not re-parsed as markup", () => {
 		const md = "| h |\n| --- |\n| <b>**x**</b> |";

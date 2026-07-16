@@ -142,7 +142,7 @@ function renderTableText(header: string[], aligns: ColumnAlign[], body: string[]
 /** Render compact tables as a grid and wide tables as readable Telegram-native records. */
 function renderTelegramTable(header: string[], aligns: ColumnAlign[], body: string[][]): string {
 	const grid = renderTableText(header, aligns, body);
-	if (grid.split("\n").every(line => Bun.stringWidth(line) <= 42)) return pre(grid);
+	if (body.length === 0 || grid.split("\n").every(line => Bun.stringWidth(line) <= 42)) return pre(grid);
 	return body
 		.map(row =>
 			header

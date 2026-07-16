@@ -3082,6 +3082,77 @@ describe("telegram daemon", () => {
 			}),
 		);
 	});
+	test("/btw addressed to another bot is consumed without injecting a user message", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Name it?",
+			options: ["a", "b"],
+		});
+		const threadId = bot.calls.find(call => call.method === "sendMessage")!.body.message_thread_id;
+		await daemon.handleTelegramUpdate({
+			update_id: 81,
+			message: { chat: { id: 42 }, message_thread_id: threadId, text: "/btw@OtherBot secret", message_id: 181 },
+		});
+
+		const sent = FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame));
+		expect(sent.some(frame => frame.type === "ephemeral_turn" || frame.type === "user_message")).toBe(false);
+	});
+	test("/btw result retains its transport topic ownership after a logical-session rekey", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+		});
+		daemon.connectSession("S", "ws://s", "ts");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "action_needed",
+			kind: "ask",
+			id: "ask1",
+			question: "Name it?",
+			options: ["a", "b"],
+		});
+		const threadId = bot.calls.find(call => call.method === "sendMessage")!.body.message_thread_id;
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, { type: "config_update", sessionId: "rekeyed" });
+		await daemon.handleTelegramUpdate({
+			update_id: 82,
+			message: { chat: { id: 42 }, message_thread_id: threadId, text: "/btw rekey", message_id: 182 },
+		});
+		const request = FakeWs.instances[0]!.sent.map(frame => JSON.parse(frame)).find(
+			frame => frame.type === "ephemeral_turn",
+		)!;
+		expect(request.sessionId).toBe("rekeyed");
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "ephemeral_turn_result",
+			sessionId: "rekeyed",
+			requestId: request.requestId,
+			threadId: String(threadId),
+			updateId: 82,
+			text: "still routed",
+		});
+		expect(
+			bot.calls.some(call => call.method === "sendRichMessage" && call.body.message_thread_id === threadId),
+		).toBe(true);
+	});
 	test("routes /btw rich delivery at exact 32,768 boundary and preserves HTML when bypassed or disabled", async () => {
 		const tablePrefix = "| Value |\n| --- |\n| ";
 		const tableSuffix = " |";
@@ -3972,6 +4043,17 @@ describe("telegram daemon connection-drop resilience (repro-first)", () => {
 		// liveness can start; then the link goes half-open (no further frames,
 		// socket never closes, no pong will arrive).
 		FakeWs.instances[0]!.emit({ type: "hello", protocolVersion: 2, capabilities: ["client_ping_pong"] });
+		FakeWs.instances[0]!.emit({
+			type: "event_replay_result",
+			id: "telegram-startup-replay:S",
+			generation: 1,
+			lastSeq: 0,
+			events: [],
+		});
+		for (let attempts = 0; attempts < 20 && liveness.length === 0; attempts++) {
+			await Bun.sleep(1);
+		}
+		expect(liveness).toHaveLength(1);
 
 		// Advance past the heartbeat TTL and fire any liveness probe. Post-fix this
 		// detects the missing pong, drops the stale session, and reconnects.

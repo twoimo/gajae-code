@@ -200,13 +200,16 @@ const BTW_HELP_TEXT = [
 	"",
 	"Text only. Up to 2 questions can be in progress per session.",
 ].join("\n");
-function parseBtwQuestion(text: string, botUsername?: string): string | undefined {
+type ParsedBtwCommand = { kind: "question"; question: string } | { kind: "ignored" };
+
+function parseBtwCommand(text: string, botUsername?: string): ParsedBtwCommand | undefined {
 	const trimmed = text.trim();
 	const [rawCommand] = trimmed.split(/\s+/, 1);
 	if (!rawCommand) return undefined;
 	const [name, suffix] = rawCommand.toLowerCase().split("@", 2);
-	if (name !== "/btw" || (suffix && (!botUsername || suffix !== botUsername.toLowerCase()))) return undefined;
-	return trimmed.slice(rawCommand.length).trim();
+	if (name !== "/btw") return undefined;
+	if (suffix && (!botUsername || suffix !== botUsername.toLowerCase())) return { kind: "ignored" };
+	return { kind: "question", question: trimmed.slice(rawCommand.length).trim() };
 }
 
 const MODEL_BUTTON_LABEL_MAX_BYTES = 48;
@@ -472,6 +475,10 @@ export async function unregisterNotificationRoot(input: {
 
 function notificationRootForCwd(cwd: string): string {
 	return path.join(cwd, ".gjc", "state");
+}
+
+function validBotToken(token: unknown): token is string {
+	return typeof token === "string" && token.length > 0;
 }
 
 function ownerIdentityMatches(state: DaemonState, tokenFingerprint: string, chatId: string): boolean {
@@ -861,7 +868,7 @@ export async function spawnTelegramDaemonOwner(
 		pidAlive: deps.pidAlive,
 		randomId: ownerId ? undefined : deps.randomId,
 		ownerId,
-		allowPidRebind: ownerId !== undefined,
+		allowPidRebind: true,
 	});
 	// Build args from the shared runtime resolver.
 	const { command, args, runtime } = buildTelegramDaemonSpawnArgs({
@@ -1359,7 +1366,10 @@ interface TelegramQueuePayload {
 }
 
 interface PendingBtwTurn {
-	sessionId: string;
+	/** Immutable transport/topic ownership key. */
+	transportSessionId: string;
+	/** Logical session id supplied to the session endpoint. */
+	logicalSessionId: string;
 	threadId: string;
 	updateId: number;
 	expiresAt: number;
@@ -1503,7 +1513,12 @@ export class TelegramNotificationDaemon {
 				agentNotificationsDir: daemonPaths(agentDir).dir,
 				agentDir,
 				sessionsRoot: path.join(agentDir, "sessions"),
-				auditRedactionKey: deriveLifecycleAuditRedactionKey(this.opts.botToken),
+				auditRedactionKey: deriveLifecycleAuditRedactionKey(
+					(() => {
+						if (!validBotToken(this.opts.botToken)) throw new Error("invalid Telegram bot token");
+						return this.opts.botToken;
+					})(),
+				),
 			});
 			// Register the lifecycle-request handler BEFORE start(): the native
 			// control server captures the callback at start time, so wiring must
@@ -3293,11 +3308,12 @@ export class TelegramNotificationDaemon {
 			const logicalSessionId = this.#logicalSessionId(session);
 			if (
 				msg.sessionId !== logicalSessionId ||
-				pending.sessionId !== logicalSessionId ||
+				pending.logicalSessionId !== logicalSessionId ||
+				pending.transportSessionId !== session.sessionId ||
 				msg.threadId !== pending.threadId ||
 				msg.updateId !== pending.updateId ||
 				typeof msg.text !== "string" ||
-				this.topics.sessionForTopic(pending.threadId) !== logicalSessionId
+				this.topics.sessionForTopic(pending.threadId) !== pending.transportSessionId
 			)
 				return;
 			// Consume before delivery so duplicate frames cannot produce duplicate replies.
@@ -3839,8 +3855,13 @@ export class TelegramNotificationDaemon {
 					const injectedText = repliedOriginal
 						? `> replied-to message:\n${repliedOriginal}\n\n${baseInjectedText}`
 						: baseInjectedText;
-					const btwQuestion = parseBtwQuestion(inbound.text, this.botUsername);
-					if (btwQuestion !== undefined) {
+					const btw = parseBtwCommand(inbound.text, this.botUsername);
+					if (btw?.kind === "ignored") {
+						await this.rememberSeenUpdateId(inbound.updateId);
+						return;
+					}
+					if (btw?.kind === "question") {
+						const btwQuestion = btw.question;
 						if (!btwQuestion || hasMedia) {
 							await this.botApi.call("sendMessage", {
 								chat_id: this.opts.chatId,
@@ -3853,9 +3874,10 @@ export class TelegramNotificationDaemon {
 						for (const [id, pending] of this.pendingBtwTurns) {
 							if (pending.expiresAt <= (this.opts.now?.() ?? Date.now())) this.pendingBtwTurns.delete(id);
 						}
+						const transportSessionId = session.sessionId;
 						const logicalSessionId = this.#logicalSessionId(session);
 						const pendingCount = [...this.pendingBtwTurns.values()].filter(
-							pending => pending.sessionId === logicalSessionId,
+							pending => pending.transportSessionId === transportSessionId,
 						).length;
 						if (pendingCount >= BTW_MAX_PENDING_PER_SESSION) {
 							await this.botApi.call("sendMessage", {
@@ -3869,7 +3891,8 @@ export class TelegramNotificationDaemon {
 						if (session.ws.readyState !== WebSocket.OPEN) return;
 						const requestId = `btw:${crypto.randomUUID()}`;
 						this.pendingBtwTurns.set(requestId, {
-							sessionId: logicalSessionId,
+							transportSessionId,
+							logicalSessionId,
 							threadId: inbound.threadId,
 							updateId: inbound.updateId,
 							expiresAt: (this.opts.now?.() ?? Date.now()) + BTW_PENDING_TTL_MS,
@@ -4034,6 +4057,13 @@ export class TelegramNotificationDaemon {
 	}
 
 	async run(): Promise<void> {
+		// Runtime callers can bypass TypeScript's option type. Do not derive an
+		// ownership identity from absent credentials; lifecycle startup still owns
+		// cleanup of a factory-created server on this fail-closed path.
+		if (!validBotToken(this.opts.botToken)) {
+			await this.startLifecycleControl();
+			return;
+		}
 		this.running = await renewDaemonHeartbeat({
 			settings: this.opts.settings,
 			ownerId: this.opts.ownerId,

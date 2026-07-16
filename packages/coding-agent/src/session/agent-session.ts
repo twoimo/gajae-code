@@ -12181,6 +12181,7 @@ export class AgentSession {
 		const { replyText, commitRosterClaim, releaseRosterClaim } = await this.runEphemeralTurn({
 			promptText: incomingPrompt,
 			signal: args.signal,
+			replyShaping: "irc",
 			deferRosterCommit: true,
 		});
 		try {
@@ -12402,6 +12403,8 @@ export class AgentSession {
 		promptText: string;
 		onTextDelta?: (delta: string) => void;
 		signal?: AbortSignal;
+		/** Apply IRC's duplicate-line compression and 4 KiB byte limit. */
+		replyShaping?: "irc";
 		/** Defer the successful roster-claim commit until the caller accepts its exchange. */
 		deferRosterCommit?: boolean;
 	}): Promise<{
@@ -12503,7 +12506,7 @@ export class AgentSession {
 					}
 				};
 				return {
-					replyText: dedupeIrcReply(replyText.trim()),
+					replyText: args.replyShaping === "irc" ? dedupeIrcReply(replyText.trim()) : replyText.trim(),
 					assistantMessage,
 					commitRosterClaim: () => settleRosterClaim(true),
 					releaseRosterClaim: () => settleRosterClaim(false),
@@ -12512,7 +12515,10 @@ export class AgentSession {
 			if (rosterClaim) {
 				this.#commitIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
 			}
-			return { replyText: dedupeIrcReply(replyText.trim()), assistantMessage };
+			return {
+				replyText: args.replyShaping === "irc" ? dedupeIrcReply(replyText.trim()) : replyText.trim(),
+				assistantMessage,
+			};
 		} finally {
 			if (rosterClaim && !rosterClaimDeferred) {
 				this.#releaseIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);

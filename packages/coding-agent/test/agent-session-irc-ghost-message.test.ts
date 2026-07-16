@@ -279,6 +279,21 @@ describe("AgentSession respondAsBackground failure visibility", () => {
 
 		expect(harness.session.agent.state.messages).toEqual(before);
 	});
+	it("preserves long /btw replies while retaining explicit IRC reply shaping", async () => {
+		const longReply = "x".repeat(5_000);
+		const harness = createHarness({
+			model: createMockModel({ handler: () => ({ content: [longReply] }) }),
+		});
+
+		await expect(harness.session.runEphemeralTurn({ promptText: "<btw>long answer</btw>" })).resolves.toMatchObject({
+			replyText: longReply,
+		});
+		const irc = await harness.session.runEphemeralTurn({
+			promptText: "IRC background reply",
+			replyShaping: "irc",
+		});
+		expect(Buffer.byteLength(irc.replyText, "utf8")).toBeLessThanOrEqual(4_096);
+	});
 	it("commits a successful IRC roster claim after accepting its exchange", async () => {
 		const harness = createHarness();
 		addPeer(harness.registry);

@@ -22,6 +22,7 @@ import {
 import type { LedgerEntry, OrchestratorDeps } from "@gajae-code/coding-agent/sdk/bus/lifecycle-orchestrator";
 import { startDaemonLifecycleControl } from "@gajae-code/coding-agent/sdk/bus/telegram-daemon";
 import { Settings } from "../src/config/settings";
+import { tokenFingerprint } from "../src/sdk/bus/config";
 import { acquireDaemonOwnership, TelegramNotificationDaemon } from "../src/sdk/bus/telegram-daemon";
 import {
 	prepareManagedSessionScopeForWriteSync,
@@ -176,10 +177,10 @@ function immediateTimeout(): typeof setTimeout {
 	}) as unknown as typeof setTimeout;
 }
 
-async function startAsOwner(settings: Settings, ownerId: string): Promise<void> {
+async function startAsOwner(settings: Settings, ownerId: string, botToken: string): Promise<void> {
 	await acquireDaemonOwnership({
 		settings,
-		tokenFingerprint: "fingerprint",
+		tokenFingerprint: tokenFingerprint(botToken),
 		chatId: PAIRED,
 		pid: process.pid,
 		randomId: () => ownerId,
@@ -189,7 +190,7 @@ async function startAsOwner(settings: Settings, ownerId: string): Promise<void> 
 it("passes the daemon-derived audit key through real lifecycle startup without a fallback", async () => {
 	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-daemon-audit-key-"));
 	const settings = daemonSettings(agentDir);
-	await startAsOwner(settings, "audit-key-owner");
+	await startAsOwner(settings, "audit-key-owner", "bot-token");
 
 	let capturedKey: Uint8Array | undefined;
 	let registered = 0;
@@ -232,7 +233,7 @@ it("passes the daemon-derived audit key through real lifecycle startup without a
 it("does not attach lifecycle audit dependencies or fall back when daemon key derivation has no token", async () => {
 	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-daemon-missing-audit-key-"));
 	const settings = daemonSettings(agentDir);
-	await startAsOwner(settings, "missing-audit-key-owner");
+	await startAsOwner(settings, "missing-audit-key-owner", "bot-token");
 
 	let dependenciesBuilt = 0;
 	let registered = 0;
