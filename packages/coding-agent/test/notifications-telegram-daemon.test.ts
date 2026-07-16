@@ -502,7 +502,7 @@ describe("telegram daemon", () => {
 					settings: s,
 					tokenFingerprint: "fp",
 					chatId: "42",
-					pidAlive: () => false,
+					pidAlive: pid => pid !== 999,
 					pid: 222,
 				}),
 			),
