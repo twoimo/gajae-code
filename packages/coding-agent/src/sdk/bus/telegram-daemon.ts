@@ -558,6 +558,11 @@ export async function acquireDaemonOwnership(input: {
 					!pidAlive(initialization.pid),
 			);
 		};
+		const ownershipIsPositivelyStale = async (state: DaemonState | undefined): Promise<boolean> => {
+			if (state?.stoppedAt !== undefined) return true;
+			if (state && validDaemonPid(state.pid)) return !pidAlive(state.pid);
+			return !state && (await lockIsPositivelyStale());
+		};
 		const writeState = async (): Promise<void> => {
 			const timestamp = now();
 			await writeJsonAtomic(fsImpl, paths.state, {
@@ -615,6 +620,9 @@ export async function acquireDaemonOwnership(input: {
 		}
 		const afterLockDecision = attachDecision(afterLock);
 		if (afterLockDecision) return afterLockDecision;
+		if (afterLock && afterLock.stoppedAt === undefined && !validDaemonPid(afterLock.pid)) {
+			return { acquired: false, attached: true };
+		}
 		if (!afterLock && !(await lockIsPositivelyStale())) return { acquired: false, attached: true };
 		if (!(await tryOpenWx(fsImpl, paths.steal))) return { acquired: false, attached: true };
 		try {
@@ -633,6 +641,12 @@ export async function acquireDaemonOwnership(input: {
 				return { acquired: false, attached: true };
 			}
 			if (!rechecked && !(await lockIsPositivelyStale())) {
+				return { acquired: false, attached: true };
+			}
+			if (rechecked && rechecked.stoppedAt === undefined && !validDaemonPid(rechecked.pid)) {
+				return { acquired: false, attached: true };
+			}
+			if (!(await ownershipIsPositivelyStale(rechecked))) {
 				return { acquired: false, attached: true };
 			}
 			await fsImpl.unlink(paths.lock).catch(() => undefined);
@@ -673,7 +687,9 @@ export async function renewDaemonHeartbeat(input: {
 			!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId)
 		)
 			return false;
-		if (state.pid !== input.pid && (state.launcherPid === undefined || state.pid !== state.launcherPid)) return false;
+		if (!validDaemonPid(state.pid)) return false;
+		if (state.pid !== input.pid && (!validDaemonPid(state.launcherPid) || state.pid !== state.launcherPid))
+			return false;
 		await writeJsonAtomic(fsImpl, paths.state, {
 			...state,
 			pid: input.pid,

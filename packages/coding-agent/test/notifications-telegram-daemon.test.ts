@@ -3679,6 +3679,37 @@ describe("telegram daemon", () => {
 		expect(await readDaemonState(s)).toEqual(before);
 	});
 
+	test("heartbeat rejects malformed persisted handoff PIDs without rewriting state", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: process.pid,
+			randomId: () => "owner",
+			allowPidRebind: true,
+		});
+		const malformed = {
+			...(await readDaemonState(s))!,
+			pid: -1,
+			launcherPid: -1,
+		};
+		fs.writeFileSync(paths.state, JSON.stringify(malformed));
+
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "owner",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: process.pid + 1,
+			}),
+		).toBe(false);
+		expect(await readDaemonState(s)).toEqual(malformed);
+	});
+
 	test("ownership heartbeat remains fresh during a pending long poll and is cleaned up on exit", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
