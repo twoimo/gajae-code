@@ -3482,6 +3482,64 @@ describe("telegram daemon", () => {
 		expect(fs.existsSync(daemonPaths(agentDir).lock)).toBe(false);
 	});
 
+	test("stopped ownership records do not block immediate reacquisition", async () => {
+		for (const token of ["fp", "foreign-fp"]) {
+			const agentDir = tempAgentDir();
+			const s = setPrivateAgentDir(settings(agentDir), agentDir);
+			await acquireDaemonOwnership({
+				settings: s,
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: process.pid,
+				randomId: () => "owner",
+			});
+			await releaseDaemonOwnership({
+				settings: s,
+				ownerId: "owner",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: process.pid,
+			});
+
+			expect(
+				await acquireDaemonOwnership({
+					settings: s,
+					tokenFingerprint: token,
+					chatId: "42",
+					pid: process.pid,
+					pidAlive: () => true,
+					randomId: () => "replacement",
+				}),
+			).toMatchObject({ acquired: true, ownerId: "replacement" });
+		}
+	});
+
+	test("heartbeat rejects malformed PIDs without changing ownership state", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: process.pid,
+			randomId: () => "owner",
+		});
+		const before = await readDaemonState(s);
+
+		for (const pid of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+			expect(
+				await renewDaemonHeartbeat({
+					settings: s,
+					ownerId: "owner",
+					tokenFingerprint: "fp",
+					chatId: "42",
+					pid,
+				}),
+			).toBe(false);
+		}
+		expect(await readDaemonState(s)).toEqual(before);
+	});
+
 	test("ownership heartbeat remains fresh during a pending long poll and is cleaned up on exit", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);

@@ -470,6 +470,7 @@ function liveOwnerUsesDifferentIdentity(input: {
 	return Boolean(
 		state &&
 			state.version === DAEMON_VERSION &&
+			state.stoppedAt === undefined &&
 			!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) &&
 			input.pidAlive(state.pid),
 	);
@@ -486,6 +487,7 @@ export function isFreshLiveOwner(input: {
 	return Boolean(
 		state &&
 			state.version === DAEMON_VERSION &&
+			state.stoppedAt === undefined &&
 			ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) &&
 			input.now - state.heartbeatAt <= HEARTBEAT_TTL_MS &&
 			input.pidAlive(state.pid),
@@ -668,7 +670,8 @@ export async function renewDaemonHeartbeat(input: {
 			state.stoppedAt !== undefined ||
 			typeof input.tokenFingerprint !== "string" ||
 			typeof input.chatId !== "string" ||
-			typeof input.pid !== "number" ||
+			!Number.isSafeInteger(input.pid) ||
+			input.pid <= 0 ||
 			state.ownerId !== input.ownerId ||
 			!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId)
 		)
