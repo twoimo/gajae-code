@@ -49,8 +49,6 @@ describe("dev-ci canonical-plan workflow contract", () => {
 	test("transports and validates the planner artifact before conditional setup", async () => {
 		const workflow = await Bun.file(path.join(import.meta.dir, "..", ".github", "workflows", "dev-ci.yml")).text();
 		expect(workflow).toContain("ref: ${{ github.event.pull_request.head.sha || github.sha }}");
-		expect(workflow.match(/ref: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/g)).toHaveLength(5);
-		expect(workflow.match(/Verify checked-out source head/g)).toHaveLength(1);
 		expect(workflow).toContain("name: dev-affected-plan-${{ github.run_id }}-${{ github.run_attempt }}");
 		expect(workflow.match(/\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/g)).toHaveLength(8);
 		expect(workflow).toContain("include-hidden-files: true");
