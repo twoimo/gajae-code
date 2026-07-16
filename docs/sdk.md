@@ -1,6 +1,7 @@
 # Gajae-Code SDK
 
 For embedding GJC in-process, see [the embedding SDK guide](./sdk-embedding.md).
+For a beginner-friendly application development guide (recipes, customization, choosing a surface), see [Building applications on the SDK](./sdk-app-guide.md).
 
 <p align="center">
   <img src="../assets/telegram-mobile-hero.png" alt="Gajae Code mobile answers for coding agents hero illustration" width="100%" />
