@@ -123,6 +123,8 @@ export interface TelegramDaemonDeps {
 		opts: { detached: boolean; stdio: "ignore"; logPath?: string },
 	) => SpawnResult;
 	execPath?: string;
+	/** Injectable platform seam for source-linked Windows daemon spawning. */
+	platform?: NodeJS.Platform;
 	randomId?: () => string;
 	/**
 	 * Signal delivery + poll timing for the stale-generation reload handoff in
@@ -495,6 +497,8 @@ export async function acquireDaemonOwnership(input: {
 	pid?: number;
 	pidAlive?: (pid: number) => boolean;
 	randomId?: () => string;
+	/** A caller-supplied opaque owner identity, used when the launcher PID is not durable. */
+	ownerId?: string;
 }): Promise<{
 	acquired: boolean;
 	ownerId?: string;
@@ -509,7 +513,8 @@ export async function acquireDaemonOwnership(input: {
 	const pidAlive = input.pidAlive ?? defaultPidAlive;
 	const paths = daemonPaths(input.settings.getAgentDir());
 	await ensureDir(fsImpl, paths.dir);
-	const ownerId = input.randomId?.() ?? `${pid}-${now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+	const ownerId =
+		input.ownerId ?? input.randomId?.() ?? `${pid}-${now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 	const roots = input.roots ?? (await readJson<{ roots?: string[] }>(fsImpl, paths.roots))?.roots ?? [];
 
 	// A fresh, identity-matching live owner running an OLDER generation than this
@@ -614,6 +619,9 @@ export async function acquireDaemonOwnership(input: {
 export async function renewDaemonHeartbeat(input: {
 	settings: Settings;
 	ownerId: string;
+	/** Bind a daemon heartbeat to the Telegram identity that acquired the lock. */
+	tokenFingerprint?: string;
+	chatId?: string;
 	fs?: TelegramDaemonFs;
 	now?: () => number;
 	pid?: number;
@@ -621,7 +629,13 @@ export async function renewDaemonHeartbeat(input: {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
 	const state = await readJson<DaemonState>(fsImpl, paths.state);
-	if (!state || state.ownerId !== input.ownerId) return false;
+	if (
+		!state ||
+		state.ownerId !== input.ownerId ||
+		(input.tokenFingerprint !== undefined && state.tokenFingerprint !== input.tokenFingerprint) ||
+		(input.chatId !== undefined && state.chatId !== input.chatId)
+	)
+		return false;
 	await writeJsonAtomic(fsImpl, paths.state, {
 		...state,
 		pid: input.pid ?? state.pid,
@@ -759,6 +773,15 @@ export async function spawnTelegramDaemonOwner(
 ): Promise<TelegramSpawnOwnerResult> {
 	const agentDir = input.settings.getAgentDir();
 	const execPath = deps.execPath ?? process.execPath;
+	const runtimeInfo = resolveGjcRuntimeSpawnInfo(execPath);
+	// On Windows, a source-linked Bun/Node detached child can begin after its
+	// short-lived CLI parent has exited. Keep the owner id opaque so the
+	// daemon-internal launcher does not mistake that parent PID for its owner;
+	// the daemon rebinds state.pid and validates token/chat below.
+	const ownerId =
+		runtimeInfo.mode === "source" && (deps.platform ?? process.platform) === "win32"
+			? `daemon-${deps.randomId?.() ?? crypto.randomUUID()}`
+			: undefined;
 	const ownership = await acquireDaemonOwnership({
 		settings: input.settings,
 		roots: input.roots,
@@ -768,9 +791,10 @@ export async function spawnTelegramDaemonOwner(
 		now: deps.now,
 		pid: deps.pid,
 		pidAlive: deps.pidAlive,
-		randomId: deps.randomId,
+		randomId: ownerId ? undefined : deps.randomId,
+		ownerId,
 	});
-	// One source of truth for runtime detection + spawn args (no duplicate resolve).
+	// Build args from the shared runtime resolver.
 	const { command, args, runtime } = buildTelegramDaemonSpawnArgs({
 		execPath,
 		ownerId: ownership.ownerId ?? "",
@@ -2979,6 +3003,8 @@ export class TelegramNotificationDaemon {
 		return renewDaemonHeartbeat({
 			settings: this.opts.settings,
 			ownerId: this.opts.ownerId,
+			tokenFingerprint: tokenFingerprint(this.opts.botToken),
+			chatId: this.opts.chatId,
 			fs: this.fsImpl,
 			now: this.opts.now,
 			pid: this.opts.pid ?? process.pid,
@@ -3942,6 +3968,8 @@ export class TelegramNotificationDaemon {
 		this.running = await renewDaemonHeartbeat({
 			settings: this.opts.settings,
 			ownerId: this.opts.ownerId,
+			tokenFingerprint: tokenFingerprint(this.opts.botToken),
+			chatId: this.opts.chatId,
 			fs: this.fsImpl,
 			now: this.opts.now,
 			pid: this.opts.pid ?? process.pid,
