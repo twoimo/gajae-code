@@ -256,7 +256,7 @@ export function buildChatDaemonSpawnArgs(input: {
 	};
 }
 
-type ChatDaemonStateClassification = "absent" | "replaceable" | "compatible" | "malformed" | "unauthorized";
+type ChatDaemonStateClassification = "absent" | "replaceable" | "compatible" | "malformed" | "unauthorized" | "stopped";
 
 export class ChatDaemonController implements BuiltInDaemonController {
 	readonly kind: ChatDaemonKind;
@@ -440,6 +440,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	}
 	private classify(state: ChatDaemonState | undefined, identity: string | undefined): ChatDaemonStateClassification {
 		if (!state) return "absent";
+		if (this.isDefinitelyStoppedState(state)) return "stopped";
 		if (!identity || state.kind !== this.kind || state.identity !== identity) return "unauthorized";
 		if (state.generation === undefined) return "replaceable";
 		if (typeof state.generation !== "number" || !Number.isSafeInteger(state.generation) || state.generation < 0)

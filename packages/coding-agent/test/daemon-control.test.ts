@@ -1403,6 +1403,63 @@ describe("ChatDaemonController ownership safety", () => {
 		});
 
 		test.each([
+			["ensure after dead malformed", "ensure", null, identity(), false],
+			["reload after stopped malformed", "reload", null, identity(), true],
+			["ensure after dead different identity", "ensure", chatDaemonGeneration(kind), "other-identity", false],
+			["reload after stopped different identity", "reload", chatDaemonGeneration(kind), "other-identity", true],
+		] as const)("spawns fresh for %s persisted state", async (_name, action, generation, stateIdentity, stopped) => {
+			const agentDir = tempAgentDir();
+			const paths = chatDaemonPaths(agentDir, kind);
+			fs.mkdirSync(paths.dir, { recursive: true });
+			fs.writeFileSync(
+				paths.state,
+				JSON.stringify({
+					version: 1,
+					kind,
+					pid: 96,
+					ownerId: "dead-owner",
+					identity: stateIdentity,
+					incarnation: "dead-incarnation",
+					startedAt: Date.now(),
+					heartbeatAt: 1,
+					transportHealthy: false,
+					generation,
+					...(stopped ? { stoppedAt: Date.now() } : {}),
+				}),
+			);
+			const signals: NodeJS.Signals[] = [];
+			let spawns = 0;
+			const controller = new ChatDaemonController(configuredSettings(agentDir), kind, {
+				pidAlive: pid => pid === 97,
+				pidIncarnation: pid => (pid === 97 ? "fresh-incarnation" : undefined),
+				sendSignal: (_pid, signal) => signals.push(signal),
+				spawn: (_command, args) => {
+					spawns++;
+					fs.writeFileSync(
+						paths.state,
+						JSON.stringify({
+							version: 1,
+							kind,
+							pid: 97,
+							ownerId: args[args.indexOf("--owner-id") + 1],
+							identity: identity(),
+							incarnation: "fresh-incarnation",
+							startedAt: Date.now(),
+							heartbeatAt: Date.now(),
+							transportHealthy: true,
+							generation: chatDaemonGeneration(kind),
+						}),
+					);
+					return { unref() {} };
+				},
+			});
+			if (action === "ensure") expect(await controller.ensure()).toBe("owner_spawned");
+			else expect((await controller.reload()).ok).toBe(true);
+			expect(signals).toEqual([]);
+			expect(spawns).toBe(1);
+		});
+
+		test.each([
 			["missing", undefined, "stop"],
 			["missing", undefined, "reload"],
 			["lower", chatDaemonGeneration(kind) - 1, "stop"],
