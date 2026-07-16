@@ -165,13 +165,21 @@ describe("AgentSession IRC roster delivery", () => {
 		expect(deliveredRosters(harness)).toHaveLength(1);
 	});
 
-	it("delivers a concurrent main and ephemeral turn through exactly one carrier", async () => {
-		const release = Promise.withResolvers<void>();
+	it("completes a /btw ephemeral turn before an active main turn releases", async () => {
+		const releaseMain = Promise.withResolvers<void>();
+		const mainStarted = Promise.withResolvers<void>();
 		let calls = 0;
+		let mainStreamSessionId: string | undefined;
 		const model = createMockModel({
-			handler: async () => {
+			handler: async (_context, options) => {
 				calls += 1;
-				if (calls === 1) await release.promise;
+				if (calls === 1) {
+					mainStreamSessionId = options?.sessionId;
+					mainStarted.resolve();
+					await releaseMain.promise;
+				} else if (options?.sessionId === mainStreamSessionId) {
+					await releaseMain.promise;
+				}
 				return { content: ["ok"] };
 			},
 		});
@@ -179,12 +187,18 @@ describe("AgentSession IRC roster delivery", () => {
 		addPeer(harness.registry);
 
 		const main = prompt(harness, "main");
-		await Bun.sleep(0);
-		const side = ephemeral(harness);
-		release.resolve();
-		await Promise.all([main, side]);
+		await mainStarted.promise;
+		const historyDuringMain = [...harness.session.agent.state.messages];
+		const side = await harness.session.runEphemeralTurn({ promptText: "<btw>side request</btw>" });
 
-		expect(deliveredRosters(harness)).toHaveLength(1);
+		expect(side.replyText).toBe("ok");
+		expect(harness.session.isStreaming).toBe(true);
+		expect(harness.session.agent.state.messages).toEqual(historyDuringMain);
+		expect(model.calls).toHaveLength(2);
+		expect(model.calls[1]?.options?.sessionId).not.toBe(model.calls[0]?.options?.sessionId);
+
+		releaseMain.resolve();
+		await main;
 	});
 
 	it("releases a normal-turn roster claim after a resolving error outcome", async () => {

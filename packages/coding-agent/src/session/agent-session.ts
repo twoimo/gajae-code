@@ -820,8 +820,8 @@ function dedupeIrcReply(text: string): string {
  * `provider` is the target provider string (e.g. `"anthropic"`) and gates the
  * `account_uuid` and `device_id` lookups — only `"anthropic"` requests carry them.
  *
- * `sessionId` is forwarded to the auth-storage session-sticky lookup so that
- * multi-credential setups attribute to the same OAuth account used for the
+ * `credentialSessionId` is forwarded to the auth-storage session-sticky lookup
+ * so multi-credential setups attribute to the same OAuth account used for the
  * actual API request rather than always picking the first credential.
  *
  * `authStorage` is treated as optional so test fixtures that stub `modelRegistry`
@@ -832,6 +832,7 @@ function buildSessionMetadata(
 	sessionId: string,
 	provider: string,
 	authStorage: AuthStorage | undefined,
+	credentialSessionId = sessionId,
 ): Record<string, unknown> {
 	const userId: Record<string, string> = { session_id: sessionId };
 	// Only look up account_uuid when the request is going to Anthropic. Injecting
@@ -839,7 +840,7 @@ function buildSessionMetadata(
 	// Anthropic-format-compatible proxies like cloudflare-ai-gateway or gitlab-duo)
 	// would leak the user's Anthropic identity to unrelated third-party APIs.
 	if (provider === "anthropic") {
-		const accountUuid = authStorage?.getOAuthAccountId("anthropic", sessionId);
+		const accountUuid = authStorage?.getOAuthAccountId("anthropic", credentialSessionId);
 		if (typeof accountUuid === "string" && accountUuid.length > 0) {
 			userId.account_uuid = accountUuid;
 			// Derive device_id from account_uuid so the payload matches the real CC
@@ -12445,10 +12446,20 @@ export class AgentSession {
 				// removes the surface entirely.
 				tools: [],
 			};
+			// Providers use sessionId as their sticky stream identity. Reusing the
+			// active turn's identity makes this no-history request wait behind its
+			// stream (notably on the WebSocket transport), so it must be unique.
+			const ephemeralSessionId = crypto.randomUUID();
 			const options = this.prepareSimpleStreamOptions(
 				{
 					apiKey,
-					sessionId: this.sessionId,
+					sessionId: ephemeralSessionId,
+					metadata: buildSessionMetadata(
+						ephemeralSessionId,
+						model.provider,
+						this.#modelRegistry.authStorage,
+						this.sessionId,
+					),
 					reasoning: toReasoningEffort(this.thinkingLevel),
 					hideThinkingSummary: this.agent.hideThinkingSummary,
 					serviceTier: this.serviceTier,
