@@ -5,7 +5,7 @@
 - Double-Esc now clears an idle draft after a confirmation hint, saving it to prompt history; from an empty editor it follows the configured tree, branch, or disabled action.
 
 ### Fixed
-- Active deep-interview sessions now resume automatically when a model stops after recording an answer, using bounded workflow-state continuation instead of requiring another user prompt.
+- Active deep-interview sessions now resume automatically after a normal assistant stop while ordinary active interviewing remains eligible, using bounded workflow-state continuation; recovery, leak, stale-state, handoff, and crystallization blocks remain Stop-gate handled.
 
 ## [0.11.0] - 2026-07-15
 

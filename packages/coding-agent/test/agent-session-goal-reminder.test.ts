@@ -74,6 +74,7 @@ describe("AgentSession active goal reminders", () => {
 		const assistantMessage = { ...createAssistantMessage("I stopped."), timestamp };
 		session.agent.emitExternalEvent({ type: "message_end", message: assistantMessage });
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMessage] });
+		await Bun.sleep(50);
 		for (let i = 0; i < 20; i++) await Promise.resolve();
 		await session.waitForIdle();
 	}
