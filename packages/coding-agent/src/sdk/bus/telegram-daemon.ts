@@ -513,6 +513,35 @@ function ownerIdentityMatches(state: DaemonState, tokenFingerprint: string, chat
 	return state.tokenFingerprint === tokenFingerprint && state.chatId === chatId;
 }
 
+function hasSafeDaemonStateShape(state: DaemonState | undefined): state is DaemonState {
+	return Boolean(
+		state &&
+			Number.isSafeInteger(state.pid) &&
+			state.pid > 0 &&
+			typeof state.ownerId === "string" &&
+			state.ownerId.length > 0 &&
+			(state.acquisitionId === undefined ||
+				(typeof state.acquisitionId === "string" && state.acquisitionId.length > 0)) &&
+			(state.ownershipPhase === undefined ||
+				state.ownershipPhase === "provisional" ||
+				state.ownershipPhase === "ready" ||
+				state.ownershipPhase === "retired") &&
+			typeof state.tokenFingerprint === "string" &&
+			typeof state.chatId === "string" &&
+			Number.isSafeInteger(state.startedAt) &&
+			Number.isSafeInteger(state.heartbeatAt) &&
+			Array.isArray(state.roots) &&
+			state.roots.every(root => typeof root === "string") &&
+			state.version === DAEMON_VERSION &&
+			(state.generation === undefined || (Number.isSafeInteger(state.generation) && state.generation > 0)) &&
+			(state.stoppedAt === undefined || Number.isSafeInteger(state.stoppedAt)),
+	);
+}
+
+function isRecognizedLegacyGeneration(generation: number | undefined): boolean {
+	return generation === undefined || (Number.isSafeInteger(generation) && generation <= 3);
+}
+
 function liveOwnerUsesDifferentIdentity(input: {
 	state: DaemonState | undefined;
 	tokenFingerprint: string;
@@ -522,6 +551,7 @@ function liveOwnerUsesDifferentIdentity(input: {
 	const { state } = input;
 	return Boolean(
 		state &&
+			hasSafeDaemonStateShape(state) &&
 			state.stoppedAt === undefined &&
 			!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) &&
 			input.pidAlive(state.pid),
@@ -538,9 +568,8 @@ export function isPhysicalMatchingOwner(input: {
 	const { state } = input;
 	return Boolean(
 		state &&
+			hasSafeDaemonStateShape(state) &&
 			state.stoppedAt === undefined &&
-			Number.isSafeInteger(state.pid) &&
-			state.pid > 0 &&
 			ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) &&
 			input.pidAlive(state.pid),
 	);
@@ -556,7 +585,7 @@ export function isFreshLiveOwner(input: {
 	const { state } = input;
 	return Boolean(
 		state &&
-			state.version === DAEMON_VERSION &&
+			hasSafeDaemonStateShape(state) &&
 			state.stoppedAt === undefined &&
 			ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) &&
 			input.now - state.heartbeatAt <= HEARTBEAT_TTL_MS &&
@@ -617,7 +646,10 @@ export async function acquireDaemonOwnership(input: {
 	// silent attach. Newer/equal generations attach as before (no downgrade).
 	const attachDecision = (
 		state: DaemonState | undefined,
-	): { acquired: false; attached: boolean; provisional?: boolean; reloadRequired?: boolean } | undefined => {
+	):
+		| { acquired: false; attached: boolean; blocked?: boolean; provisional?: boolean; reloadRequired?: boolean }
+		| undefined => {
+		if (state && !hasSafeDaemonStateShape(state)) return { acquired: false, attached: false, blocked: true };
 		if (
 			!state ||
 			state.stoppedAt !== undefined ||
@@ -647,8 +679,7 @@ export async function acquireDaemonOwnership(input: {
 				chatId: input.chatId,
 				pidAlive,
 			}) ||
-			!Number.isSafeInteger(state.generation) ||
-			(state.generation as number) < DAEMON_GENERATION
+			isRecognizedLegacyGeneration(state.generation)
 		)
 			return { acquired: false, attached: false, reloadRequired: true };
 		return { acquired: false, attached: false, provisional: true };
@@ -750,10 +781,9 @@ export async function renewDaemonHeartbeat(input: {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
 	const acquisitionId = input.acquisitionId ?? input.ownerId;
-	// The steal lock is held only briefly by concurrent lifecycle ops (notably
-	// bindProvisionalDaemonPid right after spawn). Retry before giving up, then —
-	// if still contended — verify ownership rather than treating transient fencing
-	// contention as ownership loss (which would stop a legitimate owner).
+	// The steal lock is held only briefly by concurrent lifecycle operations.
+	// A contended lock never proves readiness: only the holder may validate and
+	// publish the exact ready PID/generation state.
 	const sleep = input.sleep ?? (async (ms: number) => await Bun.sleep(ms));
 	const retries = Math.max(input.stealRetries ?? 5, 0);
 	const retryDelayMs = Math.max(input.stealRetryDelayMs ?? 20, 0);
@@ -765,16 +795,7 @@ export async function renewDaemonHeartbeat(input: {
 		}
 		if (attempt < retries) await sleep(retryDelayMs);
 	}
-	if (!acquired) {
-		const contended = await readJson<DaemonState>(fsImpl, paths.state);
-		return Boolean(
-			contended &&
-				contended.ownerId === input.ownerId &&
-				contended.acquisitionId === acquisitionId &&
-				contended.stoppedAt === undefined &&
-				contended.ownershipPhase !== "retired",
-		);
-	}
+	if (!acquired) return false;
 	try {
 		const state = await readJson<DaemonState>(fsImpl, paths.state);
 		const pid = input.pid ?? state?.pid;
@@ -782,11 +803,15 @@ export async function renewDaemonHeartbeat(input: {
 		const canBindProvisionalPid = state?.ownershipPhase === "provisional" && state?.pid !== pid;
 		if (
 			!state ||
+			!hasSafeDaemonStateShape(state) ||
+			typeof pid !== "number" ||
+			!Number.isSafeInteger(pid) ||
+			pid <= 0 ||
+			generation !== DAEMON_GENERATION ||
 			state.ownerId !== input.ownerId ||
 			state.acquisitionId !== acquisitionId ||
 			(!canBindProvisionalPid && state.pid !== pid) ||
 			state.generation !== generation ||
-			!Number.isSafeInteger(generation) ||
 			state.stoppedAt !== undefined ||
 			state.ownershipPhase === "retired"
 		)

@@ -1,6 +1,9 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, test } from "bun:test";
 import manifest from "./telegram-daemon-generation-manifest.json" with { type: "json" };
-import { assertGuardAuthority, declaration, evaluate, GUARD_CONTRACT_VERSION, isLegacyBootstrapBase, protectedInventory, validateCiInputs, validateCurrentTreeManifest, validateInventory, validateManifest, validateSha } from "./telegram-daemon-generation-guard";
+import { assertGuardAuthority, currentTreeDigests, declaration, evaluate, GUARD_CONTRACT_VERSION, isLegacyBootstrapBase, manifestForCurrentTree, protectedInventory, validateCiInputs, validateCurrentTreeManifest, validateInventory, validateManifest, validateSha, writeManifest } from "./telegram-daemon-generation-guard";
 
 const guardScript = "scripts/telegram-daemon-generation-guard.ts";
 const manifestScript = "scripts/telegram-daemon-generation-manifest.json";
@@ -300,6 +303,23 @@ describe("daemon generation release guard", () => {
 		expect(stableEntries(stale)).not.toBe(stableEntries(digests));
 	}, 20000);
 
+	test("writes a stable current-tree manifest atomically without changing the committed attestation", async () => {
+		const directory = await mkdtemp(path.join(os.tmpdir(), "telegram-daemon-generation-manifest-"));
+		const target = path.join(directory, "manifest.json");
+		try {
+			await writeManifest(target);
+			const written = await readFile(target, "utf8");
+			expect(written.endsWith("\n")).toBe(true);
+			const generated = JSON.parse(written);
+			expect(() => validateManifest(generated)).not.toThrow();
+			expect(generated).toEqual(await manifestForCurrentTree());
+			expect(generated.digests).toEqual(await currentTreeDigests());
+			await expect(validateCurrentTreeManifest()).resolves.toBeUndefined();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	}, 20000);
+
 	test("guard authority proves immutable event objects without pinning the mutable base ref", () => {
 		const head = "a".repeat(40);
 		const base = "b".repeat(40);
@@ -313,10 +333,16 @@ describe("daemon generation release guard", () => {
 			checkedOutHead: head,
 			headRefSha: head,
 			baseObjectSha: base,
+			baseRefSha: undefined,
 		};
 		// The live base branch advanced while queued: the guard receives only the
 		// immutable event base object (== event base SHA) and must still pass.
 		expect(() => assertGuardAuthority(pr)).not.toThrow();
+		// Dispatch pins a mutable ref deliberately, so its fetched ref must still equal
+		// the requested input SHA rather than merely containing that immutable object.
+		const dispatch = { ...pr, eventName: "workflow_dispatch" as const, headRepository: "owner/repo", baseRefSha: base };
+		expect(() => assertGuardAuthority(dispatch)).not.toThrow();
+		expect(() => assertGuardAuthority({ ...dispatch, baseRefSha: "c".repeat(40) })).toThrow("dispatch base ref does not resolve");
 		// A mismatched or unfetchable event base object fails closed.
 		expect(() => assertGuardAuthority({ ...pr, baseObjectSha: "c".repeat(40) })).toThrow("base object does not equal event base SHA");
 		// Head-ref and checked-out-head mismatches still fail closed.

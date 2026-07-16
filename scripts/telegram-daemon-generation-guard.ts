@@ -3,6 +3,7 @@ import { $ } from "bun";
 import { parse } from "@babel/parser";
 import manifest from "./telegram-daemon-generation-manifest.json" with { type: "json" };
 import * as crypto from "node:crypto";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 const root = path.join(import.meta.dir, "..");
@@ -83,11 +84,31 @@ export async function currentTreeDigests(): Promise<Record<string, string>> {
 	return actual;
 }
 
-export async function validateCurrentTreeManifest(): Promise<void> {
+export async function manifestForCurrentTree(): Promise<GuardManifest> {
 	validateManifest();
-	const actual = await currentTreeDigests();
+	return {
+		contractVersion: manifest.contractVersion,
+		inventory: manifest.inventory as Inventory,
+		digests: Object.fromEntries(Object.entries(await currentTreeDigests()).sort()),
+	};
+}
+
+export async function writeManifest(target = path.join(root, manifestScript)): Promise<void> {
+	const output = `${JSON.stringify(await manifestForCurrentTree(), null, 2)}\n`;
+	const destination = path.resolve(target);
+	const temporary = `${destination}.${process.pid}.${crypto.randomUUID()}.tmp`;
+	try {
+		await Bun.write(temporary, output);
+		await fs.rename(temporary, destination);
+	} finally {
+		await fs.rm(temporary, { force: true });
+	}
+}
+
+export async function validateCurrentTreeManifest(): Promise<void> {
+	const actual = await manifestForCurrentTree();
 	const expected = JSON.stringify(Object.entries(manifest.digests).sort());
-	if (JSON.stringify(Object.entries(actual).sort()) !== expected)
+	if (JSON.stringify(Object.entries(actual.digests).sort()) !== expected)
 		throw new Error("telegram-daemon-generation-guard: semantic manifest declaration digests do not byte-match the current tree");
 }
 
@@ -122,14 +143,14 @@ export function validateCiInputs(input: {
 }
 
 /**
- * Prove that a CI run operates on the exact, authoritative event revisions without
- * coupling to the mutable base branch ref. The event head SHA must match both the
- * checked-out head and the fetched head-branch ref, and the event base SHA must
- * resolve to a real object in the authoritative base repository. The live base
- * branch ref legitimately advances while a pull_request run is queued, so it is
- * intentionally NOT required to still equal the event base SHA — only the immutable
- * event base object is proven. Repository/ref provenance and push-event head
- * ownership are enforced via {@link validateCiInputs}.
+ * Prove that a CI run operates on the exact, authoritative event revisions. The
+ * event head SHA must match both the checked-out head and the fetched head-branch
+ * ref, and the event base SHA must resolve to a real object in the authoritative
+ * base repository. Pull requests intentionally prove only their immutable event
+ * base object because the live ref can advance while queued; a workflow_dispatch
+ * explicitly pins a live base ref and therefore proves that ref still resolves to
+ * the requested base SHA. Repository/ref provenance and event ownership are
+ * enforced via {@link validateCiInputs}.
  */
 export function assertGuardAuthority(input: {
 	eventName: string | undefined;
@@ -141,6 +162,7 @@ export function assertGuardAuthority(input: {
 	checkedOutHead: string | undefined;
 	headRefSha: string | undefined;
 	baseObjectSha: string | undefined;
+	baseRefSha: string | undefined;
 }): void {
 	if (input.eventName !== "pull_request" && input.eventName !== "push" && input.eventName !== "workflow_dispatch")
 		throw new Error("telegram-daemon-generation-guard: unsupported CI event");
@@ -156,6 +178,8 @@ export function assertGuardAuthority(input: {
 		throw new Error("telegram-daemon-generation-guard: head ref does not resolve to event head SHA");
 	if (baseObjectSha !== baseSha)
 		throw new Error("telegram-daemon-generation-guard: base object does not equal event base SHA");
+	if (input.eventName === "workflow_dispatch" && validateSha("base ref object", input.baseRefSha) !== baseSha)
+		throw new Error("telegram-daemon-generation-guard: dispatch base ref does not resolve to requested base SHA");
 }
 
 function nodeName(node: any): string | undefined {
@@ -493,6 +517,7 @@ export async function run(baseInput: string | undefined, headInput: string | und
 if (import.meta.main) {
 	try {
 		if (process.argv.includes("--validate-current-tree")) await validateCurrentTreeManifest();
+		else if (process.argv.includes("--write-manifest")) await writeManifest();
 		else if (process.argv.includes("--check-authority"))
 			assertGuardAuthority({
 				eventName: process.env.GUARD_EVENT_NAME,
@@ -504,6 +529,7 @@ if (import.meta.main) {
 				checkedOutHead: process.env.GUARD_CHECKED_OUT_HEAD,
 				headRefSha: process.env.GUARD_HEAD_REF_SHA,
 				baseObjectSha: process.env.GUARD_BASE_OBJECT_SHA,
+				baseRefSha: process.env.GUARD_BASE_REF_SHA,
 			});
 		else await run(process.env.GITHUB_BASE_SHA ?? process.argv[2], process.env.GITHUB_HEAD_SHA ?? process.argv[3]);
 	} catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }

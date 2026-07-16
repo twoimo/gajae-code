@@ -723,7 +723,7 @@ describe("renewDaemonHeartbeat steal-lock contention", () => {
 		expect(state.ownershipPhase).toBe("ready");
 	});
 
-	test("keeps ownership without stopping when the steal lock stays held but state is unchanged", async () => {
+	test("reports failure when the steal lock stays held even if state is unchanged", async () => {
 		const agentDir = tempAgentDir();
 		const s = settings(agentDir);
 		writeState(agentDir, freshState({ heartbeatAt: 1 }));
@@ -739,10 +739,10 @@ describe("renewDaemonHeartbeat steal-lock contention", () => {
 			stealRetryDelayMs: 1,
 			sleep: async () => undefined,
 		});
-		// Transient fencing contention must not be treated as ownership loss.
-		expect(ok).toBe(true);
+		// Exhausted transition-lock contention cannot prove or publish readiness.
+		expect(ok).toBe(false);
 		const state = JSON.parse(fs.readFileSync(paths.state, "utf8")) as { heartbeatAt: number };
-		expect(state.heartbeatAt).toBe(1); // heartbeat not updated, but ownership retained
+		expect(state.heartbeatAt).toBe(1);
 	});
 
 	test("reports ownership loss when the steal lock is held and ownership changed", async () => {

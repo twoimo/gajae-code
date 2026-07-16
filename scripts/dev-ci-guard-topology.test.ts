@@ -60,5 +60,25 @@ describe("dev-ci Telegram daemon generation guard topology", () => {
 		// The guard's authority head SHA tracks that same source.
 		expect(guard.env.GITHUB_HEAD_SHA).toContain("github.event.pull_request.head.sha");
 		expect(guard.env.GITHUB_HEAD_SHA).toContain("github.sha");
+
+		const baseExpression = "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}";
+		// All consumers of the affected plan use the identical event-specific base
+		// expression. In particular, dispatch cannot plan/shard one range while the
+		// daemon guard validates another.
+		expect(guard.env.GITHUB_BASE_SHA).toBe(baseExpression);
+		expect(d.jobs["affected-plan"].env.GITHUB_BASE_SHA).toBe(baseExpression);
+		const shard = d.jobs["affected-shards"];
+		const shardRun = (shard.steps as any[]).find(s => s.name === "Run affected task shard");
+		expect(shardRun.env.GITHUB_BASE_SHA).toBe(baseExpression);
+
+		const authorityFetch = (guard.steps as any[]).find(s => s.name === "Fetch and prove authoritative guard revisions").run;
+		expect(authorityFetch).toContain('workflow_dispatch)');
+		expect(authorityFetch).toContain('refs/heads/${BASE_REF}:refs/remotes/guard-base/${BASE_REF}');
+		expect(authorityFetch).toContain('[[ "${base_ref_sha}" == "${GITHUB_BASE_SHA}" ]]');
+		expect(authorityFetch).toContain('GUARD_BASE_REF_SHA=${base_ref_sha}');
+		// PR authority remains pinned to the immutable queued event object, not a
+		// mutable base branch ref.
+		expect(authorityFetch).toContain('pull_request)');
+		expect(authorityFetch).toContain('guard-base "${GITHUB_BASE_SHA}"');
 	});
 });

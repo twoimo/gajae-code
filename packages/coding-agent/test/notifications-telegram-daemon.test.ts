@@ -815,6 +815,89 @@ describe("telegram daemon", () => {
 		});
 	});
 
+	test("#2028 heartbeat contention never reports a provisional owner ready", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "e60b05c186ca",
+			chatId: "42",
+			pid: 111,
+			randomId: () => "owner",
+		});
+		const paths = daemonPaths(agentDir);
+		fs.writeFileSync(paths.steal, "held");
+
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "owner",
+				acquisitionId: "owner",
+				pid: 111,
+				stealRetries: 2,
+				stealRetryDelayMs: 0,
+				sleep: async () => undefined,
+			}),
+		).toBe(false);
+		expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({ ownershipPhase: "provisional" });
+	});
+
+	test("#2028 heartbeat retries through a released transition lock before publishing ready", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "e60b05c186ca",
+			chatId: "42",
+			pid: 111,
+			randomId: () => "owner",
+		});
+		const paths = daemonPaths(agentDir);
+		fs.writeFileSync(paths.steal, "held");
+
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "owner",
+				acquisitionId: "owner",
+				pid: 111,
+				stealRetries: 1,
+				stealRetryDelayMs: 0,
+				sleep: async () => {
+					fs.unlinkSync(paths.steal);
+				},
+			}),
+		).toBe(true);
+		expect(JSON.parse(fs.readFileSync(paths.state, "utf8"))).toMatchObject({ ownershipPhase: "ready", pid: 111 });
+	});
+
+	test("#2028 malformed live schema or generation blocks without signaling or retaining a root", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		writeLiveOwner(agentDir, { generation: 0, roots: [123] as unknown as string[] });
+		const paths = daemonPaths(agentDir);
+		const signals: Array<[number, string]> = [];
+		let spawns = 0;
+
+		await expect(
+			ensureTelegramDaemonRunningDetailed(
+				{ settings: s, cwd: path.join(agentDir, "new-session"), sessionId: "new-session" },
+				{
+					pid: 4242,
+					pidAlive: () => true,
+					sendSignal: (pid, signal) => signals.push([pid, signal]),
+					spawn: () => {
+						spawns++;
+						return { unref() {} };
+					},
+				},
+			),
+		).resolves.toBe("blocked_identity");
+		expect(signals).toEqual([]);
+		expect(spawns).toBe(0);
+		expect(fs.existsSync(paths.roots)).toBe(false);
+	});
+
 	test("#2028 readiness is bounded when injected time does not advance", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
