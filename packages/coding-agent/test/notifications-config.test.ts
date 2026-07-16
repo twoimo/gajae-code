@@ -959,15 +959,15 @@ describe("notifications config", () => {
 				let ownerId: string | undefined;
 				return ensureTelegramDaemonRunning(input, {
 					pid: 4242,
-					pidAlive: pid => pid === 4242,
+					pidAlive: pid => pid === 4242 || pid === 4243,
 					spawn: (_command, args) => {
 						ownerId = args[args.indexOf("--owner-id") + 1];
 						spawns++;
-						return { unref() {} };
+						return { pid: 4243, unref() {} };
 					},
 					sleep: async () => {
 						if (!ownerId) throw new Error("Telegram daemon spawn did not provide an owner ID");
-						await renewDaemonHeartbeat({ settings, ownerId, acquisitionId: ownerId, pid: 4242 });
+						await renewDaemonHeartbeat({ settings, ownerId, acquisitionId: ownerId, pid: 4243 });
 					},
 					waitStepMs: 1,
 					readinessTimeoutMs: 100,
