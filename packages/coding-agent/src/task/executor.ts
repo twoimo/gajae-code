@@ -1397,9 +1397,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					workspaceTree: options.workspaceTree,
 					systemPrompt: defaultPrompt => {
 						const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
-agent: prompt.render(agent.systemPrompt, {
-	ultragoalRedTeam: /ultragoal\s+completion\s+(?:qa|red-team)|executorQa/i.test(options.assignment ?? task),
-}),
+							agent: prompt.render(agent.systemPrompt, {
+								ultragoalRedTeam: /ultragoal\s+completion\s+(?:qa|red-team)|executorQa/i.test(
+									options.assignment ?? task,
+								),
+							}),
 							context: options.context?.trim() ?? "",
 							worktree: worktree ?? "",
 							outputSchema: normalizedOutputSchema,

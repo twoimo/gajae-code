@@ -1305,7 +1305,7 @@ async function materializeReadUrlCacheEntry(
 async function persistReadUrlArtifact(session: ToolSession, output: string): Promise<string | undefined> {
 	const { path: artifactPath, id } = (await session.allocateOutputArtifact?.("read")) ?? {};
 	if (!artifactPath) return undefined;
-	await Bun.write(artifactPath, output);
+	await Bun.write(artifactPath, wrapUntrustedContent(output));
 	return id;
 }
 
@@ -1382,7 +1382,7 @@ export async function loadReadUrlCacheEntry(
 const UNTRUSTED_CONTENT_OPEN = "<untrusted-content>";
 const UNTRUSTED_CONTENT_CLOSE = "</untrusted-content>";
 
-function wrapUntrustedContent(content: string): string {
+export function wrapUntrustedContent(content: string): string {
 	return `${UNTRUSTED_CONTENT_OPEN}\n${content.replaceAll(UNTRUSTED_CONTENT_CLOSE, "&lt;/untrusted-content>")}\n${UNTRUSTED_CONTENT_CLOSE}`;
 }
 

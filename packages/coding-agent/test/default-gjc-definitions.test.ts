@@ -18,6 +18,7 @@ import { parseInternalUrl } from "@gajae-code/coding-agent/internal-urls/parse";
 import { SkillProtocolHandler } from "@gajae-code/coding-agent/internal-urls/skill-protocol";
 import { getBundledAgent } from "@gajae-code/coding-agent/task/agents";
 import { discoverAgents } from "@gajae-code/coding-agent/task/discovery";
+import { prompt } from "@gajae-code/utils";
 
 const tempRoots: string[] = [];
 const roleAgentNames = ["architect", "critic", "executor", "planner"] as const;
@@ -258,7 +259,9 @@ describe("default GJC definitions", () => {
 		const architect = getBundledAgent("architect");
 		const critic = getBundledAgent("critic");
 
-		expect(executor?.systemPrompt).not.toContain("<ultragoal_red_team_mode>");
+		expect(prompt.render(executor?.systemPrompt ?? "", { ultragoalRedTeam: false })).not.toContain(
+			"<ultragoal_red_team_mode>",
+		);
 		for (const agent of [planner, architect, critic]) {
 			expect(agent?.systemPrompt).toContain("GJC_RALPLAN_ARTIFACT");
 			expect(agent?.systemPrompt).toContain(`--stage ${agent?.name}`);
@@ -318,18 +321,18 @@ Project executor override body.
 		});
 	});
 
-it("keeps role-agent routing concise in the system prompt", async () => {
-	const systemPrompt = await Bun.file(
-		path.join(repoRoot, "packages", "coding-agent", "src", "prompts", "system", "system-prompt.md"),
-	).text();
-	const ultragoal = await Bun.file(
-		path.join(repoRoot, "packages", "coding-agent", "src", "defaults", "gjc", "skills", "ultragoal", "SKILL.md"),
-	).text();
+	it("keeps role-agent routing concise in the system prompt", async () => {
+		const systemPrompt = await Bun.file(
+			path.join(repoRoot, "packages", "coding-agent", "src", "prompts", "system", "system-prompt.md"),
+		).text();
+		const ultragoal = await Bun.file(
+			path.join(repoRoot, "packages", "coding-agent", "src", "defaults", "gjc", "skills", "ultragoal", "SKILL.md"),
+		).text();
 
-	expect(systemPrompt).toContain("Delegate large implementation slices to `executor`");
-	expect(systemPrompt).not.toContain("<role-agent-surface>");
-	expect(ultragoal).toContain("Role agents return implementation/review evidence");
-});
+		expect(systemPrompt).toContain("Delegate large implementation slices to `executor`");
+		expect(systemPrompt).not.toContain("<role-agent-surface>");
+		expect(ultragoal).toContain("Role agents return implementation/review evidence");
+	});
 
 	it("documents validation-batch granularity, contract, and intra-goal lane parallelism in the ultragoal prompt", async () => {
 		const ultragoal = await Bun.file(
@@ -394,7 +397,7 @@ it("keeps role-agent routing concise in the system prompt", async () => {
 		const routing = extractPromptSection(systemPrompt, "routing");
 		const decomposition = extractPromptSection(systemPrompt, "decomposition");
 
-expect(routing).toContain("Clear, low-risk implementation requests use direct tools");
+		expect(routing).toContain("Clear, low-risk implementation requests use direct tools");
 		expect(routing).toContain("Informational questions are answer-only/read-only");
 		expect(routing).toContain("Vague requirements use `/skill:deep-interview`");
 		expect(routing).toContain("`/skill:ralplan --deliberate`");

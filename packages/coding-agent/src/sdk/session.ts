@@ -150,7 +150,6 @@ import {
 	loadSshTool,
 	ReadTool,
 	ResolveTool,
-	renderSearchToolBm25Description,
 	SearchTool,
 	setPreferredImageProvider,
 	setPreferredSearchProvider,
@@ -2057,13 +2056,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 								{ source: "mcp" },
 							)
 						: [];
-					const discoverableToolsForDesc: DiscoverableTool[] = [
-						...discoverableBuiltinTools,
-						...discoverableMCPTools,
-					];
-					const promptTools = buildSystemPromptToolMetadata(tools, {
-						search_tool_bm25: { description: renderSearchToolBm25Description(discoverableToolsForDesc) },
-					});
+					const promptTools = buildSystemPromptToolMetadata(tools);
 					return { discoverableBuiltinTools, discoverableMCPTools, promptTools };
 				} finally {
 					promptMetadataModel = previousPromptMetadataModel;
@@ -2114,9 +2107,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				repeatToolDescriptions,
 				intentField,
 				toolDiscoveryActive: effectiveDiscoveryMode === "all" || mcpDiscoveryEnabled,
-				discoverableTools: [...discoverableBuiltinTools, ...discoverableMCPTools]
-					.map(tool => ({ name: tool.name, summary: tool.summary }))
-					.sort((a, b) => a.name.localeCompare(b.name)),
 				eagerTasks,
 				secretsEnabled,
 				workspaceTree: workspaceTreePromise,

@@ -35,12 +35,24 @@ interface EmbeddedAgentDef {
 	template: string;
 }
 
+const ULTRAGOAL_RED_TEAM_OPEN = "__GJC_ULTRAGOAL_RED_TEAM_OPEN__";
+const ULTRAGOAL_RED_TEAM_CLOSE = "__GJC_ULTRAGOAL_RED_TEAM_CLOSE__";
+
 function buildAgentContent(def: EmbeddedAgentDef): string {
 	const restrictedBash = prompt.render(restrictedBashTemplate);
 	const ralplanPersistence = prompt.render(ralplanPersistenceTemplate, {
 		stage: def.frontmatter?.name ?? def.fileName.replace(/\.md$/, ""),
 	});
-	const body = prompt.render(def.template, { restrictedBash, ralplanPersistence });
+	const template =
+		def.fileName === "executor.md"
+			? def.template
+					.replace("{{#if ultragoalRedTeam}}", ULTRAGOAL_RED_TEAM_OPEN)
+					.replace("{{/if}}", ULTRAGOAL_RED_TEAM_CLOSE)
+			: def.template;
+	const body = prompt
+		.render(template, { restrictedBash, ralplanPersistence })
+		.replace(ULTRAGOAL_RED_TEAM_OPEN, "{{#if ultragoalRedTeam}}")
+		.replace(ULTRAGOAL_RED_TEAM_CLOSE, "{{/if}}");
 	if (!def.frontmatter) return body;
 	return prompt.render(agentFrontmatterTemplate, { ...def.frontmatter, body });
 }

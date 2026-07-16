@@ -53,6 +53,7 @@ import {
 	type ReadUrlToolDetails,
 	renderReadUrlCall,
 	renderReadUrlResult,
+	wrapUntrustedContent,
 } from "./fetch";
 import { applyListLimit } from "./list-limit";
 import {
@@ -788,6 +789,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			ignoreResultLimits?: boolean;
 			raw?: boolean;
 			immutable?: boolean;
+			wrapUntrusted?: boolean;
 		},
 	): AgentToolResult<ReadToolDetails> {
 		const displayMode = resolveFileDisplayMode(this.session, { raw: options.raw, immutable: options.immutable });
@@ -893,7 +895,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			outputText = formatText(truncation.content, startLineDisplay);
 		}
 
-		resultBuilder.text(outputText);
+		resultBuilder.text(options.wrapUntrusted ? wrapUntrustedContent(outputText) : outputText);
 		if (truncationInfo) {
 			resultBuilder.truncation(truncationInfo.result, truncationInfo.options);
 		}
@@ -1469,6 +1471,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					sourceUrl: cached.details.finalUrl,
 					entityLabel: "URL output",
 					immutable: true,
+					wrapUntrusted: true,
 				});
 			}
 			return executeReadUrl(this.session, { path: parsedUrlTarget.path, raw: parsedUrlTarget.raw }, signal);

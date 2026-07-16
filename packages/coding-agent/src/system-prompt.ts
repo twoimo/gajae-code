@@ -10,6 +10,7 @@ import { contextFileCapability } from "./capability/context-file";
 import { systemPromptCapability } from "./capability/system-prompt";
 import type { SkillsSettings } from "./config/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
+import type { Skill } from "./extensibility/skills";
 import customSystemPromptTemplate from "./prompts/system/custom-system-prompt.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
@@ -360,8 +361,8 @@ export interface BuildSystemPromptOptions {
 	rules?: Array<{ name: string; description?: string; path: string; globs?: string[] }>;
 	/** Intent field name injected into every tool schema. If set, explains the field in the prompt. */
 	intentField?: string;
-/** Whether built-in tool discovery is active; enables the tool-discovery prompt block. */
-toolDiscoveryActive?: boolean;
+	/** Whether built-in tool discovery is active; enables the tool-discovery prompt block. */
+	toolDiscoveryActive?: boolean;
 	/** Encourage the agent to delegate via tasks unless changes are trivial. */
 	eagerTasks?: boolean;
 	/** Rules with alwaysApply=true — their full content is injected into the prompt. */
@@ -426,8 +427,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		rules,
 		alwaysApplyRules,
 		intentField,
-toolDiscoveryActive = false,
-discoverableTools = [],
+		toolDiscoveryActive = false,
 		eagerTasks = false,
 		secretsEnabled = false,
 		workspaceTree: providedWorkspaceTree,
@@ -490,7 +490,7 @@ discoverableTools = [],
 					buildWorkspaceTree(resolvedCwd, { timeoutMs: SYSTEM_PROMPT_PREP_TIMEOUT_MS }),
 				);
 
-const [resolvedCustomPrompt, resolvedAppendPrompt, systemPromptCustomization, contextFiles, workspaceTree] =
+	const [resolvedCustomPrompt, resolvedAppendPrompt, systemPromptCustomization, contextFiles, workspaceTree] =
 		await Promise.all([
 			withDeadline(
 				"customPrompt",
@@ -563,7 +563,6 @@ const [resolvedCustomPrompt, resolvedAppendPrompt, systemPromptCustomization, co
 		description: tools?.get(name)?.description ?? "",
 	}));
 
-
 	const effectiveSystemPromptCustomization = dedupePromptSource(systemPromptCustomization, [
 		resolvedCustomPrompt,
 		resolvedAppendPrompt,
@@ -591,8 +590,7 @@ const [resolvedCustomPrompt, resolvedAppendPrompt, systemPromptCustomization, co
 		cwd: promptCwd,
 		intentTracing: !!intentField,
 		intentField: intentField ?? "",
-toolDiscoveryActive: toolDiscoveryActive && hasHiddenToolDiscoveryTool,
-discoverableTools,
+		toolDiscoveryActive: toolDiscoveryActive && hasHiddenToolDiscoveryTool,
 		eagerTasks,
 		secretsEnabled,
 		subagent,
