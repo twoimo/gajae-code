@@ -854,7 +854,7 @@ describe("telegram daemon", () => {
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
 		await acquireDaemonOwnership({
 			settings: s,
-			tokenFingerprint: "e60b05c186ca",
+			tokenFingerprint: tokenFingerprint("123456:secret-token"),
 			chatId: "42",
 			pid: 111,
 			randomId: () => "owner",
@@ -871,7 +871,9 @@ describe("telegram daemon", () => {
 				await renewDaemonHeartbeat({
 					settings: this.#options.settings,
 					ownerId: this.#options.ownerId,
-					pid: this.#options.pid,
+					tokenFingerprint: tokenFingerprint("123456:secret-token"),
+					chatId: "42",
+					pid: this.#options.pid!,
 				});
 			}
 		}
@@ -920,6 +922,47 @@ describe("telegram daemon", () => {
 		).toBe(true);
 		expect((await readDaemonState(s))?.pid).toBe(8123);
 	});
+	test("Unix source and compiled launches keep their non-opaque owner ids", async () => {
+		const sourceAgentDir = tempAgentDir();
+		const source = await spawnTelegramDaemonOwner(
+			{ settings: settings(sourceAgentDir), tokenFingerprint: "fp", chatId: "42" },
+			{
+				execPath: "/usr/local/bin/bun",
+				platform: "linux",
+				randomId: () => "source-owner",
+				spawn: () => ({ unref() {} }),
+			},
+		);
+		const compiledAgentDir = tempAgentDir();
+		const compiled = await spawnTelegramDaemonOwner(
+			{ settings: settings(compiledAgentDir), tokenFingerprint: "fp", chatId: "42" },
+			{
+				execPath: "/opt/gjc/gjc",
+				platform: "win32",
+				randomId: () => "compiled-owner",
+				spawn: () => ({ unref() {} }),
+			},
+		);
+
+		expect(source).toMatchObject({ result: "owner_spawned", ownerId: "source-owner" });
+		expect(compiled).toMatchObject({ result: "owner_spawned", ownerId: "compiled-owner" });
+	});
+
+	test("daemon heartbeat rejects omitted identity or PID at runtime", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 7132,
+			ownerId: "owner",
+		});
+
+		// @ts-expect-error Heartbeats require the Telegram identity and daemon PID.
+		expect(await renewDaemonHeartbeat({ settings: s, ownerId: "owner" })).toBe(false);
+		expect(await readDaemonState(s)).toMatchObject({ pid: 7132, heartbeatAt: expect.any(Number) });
+	});
 
 	test("daemon heartbeat rejects a foreign Telegram identity even with the owner id", async () => {
 		const agentDir = tempAgentDir();
@@ -951,6 +994,28 @@ describe("telegram daemon", () => {
 			}),
 		).toBe(false);
 		expect((await readDaemonState(s))?.pid).toBe(7132);
+	});
+	test("release rejects a matching owner and Telegram identity with the wrong PID", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 7132,
+			ownerId: "owner",
+		});
+
+		await releaseDaemonOwnership({
+			settings: s,
+			ownerId: "owner",
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 8123,
+		});
+
+		expect(fs.existsSync(daemonPaths(agentDir).lock)).toBe(true);
+		expect((await readDaemonState(s))?.stoppedAt).toBeUndefined();
 	});
 	test("runDaemonInternal stops when persisted ownership moves to another owner", async () => {
 		const agentDir = tempAgentDir();
@@ -3200,8 +3265,24 @@ describe("telegram daemon", () => {
 			pid: process.pid,
 			randomId: () => "owner",
 		});
-		expect(await renewDaemonHeartbeat({ settings: s, ownerId: "other" })).toBe(false);
-		expect(await renewDaemonHeartbeat({ settings: s, ownerId: "owner" })).toBe(true);
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "other",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: process.pid,
+			}),
+		).toBe(false);
+		expect(
+			await renewDaemonHeartbeat({
+				settings: s,
+				ownerId: "owner",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: process.pid,
+			}),
+		).toBe(true);
 
 		await releaseDaemonOwnership({
 			settings: s,

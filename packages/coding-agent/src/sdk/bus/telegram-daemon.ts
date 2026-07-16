@@ -620,25 +620,28 @@ export async function renewDaemonHeartbeat(input: {
 	settings: Settings;
 	ownerId: string;
 	/** Bind a daemon heartbeat to the Telegram identity that acquired the lock. */
-	tokenFingerprint?: string;
-	chatId?: string;
+	tokenFingerprint: string;
+	chatId: string;
+	/** Require the current daemon PID after the launcher-to-daemon PID rebind. */
+	pid: number;
 	fs?: TelegramDaemonFs;
 	now?: () => number;
-	pid?: number;
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
 	const state = await readJson<DaemonState>(fsImpl, paths.state);
 	if (
 		!state ||
+		typeof input.tokenFingerprint !== "string" ||
+		typeof input.chatId !== "string" ||
+		typeof input.pid !== "number" ||
 		state.ownerId !== input.ownerId ||
-		(input.tokenFingerprint !== undefined && state.tokenFingerprint !== input.tokenFingerprint) ||
-		(input.chatId !== undefined && state.chatId !== input.chatId)
+		!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId)
 	)
 		return false;
 	await writeJsonAtomic(fsImpl, paths.state, {
 		...state,
-		pid: input.pid ?? state.pid,
+		pid: input.pid,
 		heartbeatAt: (input.now ?? Date.now)(),
 	});
 	return true;
