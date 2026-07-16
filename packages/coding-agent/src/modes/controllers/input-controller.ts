@@ -38,13 +38,6 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
-interface PaletteComposerStash {
-	text: string;
-	pendingImages: InteractiveModeContext["pendingImages"];
-	userEditGeneration: number;
-	sessionId: string;
-	editor: InteractiveModeContext["editor"];
-}
 export class InputController {
 	constructor(private ctx: InteractiveModeContext) {}
 
@@ -57,9 +50,6 @@ export class InputController {
 	#steerConsumePending = false;
 	#commandPaletteActions = new Map<AppKeybinding, CommandPaletteAction>();
 	#paletteCommandInFlight = false;
-	#paletteComposerStash: PaletteComposerStash | undefined;
-	#userComposerEditGeneration = 0;
-	#allowProgrammaticComposerClear = false;
 
 	#registerCommandPaletteAction(action: AppKeybinding, handler: () => void | Promise<void>): void {
 		this.#commandPaletteActions.set(action, {
@@ -67,26 +57,6 @@ export class InputController {
 			label: KEYBINDINGS[action].description,
 			handler,
 		});
-	}
-
-	#recordUserComposerEdit(): void {
-		this.#userComposerEditGeneration += 1;
-	}
-
-	/**
-	 * Clear the composer because a submission consumed its text. Submission
-	 * paths resume in a microtask (after the first await in submitText), so the
-	 * editor's user-input window has already closed; without the allow flag the
-	 * palette ownership guard would swallow this clear and leave already-sent
-	 * text in the composer.
-	 */
-	#clearComposerForSubmission(): void {
-		this.#allowProgrammaticComposerClear = true;
-		try {
-			this.ctx.editor.setText("");
-		} finally {
-			this.#allowProgrammaticComposerClear = false;
-		}
 	}
 
 	#globalInterruptUnsubscribe: (() => void) | undefined;
@@ -254,13 +224,7 @@ export class InputController {
 		if (text.trim()) {
 			this.ctx.editor.addToHistory(text);
 		}
-		this.#recordUserComposerEdit();
-		this.#allowProgrammaticComposerClear = true;
-		try {
-			this.ctx.clearEditor();
-		} finally {
-			this.#allowProgrammaticComposerClear = false;
-		}
+		this.ctx.clearEditor();
 	}
 
 	setupKeyHandlers(): void {
@@ -547,15 +511,6 @@ export class InputController {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.handleForegroundToolBackgroundFold());
 		}
 
-		this.ctx.editor.onUserEdit = () => this.#recordUserComposerEdit();
-		this.ctx.editor.onProgrammaticSetText = text =>
-			Boolean(
-				this.#paletteComposerStash &&
-					!this.#allowProgrammaticComposerClear &&
-					this.#userComposerEditGeneration !== this.#paletteComposerStash.userEditGeneration &&
-					this.ctx.editor === this.#paletteComposerStash.editor &&
-					text === "",
-			);
 		this.ctx.editor.onChange = (text: string) => {
 			this.#resetEscapeGestures();
 			const wasBashMode = this.ctx.isBashMode;
@@ -596,7 +551,7 @@ export class InputController {
 		// Continue shortcuts: "." or "c" sends empty message (agent continues, no visible message)
 		if (text === "." || text === "c") {
 			if (this.ctx.onInputCallback) {
-				this.#clearComposerForSubmission();
+				this.ctx.editor.setText("");
 				this.ctx.pendingImages = [];
 				this.ctx.onInputCallback({ text: "", cancelled: false, started: true });
 			}
@@ -610,7 +565,7 @@ export class InputController {
 		if (runner?.hasHandlers("input")) {
 			const result = await runner.emitInput(text, inputImages, "interactive");
 			if (result?.handled) {
-				this.#clearComposerForSubmission();
+				this.ctx.editor.setText("");
 				this.#clearPendingImagesIfOwnedBy(pendingImages);
 				return;
 			}
@@ -699,7 +654,7 @@ export class InputController {
 		// This handles extension commands (execute immediately), prompt template expansion, and queueing
 		if (this.ctx.session.isStreaming) {
 			this.ctx.editor.addToHistory(text);
-			this.#clearComposerForSubmission();
+			this.ctx.editor.setText("");
 			const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 			this.#clearPendingImagesIfOwnedBy(pendingImages);
 			// Record the signature so the queued message's eventual delivery
@@ -768,13 +723,7 @@ export class InputController {
 		if (now - this.ctx.lastSigintTime < 500) {
 			void this.ctx.shutdown();
 		} else {
-			this.#recordUserComposerEdit();
-			this.#allowProgrammaticComposerClear = true;
-			try {
-				this.ctx.clearEditor();
-			} finally {
-				this.#allowProgrammaticComposerClear = false;
-			}
+			this.ctx.clearEditor();
 			this.ctx.lastSigintTime = now;
 		}
 	}
@@ -1016,7 +965,7 @@ export class InputController {
 		const invocations = parseSkillInvocations(text, this.ctx.skillCommands ?? new Map());
 		if (invocations.length === 0) return false;
 		this.ctx.editor.addToHistory(text);
-		this.#clearComposerForSubmission();
+		this.ctx.editor.setText("");
 		try {
 			for (let index = 0; index < invocations.length; index += 1) {
 				const invocation = invocations[index];
@@ -1105,7 +1054,7 @@ export class InputController {
 
 		if (this.ctx.session.isStreaming) {
 			this.ctx.editor.addToHistory(text);
-			this.#clearComposerForSubmission();
+			this.ctx.editor.setText("");
 			await this.ctx.withLocalSubmission(text, () =>
 				this.ctx.session.prompt(text, {
 					streamingBehavior: "followUp",
@@ -1119,7 +1068,7 @@ export class InputController {
 
 		// Not streaming — just submit normally
 		this.ctx.editor.addToHistory(text);
-		this.#clearComposerForSubmission();
+		this.ctx.editor.setText("");
 		await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text));
 	}
 
@@ -1386,7 +1335,6 @@ export class InputController {
 						// Keep the normalized image when resize fails.
 					}
 				}
-				this.#recordUserComposerEdit();
 
 				this.ctx.pendingImages = [
 					...this.ctx.pendingImages,
@@ -1477,33 +1425,15 @@ export class InputController {
 				return;
 			}
 
+			if (this.ctx.editor.getText() || this.ctx.pendingImages.length > 0) {
+				this.ctx.showStatus("Send or clear the draft before running a palette command.");
+				return;
+			}
+
 			this.#paletteCommandInFlight = true;
-			const stash: PaletteComposerStash = {
-				text: this.ctx.editor.getText(),
-				pendingImages: [...this.ctx.pendingImages],
-				userEditGeneration: this.#userComposerEditGeneration,
-				sessionId: this.ctx.session.sessionId,
-				editor: this.ctx.editor,
-			};
-			this.#paletteComposerStash = stash;
-			// Preserve a non-empty draft before dispatch so a session change cannot strand it.
-			if (stash.text) stash.editor.addToHistory(stash.text);
-			this.ctx.editor.setText("");
-			this.ctx.pendingImages = [];
 			try {
 				await this.submitText(`/${name}`);
 			} finally {
-				if (
-					this.#paletteComposerStash === stash &&
-					this.#userComposerEditGeneration === stash.userEditGeneration &&
-					this.ctx.session.sessionId === stash.sessionId &&
-					this.ctx.editor === stash.editor &&
-					this.ctx.editor.getText() === ""
-				) {
-					this.ctx.editor.setText(stash.text);
-					this.ctx.pendingImages = stash.pendingImages;
-				}
-				if (this.#paletteComposerStash === stash) this.#paletteComposerStash = undefined;
 				this.#paletteCommandInFlight = false;
 			}
 		});
