@@ -110,8 +110,14 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           repository: ${{ env.HEAD_REPOSITORY }}
-          ref: ${{ env.GITHUB_HEAD_SHA }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
+      - name: Verify checked-out source head
+        shell: bash
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          [[ "${head}" == "${GITHUB_HEAD_SHA}" ]] || { echo "Checked-out SHA ${head} does not match ${GITHUB_HEAD_SHA}"; exit 1; }
       - name: Fetch and prove authoritative guard revisions
         shell: bash
         run: |

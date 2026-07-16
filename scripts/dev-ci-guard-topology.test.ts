@@ -52,11 +52,13 @@ describe("dev-ci Telegram daemon generation guard topology", () => {
 			steps.find(s => typeof s.uses === "string" && s.uses.includes("actions/checkout")).with.ref;
 		const guardRef = checkoutRef(guard.steps);
 		const planRef = checkoutRef(d.jobs["affected-plan"].steps);
-		// The guard checks out env.GITHUB_HEAD_SHA, which resolves to the same github.sha
-		// the planner checks out for push/workflow_dispatch (PR uses the PR head on both).
-		expect(guardRef).toBe("${{ env.GITHUB_HEAD_SHA }}");
-		expect(planRef).toContain("github.sha");
+		// The guard checks out the exact same source expression as the planner, so a
+		// push/workflow_dispatch validates github.sha in both, and a PR validates the PR
+		// head in both — never divergent revisions.
+		expect(guardRef).toBe("${{ github.event.pull_request.head.sha || github.sha }}");
+		expect(guardRef).toBe(planRef);
+		// The guard's authority head SHA tracks that same source.
 		expect(guard.env.GITHUB_HEAD_SHA).toContain("github.event.pull_request.head.sha");
-		expect(planRef).toContain("github.event.pull_request.head.sha");
+		expect(guard.env.GITHUB_HEAD_SHA).toContain("github.sha");
 	});
 });
