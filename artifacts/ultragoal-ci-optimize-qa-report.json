@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "black-box-ci-workflow-test-report-round-2",
+  "round": 2,
+  "frozenDiffSha256": "6b1c13270eed6abea56711e0b1e48101e2a7fdd81794cab3766fbf91add3a39c",
+  "cases": [
+    {
+      "id": "1-windows-native-cache-key-completeness",
+      "scenario": "Re-check round-1 case 4 after the native Windows cache fix.",
+      "verdict": "passed",
+      "evidence": [
+        "The cache key in .github/workflows/ci.yml:229-238 is namespaced windows-smoke-native-v2-baseline and hashes both bun.lock and root package.json alongside the prior native build inputs.",
+        "The cache path remains packages/natives/native/pi_natives.win32-x64-baseline.node. The restore/cache step and build/smoke steps retain relevance gates at ci.yml:231, :240-250, :257-274; a cache hit still skips only the native build prerequisites and build.",
+        "The frozen diff SHA-256 was recomputed as 6b1c13270eed6abea56711e0b1e48101e2a7fdd81794cab3766fbf91add3a39c."
+      ]
+    },
+    {
+      "id": "2-relevance-probe-fail-open-and-empty-output",
+      "scenario": "The prior-main artifact probe fails while relevance must remain available; then consumers receive an empty relevant output.",
+      "verdict": "passed",
+      "evidence": [
+        "rust-hash declares relevant from steps.relevance at ci.yml:48-51. The relevance step precedes Compute rust source hash and Find prior main build at :57-80.",
+        "The find script explicitly uses set +e at ci.yml:84-88 and exit 0 at :109-110, so a gh/API/probe failure cannot fail rust-hash or mask the already-written relevance output.",
+        "A repository search for relevant == 'true' in ci.yml returned zero matches. All relevance-gated expensive steps use needs.rust-hash.outputs.relevant != 'false' (for example ci.yml:181-185, :204, :231-274, :330-365, and :378-408), so empty output runs those steps rather than skipping them."
+      ]
+    },
+    {
+      "id": "3-fork-pr-empty-output-security-graph",
+      "scenario": "Fork pull request skips rust-hash, making its outputs empty; trace every affected consumer and compare with git show HEAD:.github/workflows/ci.yml.",
+      "verdict": "passed",
+      "evidence": [
+        "rust-hash is skipped for fork PRs by ci.yml:46. Each direct consumer independently has the same fork guard: gjc-state-gates-matrix :115, check :164, native_linux :192-193, windows_smoke :222, test :311-312, and install_methods :370. The aggregate guard at :149 also excludes fork PRs.",
+        "Therefore, with empty rust-hash outputs, gjc-state-gates-matrix, gjc-state-gates, check, native_linux, windows_smoke, test, and install_methods all skip. Their expensive steps do not execute; in particular neither the Windows actions/cache writer nor rust-cache runs on a fork PR.",
+        "git show HEAD:.github/workflows/ci.yml shows the same fork guard on the former relevance job and on each of gjc-state-gates, check, native_linux, windows_smoke, test, and install_methods. Replacing relevance with rust-hash did not make an expensive fork-PR step runnable. No security-relevant regression was found."
+      ]
+    },
+    {
+      "id": "4-gjc-state-gates-aggregate-semantics",
+      "scenario": "Adversarially evaluate matrix failure/cancellation and tag/fork skip semantics for the stable aggregate status.",
+      "verdict": "passed",
+      "evidence": [
+        "The main matrix is fail-fast:false with four groups at ci.yml:118-121. The stable aggregate is always(), needs that matrix, and runs test \"$result\" = success at :147-158. A matrix result of failure or cancelled makes that assertion nonzero, so the aggregate cannot go green.",
+        "For a v* tag, both matrix and aggregate are skipped: matrix has !startsWith(github.ref, 'refs/tags/v') at :115, and aggregate retains that same exclusion at :149. For a fork PR, both have the same head-repository exclusion. This restores the pre-change single gjc-state-gates job's tag/fork skipped status, including branch protection's required check behavior.",
+        "dev-ci.yml uses the corresponding strict assertion at :405-417; its matrix writer is separately checked below."
+      ]
+    },
+    {
+      "id": "5-workflow-lint-and-yaml-parse",
+      "scenario": "Validate the changed workflows with actionlint, treating only the documented baseline diagnostic as excepted.",
+      "verdict": "passed",
+      "evidence": [
+        "actionlint .github/workflows/ci.yml completed with exit 0, covering CI YAML parsing and workflow validation.",
+        "actionlint .github/workflows/ci.yml .github/workflows/dev-ci.yml reported exactly dev-ci.yml:290 SC2016 and no CI diagnostic. actionlint -ignore SC2016 .github/workflows/dev-ci.yml completed with exit 0.",
+        "The reported SC2016 is the explicitly accepted baseline at dev-ci.yml:290; git diff --check HEAD -- .github/workflows/ci.yml .github/workflows/dev-ci.yml package.json completed with no whitespace errors."
+      ]
+    },
+    {
+      "id": "6-dev-gjc-state-gates-cache-writer",
+      "scenario": "Verify the intended dev writer swap for gjc-state-gates-matrix.",
+      "verdict": "passed",
+      "evidence": [
+        "dev-ci.yml:373-403 defines gjc-state-gates-matrix. Its Bun dependency cache step at :394-400 uses actions/cache@... (the saving cache action), not actions/cache/restore@....",
+        "The writer preserves the Bun cache path ~/.bun/install/cache and key hashFiles('**/bun.lock'), then installs frozen dependencies at :401. The changed frozen diff explicitly switches this matrix step from restore to actions/cache, confirming this is the intended writer swap."
+      ]
+    },
+    {
+      "id": "7-cli-replay-artifact",
+      "scenario": "Create and execute the required replay-safe CLI artifact.",
+      "verdict": "passed",
+      "evidence": [
+        "Executed with LC_ALL=C: bun -e console.log(\"ultragoal-cli-ok\"). It exited 0, wrote exactly ultragoal-cli-ok followed by a newline to stdout, and wrote no stderr.",
+        "artifacts/ultragoal-ci-optimize-cli-replay.json exists with schemaVersion 1, kind cli-replay, replaySafe true, the requested command/environment/timeout/expected exit code, recorded output, and both requested invariants."
+      ]
+    }
+  ],
+  "summary": {
+    "passed": 7,
+    "failed": 0,
+    "blockers": [],
+    "validation": "Round-2 frozen-diff hash verification; focused static workflow graph and cache-key review; fork/tag/failure/cancellation semantic tracing; actionlint validation with only the accepted SC2016 baseline; git diff --check; and an executed replay-safe Bun CLI command. No GitHub-hosted workflow run was dispatched."
+  }
+}
