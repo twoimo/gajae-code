@@ -385,6 +385,24 @@ async function tryOpenWx(fsImpl: TelegramDaemonFs, file: string): Promise<boolea
 		throw error;
 	}
 }
+function validDaemonPid(pid: unknown): pid is number {
+	return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0;
+}
+
+async function tryCreateOwnershipLock(
+	fsImpl: TelegramDaemonFs,
+	file: string,
+	initialization: { pid: number; startedAt: number },
+): Promise<boolean> {
+	try {
+		await fsImpl.writeFile(file, `${JSON.stringify(initialization)}\n`, { mode: 0o600, flag: "wx" });
+		await fsImpl.chmod(file, 0o600).catch(() => undefined);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	}
+}
 
 export async function registerNotificationRoot(input: {
 	settings: Settings;
@@ -472,6 +490,7 @@ function liveOwnerUsesDifferentIdentity(input: {
 			state.version === DAEMON_VERSION &&
 			state.stoppedAt === undefined &&
 			!ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) &&
+			validDaemonPid(state.pid) &&
 			input.pidAlive(state.pid),
 	);
 }
@@ -490,6 +509,7 @@ export function isFreshLiveOwner(input: {
 			state.stoppedAt === undefined &&
 			ownerIdentityMatches(state, input.tokenFingerprint, input.chatId) &&
 			input.now - state.heartbeatAt <= HEARTBEAT_TTL_MS &&
+			validDaemonPid(state.pid) &&
 			input.pidAlive(state.pid),
 	);
 }
@@ -519,135 +539,112 @@ export async function acquireDaemonOwnership(input: {
 	const fsImpl = input.fs ?? nodeFs;
 	const now = input.now ?? Date.now;
 	const pid = input.pid ?? process.pid;
+	if (!validDaemonPid(pid)) return { acquired: false, attached: true };
 	const pidAlive = input.pidAlive ?? defaultPidAlive;
 	const paths = daemonPaths(input.settings.getAgentDir());
 	await ensureDir(fsImpl, paths.dir);
 	const ownerId =
 		input.ownerId ?? input.randomId?.() ?? `${pid}-${now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-	const initializationPath = `${paths.lock}.initializing.json`;
-	const writeState = async (state: DaemonState): Promise<void> => {
-		await writeJsonAtomic(fsImpl, paths.state, state);
-		await fsImpl.unlink(initializationPath).catch(() => undefined);
-	};
-	const initializationIsPositivelyStale = async (): Promise<boolean> => {
-		const initialization = await readJson<{ pid?: unknown; startedAt?: unknown }>(fsImpl, initializationPath);
-		return Boolean(
-			initialization &&
-				typeof initialization.pid === "number" &&
-				Number.isSafeInteger(initialization.pid) &&
-				initialization.pid > 0 &&
-				typeof initialization.startedAt === "number" &&
-				Number.isFinite(initialization.startedAt) &&
-				now() - initialization.startedAt > HEARTBEAT_TTL_MS &&
-				!pidAlive(initialization.pid),
-		);
-	};
 	const roots = input.roots ?? (await readJson<{ roots?: string[] }>(fsImpl, paths.roots))?.roots ?? [];
-
-	// A fresh, identity-matching live owner running an OLDER generation than this
-	// build cannot serve our newer wire frames; signal a reload instead of a
-	// silent attach. Newer/equal generations attach as before (no downgrade).
-	const attachDecision = (
-		state: DaemonState | undefined,
-	): { acquired: false; attached: boolean; reloadRequired?: boolean } | undefined => {
-		if (
-			!isFreshLiveOwner({
-				state,
-				now: now(),
+	return withFileLock(paths.ownership, async () => {
+		const lockIsPositivelyStale = async (): Promise<boolean> => {
+			const initialization = await readJson<{ pid?: unknown; startedAt?: unknown }>(fsImpl, paths.lock);
+			return Boolean(
+				initialization &&
+					validDaemonPid(initialization.pid) &&
+					typeof initialization.startedAt === "number" &&
+					Number.isFinite(initialization.startedAt) &&
+					now() - initialization.startedAt > HEARTBEAT_TTL_MS &&
+					!pidAlive(initialization.pid),
+			);
+		};
+		const writeState = async (): Promise<void> => {
+			const timestamp = now();
+			await writeJsonAtomic(fsImpl, paths.state, {
+				pid,
+				ownerId,
 				tokenFingerprint: input.tokenFingerprint,
 				chatId: input.chatId,
-				pidAlive,
-			})
-		) {
-			return undefined;
-		}
-		return (state?.generation ?? 0) < DAEMON_GENERATION
-			? { acquired: false, attached: false, reloadRequired: true }
-			: { acquired: false, attached: true };
-	};
-	const existing = await readJson<DaemonState>(fsImpl, paths.state);
-	if (
-		liveOwnerUsesDifferentIdentity({
-			state: existing,
-			tokenFingerprint: input.tokenFingerprint,
-			chatId: input.chatId,
-			pidAlive,
-		})
-	) {
-		return { acquired: false, blocked: true, reason: "identity_mismatch" };
-	}
-	const existingDecision = attachDecision(existing);
-	if (existingDecision) return existingDecision;
-	if (await tryOpenWx(fsImpl, paths.lock)) {
-		await writeJsonAtomic(fsImpl, initializationPath, { pid, startedAt: now() });
-		await writeState({
-			pid,
-			ownerId,
-			tokenFingerprint: input.tokenFingerprint,
-			chatId: input.chatId,
-			startedAt: now(),
-			heartbeatAt: now(),
-			roots,
-			version: DAEMON_VERSION,
-			generation: DAEMON_GENERATION,
-			...(input.allowPidRebind ? { launcherPid: pid } : {}),
-		} satisfies DaemonState);
-		return { acquired: true, ownerId };
-	}
-	const afterLock = await readJson<DaemonState>(fsImpl, paths.state);
-	if (
-		liveOwnerUsesDifferentIdentity({
-			state: afterLock,
-			tokenFingerprint: input.tokenFingerprint,
-			chatId: input.chatId,
-			pidAlive,
-		})
-	) {
-		return { acquired: false, blocked: true, reason: "identity_mismatch" };
-	}
-	const afterLockDecision = attachDecision(afterLock);
-	if (afterLockDecision) return afterLockDecision;
-	if (!afterLock && !(await initializationIsPositivelyStale())) return { acquired: false, attached: true };
-	if (!(await tryOpenWx(fsImpl, paths.steal))) return { acquired: false, attached: true };
-	try {
-		const rechecked = await readJson<DaemonState>(fsImpl, paths.state);
-		const recheckedDecision = attachDecision(rechecked);
-		if (recheckedDecision) return recheckedDecision;
-		if (
+				startedAt: timestamp,
+				heartbeatAt: timestamp,
+				roots,
+				version: DAEMON_VERSION,
+				generation: DAEMON_GENERATION,
+				...(input.allowPidRebind ? { launcherPid: pid } : {}),
+			} satisfies DaemonState);
+		};
+		const attachDecision = (
+			state: DaemonState | undefined,
+		): { acquired: false; attached: boolean; reloadRequired?: boolean } | undefined => {
+			if (
+				!isFreshLiveOwner({
+					state,
+					now: now(),
+					tokenFingerprint: input.tokenFingerprint,
+					chatId: input.chatId,
+					pidAlive,
+				})
+			) {
+				return undefined;
+			}
+			return (state?.generation ?? 0) < DAEMON_GENERATION
+				? { acquired: false, attached: false, reloadRequired: true }
+				: { acquired: false, attached: true };
+		};
+		const rejectLiveDifferentIdentity = (state: DaemonState | undefined) =>
 			liveOwnerUsesDifferentIdentity({
-				state: rechecked,
+				state,
 				tokenFingerprint: input.tokenFingerprint,
 				chatId: input.chatId,
 				pidAlive,
-			})
-		) {
-			return { acquired: false, blocked: true, reason: "identity_mismatch" };
+			});
+		const existing = await readJson<DaemonState>(fsImpl, paths.state);
+		if (rejectLiveDifferentIdentity(existing)) {
+			return { acquired: false, blocked: true, reason: "identity_mismatch" } as const;
 		}
-		if (rechecked && pidAlive(rechecked.pid)) {
-			return { acquired: false, attached: true };
+		const existingDecision = attachDecision(existing);
+		if (existingDecision) return existingDecision;
+		const createdAt = now();
+		if (await tryCreateOwnershipLock(fsImpl, paths.lock, { pid, startedAt: createdAt })) {
+			await writeState();
+			return { acquired: true, ownerId };
 		}
-		if (!rechecked && !(await initializationIsPositivelyStale())) {
-			return { acquired: false, attached: true };
+		const afterLock = await readJson<DaemonState>(fsImpl, paths.state);
+		if (rejectLiveDifferentIdentity(afterLock)) {
+			return { acquired: false, blocked: true, reason: "identity_mismatch" } as const;
 		}
-		await fsImpl.unlink(paths.lock).catch(() => undefined);
-		if (!(await tryOpenWx(fsImpl, paths.lock))) return { acquired: false, attached: true };
-		await writeJsonAtomic(fsImpl, initializationPath, { pid, startedAt: now() });
-		await writeState({
-			pid,
-			ownerId,
-			tokenFingerprint: input.tokenFingerprint,
-			chatId: input.chatId,
-			startedAt: now(),
-			heartbeatAt: now(),
-			roots,
-			version: DAEMON_VERSION,
-			generation: DAEMON_GENERATION,
-			...(input.allowPidRebind ? { launcherPid: pid } : {}),
-		} satisfies DaemonState);
-		return { acquired: true, ownerId };
-	} finally {
-		await fsImpl.unlink(paths.steal).catch(() => undefined);
-	}
+		const afterLockDecision = attachDecision(afterLock);
+		if (afterLockDecision) return afterLockDecision;
+		if (!afterLock && !(await lockIsPositivelyStale())) return { acquired: false, attached: true };
+		if (!(await tryOpenWx(fsImpl, paths.steal))) return { acquired: false, attached: true };
+		try {
+			const rechecked = await readJson<DaemonState>(fsImpl, paths.state);
+			const recheckedDecision = attachDecision(rechecked);
+			if (recheckedDecision) return recheckedDecision;
+			if (rejectLiveDifferentIdentity(rechecked)) {
+				return { acquired: false, blocked: true, reason: "identity_mismatch" } as const;
+			}
+			if (
+				rechecked &&
+				rechecked.stoppedAt === undefined &&
+				validDaemonPid(rechecked.pid) &&
+				pidAlive(rechecked.pid)
+			) {
+				return { acquired: false, attached: true };
+			}
+			if (!rechecked && !(await lockIsPositivelyStale())) {
+				return { acquired: false, attached: true };
+			}
+			await fsImpl.unlink(paths.lock).catch(() => undefined);
+			if (!(await tryCreateOwnershipLock(fsImpl, paths.lock, { pid, startedAt: createdAt }))) {
+				return { acquired: false, attached: true };
+			}
+			await writeState();
+			return { acquired: true, ownerId };
+		} finally {
+			await fsImpl.unlink(paths.steal).catch(() => undefined);
+		}
+	});
 }
 
 export async function renewDaemonHeartbeat(input: {
@@ -663,7 +660,7 @@ export async function renewDaemonHeartbeat(input: {
 }): Promise<boolean> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	return withFileLock(paths.state, async () => {
+	return withFileLock(paths.ownership, async () => {
 		const state = await readJson<DaemonState>(fsImpl, paths.state);
 		if (
 			!state ||
@@ -699,7 +696,7 @@ export async function releaseDaemonOwnership(input: {
 }): Promise<void> {
 	const fsImpl = input.fs ?? nodeFs;
 	const paths = daemonPaths(input.settings.getAgentDir());
-	await withFileLock(paths.state, async () => {
+	await withFileLock(paths.ownership, async () => {
 		const state = await readJson<DaemonState>(fsImpl, paths.state);
 		if (
 			!state ||
@@ -710,7 +707,6 @@ export async function releaseDaemonOwnership(input: {
 			return;
 		await writeJsonAtomic(fsImpl, paths.state, { ...state, stoppedAt: (input.now ?? Date.now)() });
 		await fsImpl.unlink(paths.lock).catch(() => undefined);
-		await fsImpl.unlink(`${paths.lock}.initializing.json`).catch(() => undefined);
 	});
 }
 

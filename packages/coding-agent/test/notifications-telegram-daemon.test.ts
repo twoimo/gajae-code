@@ -509,7 +509,147 @@ describe("telegram daemon", () => {
 		);
 		expect(results.filter(r => r.acquired)).toHaveLength(1);
 	});
-	test("ownerless interrupted initialization only recovers with stale dead-launcher evidence", async () => {
+	test("stopped state with a retained lock is taken over even when its PID is live", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		fs.mkdirSync(paths.dir, { recursive: true });
+		fs.writeFileSync(paths.lock, JSON.stringify({ pid: 111, startedAt: 0 }));
+		fs.writeFileSync(
+			paths.state,
+			JSON.stringify({
+				pid: 111,
+				ownerId: "stopped",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				startedAt: 0,
+				heartbeatAt: 0,
+				stoppedAt: 1,
+				roots: [],
+				version: DAEMON_VERSION,
+				generation: DAEMON_GENERATION,
+			}),
+		);
+
+		await expect(
+			acquireDaemonOwnership({
+				settings: s,
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: 222,
+				now: () => 30_000,
+				pidAlive: pid => pid === 111,
+			}),
+		).resolves.toMatchObject({ acquired: true });
+	});
+	test("release paused after stopped write cannot unlink a successor lock", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 111,
+			ownerId: "old",
+		});
+		const paths = daemonPaths(agentDir);
+		let stoppedWritten!: () => void;
+		let continueRelease!: () => void;
+		const stoppedWrite = new Promise<void>(resolve => {
+			stoppedWritten = resolve;
+		});
+		const releaseGate = new Promise<void>(resolve => {
+			continueRelease = resolve;
+		});
+		const pausedFs: TelegramDaemonFs = {
+			mkdir: (file, opts) => fs.promises.mkdir(file, opts).then(() => undefined),
+			readFile: (file, encoding) => fs.promises.readFile(file, encoding),
+			writeFile: async (file, data, opts) => {
+				await fs.promises.writeFile(file, data, opts);
+				if (file.startsWith(`${paths.state}.`) && file.endsWith(".tmp")) {
+					stoppedWritten();
+					await releaseGate;
+				}
+			},
+			rename: (oldPath, newPath) => fs.promises.rename(oldPath, newPath).then(() => undefined),
+			unlink: file => fs.promises.unlink(file),
+			open: async (file, flags, mode) => fs.promises.open(file, flags, mode),
+			readdir: file => fs.promises.readdir(file),
+			chmod: (file, mode) => fs.promises.chmod(file, mode),
+		};
+		const release = releaseDaemonOwnership({
+			settings: s,
+			ownerId: "old",
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 111,
+			fs: pausedFs,
+		});
+		await stoppedWrite;
+		const successor = acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 222,
+			ownerId: "new",
+		});
+		continueRelease();
+		await release;
+		await expect(successor).resolves.toMatchObject({ acquired: true, ownerId: "new" });
+		expect((await readDaemonState(s))?.ownerId).toBe("new");
+		expect(fs.existsSync(paths.lock)).toBe(true);
+	});
+	test("malformed acquisition PID fails closed without probing liveness", async () => {
+		const agentDir = tempAgentDir();
+		const probes: number[] = [];
+		await expect(
+			acquireDaemonOwnership({
+				settings: setPrivateAgentDir(settings(agentDir), agentDir),
+				tokenFingerprint: "fp",
+				chatId: "42",
+				pid: Number.NaN,
+				pidAlive: pid => {
+					probes.push(pid);
+					return false;
+				},
+			}),
+		).resolves.toEqual({ acquired: false, attached: true });
+		expect(probes).toEqual([]);
+	});
+	test("malformed persisted PID is not sent to the liveness probe", async () => {
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const paths = daemonPaths(agentDir);
+		fs.mkdirSync(paths.dir, { recursive: true });
+		fs.writeFileSync(paths.lock, JSON.stringify({ pid: "invalid", startedAt: 0 }));
+		fs.writeFileSync(
+			paths.state,
+			JSON.stringify({
+				pid: "invalid",
+				ownerId: "old",
+				tokenFingerprint: "fp",
+				chatId: "42",
+				startedAt: 0,
+				heartbeatAt: 0,
+				roots: [],
+				version: DAEMON_VERSION,
+			}),
+		);
+		const probes: number[] = [];
+		await acquireDaemonOwnership({
+			settings: s,
+			tokenFingerprint: "fp",
+			chatId: "42",
+			pid: 222,
+			now: () => 30_000,
+			pidAlive: pid => {
+				probes.push(pid);
+				return false;
+			},
+		});
+		expect(probes).toEqual([]);
+	});
+	test("state publication failure leaves recoverable lock metadata", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
 		const paths = daemonPaths(agentDir);
@@ -541,7 +681,7 @@ describe("telegram daemon", () => {
 			}),
 		).rejects.toThrow("simulated crash");
 		expect(fs.existsSync(paths.lock)).toBe(true);
-		expect(fs.existsSync(`${paths.lock}.initializing.json`)).toBe(true);
+		expect(JSON.parse(fs.readFileSync(paths.lock, "utf8"))).toEqual({ pid: 111, startedAt: 0 });
 		expect(fs.existsSync(paths.state)).toBe(false);
 
 		expect(
@@ -555,13 +695,12 @@ describe("telegram daemon", () => {
 			}),
 		).toMatchObject({ acquired: true });
 	});
-	test("ownerless lock does not steal from a live initializer", async () => {
+	test("metadata-bearing lock does not steal from a live initializer", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
 		const paths = daemonPaths(agentDir);
 		fs.mkdirSync(paths.dir, { recursive: true });
-		fs.writeFileSync(paths.lock, "");
-		fs.writeFileSync(`${paths.lock}.initializing.json`, JSON.stringify({ pid: 111, startedAt: 0 }));
+		fs.writeFileSync(paths.lock, JSON.stringify({ pid: 111, startedAt: 0 }));
 
 		expect(
 			await acquireDaemonOwnership({
