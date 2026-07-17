@@ -853,6 +853,17 @@
 			},
 			"additionalProperties": false
 		},
+		"mouse": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean",
+					"description": "Enable SGR mouse wheel scrolling and overlay row selection. Disabled in tmux and screen.",
+					"default": false
+				}
+			},
+			"additionalProperties": false
+		},
 		"steeringMode": {
 			"type": "string",
 			"enum": [
@@ -2124,6 +2135,17 @@
 				"notificationDebounceMs": {
 					"type": "number",
 					"default": 500
+				}
+			},
+			"additionalProperties": false
+		},
+		"tasksPane": {
+			"type": "object",
+			"properties": {
+				"defaultVisible": {
+					"type": "boolean",
+					"description": "Open the unified tasks pane when the interactive UI starts",
+					"default": false
 				}
 			},
 			"additionalProperties": false

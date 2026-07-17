@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@gajae-code/agent-core";
 import type { CompactionOutcome } from "@gajae-code/agent-core/compaction";
 import type { AssistantMessage, ImageContent, Message, UsageReport } from "@gajae-code/ai";
-import type { Component, Container, EditorTheme, Loader, Spacer, Text, TUI } from "@gajae-code/tui";
+import type { Component, Container, EditorTheme, Loader, SlashCommand, Spacer, Text, TUI } from "@gajae-code/tui";
 import type { KeybindingsManager } from "../config/keybindings";
 import type { Settings } from "../config/settings";
 import type {
@@ -283,6 +283,8 @@ export interface InteractiveModeContext {
 		isAuto?: boolean,
 	): Promise<CompactionOutcome>;
 	openInBrowser(urlOrPath: string): void;
+	/** Resolved source of truth for slash autocomplete and command palette entries. */
+	getSlashCommands?(): readonly SlashCommand[];
 	refreshSlashCommandState(cwd?: string): Promise<void>;
 
 	// Selector handling
@@ -299,6 +301,7 @@ export interface InteractiveModeContext {
 	showUserMessageSelector(): void;
 	showTreeSelector(): void;
 	showSessionSelector(): void;
+	showSessionsDashboard(): void;
 	handleResumeSession(sessionPath: string): Promise<void>;
 	handleSessionDeleteCommand(): Promise<void>;
 	showOAuthSelector(mode: "login" | "logout", providerId?: string, options?: OAuthSelectorOptions): Promise<void>;
@@ -306,6 +309,10 @@ export interface InteractiveModeContext {
 	showDebugSelector(): void;
 	showSessionObserver(): void;
 	showJobsOverlay(): void;
+	showTasksPane(): void;
+	showTranscriptViewer(): void;
+	isTranscriptViewerOpen(): boolean;
+	refreshTranscriptViewer(): void;
 	resetObserverRegistry(): void;
 
 	// Input handling

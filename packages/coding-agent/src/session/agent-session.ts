@@ -27,6 +27,7 @@ import {
 	type AgentEvent,
 	type AgentLoopConfig,
 	type AgentMessage,
+	type AgentQueueSnapshot,
 	type AgentState,
 	type AgentTool,
 	assertImagePlaceholdersHavePayload,
@@ -117,6 +118,12 @@ export interface PurgeQueuedCustomMessagesResult {
 	displayFollowUp: number;
 	totalExecutable: number;
 }
+
+export type AbortOutcome = { kind: "settled" } | { kind: "timeout" } | { kind: "error"; cause: unknown };
+export type CancelAndSubmitOutcome =
+	| { kind: "submitted" }
+	| { kind: "refused"; reason: "duplicate" | "compaction" }
+	| { kind: "rolled_back"; outcome: Extract<AbortOutcome, { kind: "timeout" | "error" }> };
 
 export interface ForkContextSeed {
 	messages: Message[];
@@ -682,6 +689,13 @@ export interface RoleModelCycleResult {
 	model: Model;
 	thinkingLevel: ThinkingLevel | undefined;
 	role: string;
+}
+
+interface RoleModelCycleCandidate {
+	role: string;
+	model: Model;
+	thinkingLevel?: ThinkingLevel;
+	explicitThinkingLevel: boolean;
 }
 
 /** Session statistics for /session command */
@@ -1559,6 +1573,12 @@ export class AgentSession {
 	 *  combined with `Date.now()` so tags stay unique even across rapid
 	 *  same-tick enqueues. */
 	#customDisplayTagCounter = 0;
+	/** Prevents queued continuations from draining while cancel-and-submit is atomic. */
+	#cancelAndSubmitInProgress = false;
+	/** Tracks whether the active cancel-and-submit preflight consumed hidden next-turn context. */
+	#cancelAndSubmitPendingNextTurnDrained = false;
+	/** Test-only abort outcome override for cancel-and-submit rollback coverage. */
+	#cancelAndSubmitAbortOutcomeProviderForTests: (() => Promise<AbortOutcome>) | undefined = undefined;
 	#postPromptTasks = new Set<Promise<void>>();
 	#postPromptTasksPromise: Promise<void> | undefined = undefined;
 	#postPromptTasksResolve: (() => void) | undefined = undefined;
@@ -3259,6 +3279,10 @@ export class AgentSession {
 					}
 					if (scheduledGeneration !== undefined && this.#promptGeneration !== scheduledGeneration) {
 						skip("generation_changed");
+						return false;
+					}
+					if (this.#cancelAndSubmitInProgress) {
+						skip("queue_drained");
 						return false;
 					}
 					if (options?.shouldContinue && !options.shouldContinue()) {
@@ -6575,6 +6599,7 @@ export class AgentSession {
 				messages.push(msg);
 			}
 			this.#pendingNextTurnMessages = [];
+			if (this.#cancelAndSubmitInProgress) this.#cancelAndSubmitPendingNextTurnDrained = true;
 
 			// Auto-read @filepath mentions
 			const fileMentions = extractFileMentions(expandedText);
@@ -6945,7 +6970,7 @@ export class AgentSession {
 		// user-interrupt abort, so it stalls until the user presses Esc. Schedule a
 		// continue so the steer is delivered promptly. A live loop (or an
 		// already-drained queue) makes the scheduled continue a no-op.
-		if (this.#canAutoContinueForSteer()) {
+		if (!this.#cancelAndSubmitInProgress && this.#canAutoContinueForSteer()) {
 			this.#scheduleAgentContinue({
 				shouldContinue: () => this.#canAutoContinueForSteer() && this.agent.hasQueuedSteering(),
 			});
@@ -6980,7 +7005,7 @@ export class AgentSession {
 		// agent.continue() only dequeues follow-ups from an assistant-ended state;
 		// resuming from user/toolResult state runs an extra model call on the
 		// stale prompt before draining the queue.
-		if (this.#canAutoContinueForFollowUp()) {
+		if (!this.#cancelAndSubmitInProgress && this.#canAutoContinueForFollowUp()) {
 			this.#scheduleAgentContinue({
 				shouldContinue: () => this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages(),
 			});
@@ -7019,6 +7044,16 @@ export class AgentSession {
 
 	queueDeferredMessageForTests(message: CustomMessage, triggerTurn = true): void {
 		this.#queueHiddenNextTurnMessage(message, triggerTurn);
+	}
+
+	/** Read-only test seam for the hidden next-turn context queue. */
+	getPendingNextTurnMessagesForTests(): readonly CustomMessage[] {
+		return this.#pendingNextTurnMessages.slice();
+	}
+
+	/** Test-only abort outcome override; undefined retains the production abort race. */
+	setCancelAndSubmitAbortOutcomeProviderForTests(provider: (() => Promise<AbortOutcome>) | undefined): void {
+		this.#cancelAndSubmitAbortOutcomeProviderForTests = provider;
 	}
 
 	#queueHiddenNextTurnMessage(message: CustomMessage, triggerTurn: boolean): void {
@@ -7378,12 +7413,18 @@ export class AgentSession {
 		const sequence = Number(sequenceText);
 		if (!Number.isInteger(sequence)) return undefined;
 
-		const queue = mode === "steer" ? this.#steeringMessages : this.#followUpMessages;
-		const index = queue.findIndex(entry => entry.sequence === sequence);
+		let queue = mode === "steer" ? this.#steeringMessages : this.#followUpMessages;
+		let resolvedMode = mode;
+		let index = queue.findIndex(entry => entry.sequence === sequence);
+		if (index === -1) {
+			queue = mode === "steer" ? this.#followUpMessages : this.#steeringMessages;
+			resolvedMode = mode === "steer" ? "followUp" : "steer";
+			index = queue.findIndex(entry => entry.sequence === sequence);
+		}
 		if (index === -1) return undefined;
 
 		const [entry] = queue.splice(index, 1);
-		if (mode === "steer") {
+		if (resolvedMode === "steer") {
 			this.agent.removeSteerAt(index);
 		} else {
 			this.agent.removeFollowUpAt(index);
@@ -7552,9 +7593,100 @@ export class AgentSession {
 	// `tasks.todoClearDelay` setting is now inert; completed tasks survive
 	// until the next explicit `todo_write` call removes them via `rm`/`drop`.
 
-	/**
-	 * Abort current operation and wait for agent to become idle.
-	 */
+	#abortOptions(options?: {
+		goalReason?: "interrupted" | "internal";
+		timeoutMs?: number;
+		cause?:
+			| "user_interrupt"
+			| "new_session"
+			| "session_switch"
+			| "compaction"
+			| "handoff"
+			| "tool_abort"
+			| "internal";
+		silent?: boolean;
+	}): void {
+		this.#abortActiveMidRunBarriers();
+		this.#silentAbortPending = options?.silent === true;
+		this.abortRetry();
+		this.#promptGeneration++;
+		this.#promptPreflightAbortController.abort();
+		this.#promptPreflightAbortController = new AbortController();
+		this.#scheduledHiddenNextTurnGeneration = undefined;
+		this.abortCompaction();
+		this.abortHandoff();
+		this.abortBash();
+		this.abortEval();
+	}
+
+	async #abortWithOutcome(options?: {
+		goalReason?: "interrupted" | "internal";
+		timeoutMs?: number;
+		cause?:
+			| "user_interrupt"
+			| "new_session"
+			| "session_switch"
+			| "compaction"
+			| "handoff"
+			| "tool_abort"
+			| "internal";
+		silent?: boolean;
+	}): Promise<AbortOutcome> {
+		this.#abortOptions(options);
+		const postPromptDrain = this.#cancelPostPromptTasks();
+		const managedLogicalRunId =
+			this.#defaultFallbackChain().chain.entries.length > 1 ? this.agent.currentManagedLogicalRunId : undefined;
+		this.agent.abort();
+		const cleanup = Promise.all([postPromptDrain, this.agent.waitForIdle()]).then(
+			() => ({ kind: "settled" as const }),
+			(cause: unknown) => ({ kind: "error" as const, cause }),
+		);
+		cleanup.catch(() => {});
+		let outcome: AbortOutcome;
+		if (options?.timeoutMs !== undefined && options.timeoutMs > 0) {
+			outcome = await Promise.race([
+				cleanup,
+				Bun.sleep(options.timeoutMs).then(() => ({ kind: "timeout" as const })),
+			]);
+			if (outcome.kind === "timeout") {
+				this.#abandonPostPromptTasks();
+				this.agent.forceAbort("Abort cleanup timed out");
+				this.emitNotice(
+					"warning",
+					"Abort cleanup timed out; forced session recovery. The previous provider stream or tool may still be unwinding in the background.",
+					"abort",
+				);
+			}
+		} else {
+			outcome = await cleanup;
+		}
+		try {
+			await this.#goalRuntime.onTaskAborted({ reason: options?.goalReason ?? "interrupted" });
+			if (managedLogicalRunId !== undefined)
+				this.agent.requestRunTerminal(managedLogicalRunId, { stopReason: "cancelled" });
+			this.#flushPendingBackgroundExchanges();
+			this.#flushPendingAgentEnd();
+			if (
+				!this.#cancelAndSubmitInProgress &&
+				(options?.cause ?? "internal") === "user_interrupt" &&
+				this.agent.hasQueuedSteering()
+			) {
+				this.#scheduleAgentContinue({
+					delayMs: 1,
+					generation: this.#promptGeneration,
+					shouldContinue: () => this.agent.hasQueuedSteering(),
+				});
+			}
+			return outcome;
+		} catch (cause) {
+			return { kind: "error", cause };
+		} finally {
+			this.#silentAbortPending = false;
+			if (this.#toolChoiceQueue.hasInFlight) this.#toolChoiceQueue.reject("aborted");
+		}
+	}
+
+	/** Abort current operation and preserve the established void/rethrow contract. */
 	async abort(options?: {
 		goalReason?: "interrupted" | "internal";
 		timeoutMs?: number;
@@ -7566,89 +7698,150 @@ export class AgentSession {
 			| "handoff"
 			| "tool_abort"
 			| "internal";
-		/** Suppress the "Operation aborted" line on the resulting aborted message
-		 *  by stamping `SILENT_ABORT_MARKER`. Used when Esc consumes a queued steer
-		 *  and resumes via steer-on-interrupt, so the interrupt reads as a quiet
-		 *  hand-off rather than a failure. */
 		silent?: boolean;
 	}): Promise<void> {
-		this.#abortActiveMidRunBarriers();
-		if (options?.silent) {
-			this.#silentAbortPending = true;
-		} else {
-			this.#silentAbortPending = false;
-		}
-		this.abortRetry();
-		this.#promptGeneration++;
-		this.#promptPreflightAbortController.abort();
-		this.#promptPreflightAbortController = new AbortController();
-		this.#scheduledHiddenNextTurnGeneration = undefined;
-		this.abortCompaction();
-		this.abortHandoff();
-		this.abortBash();
-		this.abortEval();
-		const postPromptDrain = this.#cancelPostPromptTasks();
-		const managedLogicalRunId =
-			this.#defaultFallbackChain().chain.entries.length > 1 ? this.agent.currentManagedLogicalRunId : undefined;
-		this.agent.abort();
-		const cleanup = Promise.all([postPromptDrain, this.agent.waitForIdle()]).then(
-			() => ({ type: "settled" as const }),
-			(error: unknown) => ({ type: "error" as const, error }),
-		);
-		cleanup.catch(() => {});
-		const timeoutMs = options?.timeoutMs;
-		if (timeoutMs !== undefined && timeoutMs > 0) {
-			const outcome = await Promise.race([cleanup, Bun.sleep(timeoutMs).then(() => ({ type: "timeout" as const }))]);
-			if (outcome.type === "timeout") {
-				this.#abandonPostPromptTasks();
-				this.agent.forceAbort("Abort cleanup timed out");
-				this.emitNotice(
-					"warning",
-					"Abort cleanup timed out; forced session recovery. The previous provider stream or tool may still be unwinding in the background.",
-					"abort",
-				);
-			} else if (outcome.type === "error") {
-				throw outcome.error;
-			}
-		} else {
-			const outcome = await cleanup;
-			if (outcome.type === "error") {
-				throw outcome.error;
-			}
-		}
-		await this.#goalRuntime.onTaskAborted({ reason: options?.goalReason ?? "interrupted" });
-		if (managedLogicalRunId !== undefined) {
-			// Agent-core owns terminalization for the logical managed run, which
-			// remains stable across fallback attempt retries.
-			this.agent.requestRunTerminal(managedLogicalRunId, { stopReason: "cancelled" });
-		}
-		// waitForIdle resolves before #promptWithMessage's finally and asynchronous
-		// event handlers necessarily unwind. Keep their counters intact: #endInFlight
-		// and the event barrier publish deferred readiness only when they actually settle.
-		this.#flushPendingBackgroundExchanges();
-		this.#flushPendingAgentEnd();
-		// Safety net: clear the silent-abort flag if it was never consumed (the
-		// abort produced no aborted assistant message_end to stamp). Prevents the
-		// marker from leaking onto a later, unrelated abort.
-		this.#silentAbortPending = false;
-		// Safety net: if the agent loop aborted without producing an assistant
-		// message (e.g. failed before the first stream), the in-flight yield was
-		// never resolved or rejected by the normal message_end path. Reject it now
-		// so any requeue callback still fires and the queue stays consistent.
-		if (this.#toolChoiceQueue.hasInFlight) {
-			this.#toolChoiceQueue.reject("aborted");
-		}
+		const outcome = await this.#abortWithOutcome(options);
+		if (outcome.kind === "error") throw outcome.cause;
+	}
 
-		// Steer-on-interrupt: after a genuine user interrupt, resume with any
-		// queued steering instead of going idle. Lifecycle/teardown causes
-		// (default "internal") suppress this; new-session/handoff additionally
-		// clear the steering queue, and compaction resumes via its own path.
-		if ((options?.cause ?? "internal") === "user_interrupt" && this.agent.hasQueuedSteering()) {
-			this.#scheduleAgentContinue({
-				delayMs: 1,
-				generation: this.#promptGeneration,
-				shouldContinue: () => this.agent.hasQueuedSteering(),
+	/** Atomically interrupt the active run and make text the next prompt. */
+	async cancelAndSubmit(text: string, options?: { queuedEntryId?: string }): Promise<CancelAndSubmitOutcome> {
+		if (this.#cancelAndSubmitInProgress) return { kind: "refused", reason: "duplicate" };
+		if (this.isCompacting) return { kind: "refused", reason: "compaction" };
+
+		this.#cancelAndSubmitInProgress = true;
+		const queueSnapshot: AgentQueueSnapshot = this.agent.snapshotQueues();
+		const steeringDisplaySnapshot = [...this.#steeringMessages];
+		const followUpDisplaySnapshot = [...this.#followUpMessages];
+		const pendingNextTurnSnapshot = [...this.#pendingNextTurnMessages];
+		const additionsSince = <T>(current: readonly T[], baseline: readonly T[]): T[] => {
+			const remaining = new Map<T, number>();
+			for (const entry of baseline) remaining.set(entry, (remaining.get(entry) ?? 0) + 1);
+			return current.filter(entry => {
+				const count = remaining.get(entry) ?? 0;
+				if (count === 0) return true;
+				remaining.set(entry, count - 1);
+				return false;
 			});
+		};
+		const pendingNextTurnAdditionsSince = () =>
+			additionsSince(
+				this.#pendingNextTurnMessages,
+				this.#cancelAndSubmitPendingNextTurnDrained ? [] : pendingNextTurnSnapshot,
+			);
+		const queueAdditionsSince = (baseline: AgentQueueSnapshot): AgentQueueSnapshot => {
+			const current = this.agent.snapshotQueues();
+			return {
+				steering: additionsSince(current.steering, baseline.steering),
+				followUp: additionsSince(current.followUp, baseline.followUp),
+			};
+		};
+		const selected = (() => {
+			if (options?.queuedEntryId === undefined) return undefined;
+			const [mode, sequenceText] = options.queuedEntryId.split(":");
+			const sequence = Number(sequenceText);
+			if ((mode !== "steer" && mode !== "followUp") || !Number.isInteger(sequence)) return undefined;
+			const displays = mode === "steer" ? steeringDisplaySnapshot : followUpDisplaySnapshot;
+			const index = displays.findIndex(entry => entry.sequence === sequence);
+			if (index === -1) return undefined;
+			return {
+				display: displays[index]!,
+				message: (mode === "steer" ? queueSnapshot.steering : queueSnapshot.followUp)[index],
+			};
+		})();
+		try {
+			let outcome = this.#cancelAndSubmitAbortOutcomeProviderForTests
+				? await this.#cancelAndSubmitAbortOutcomeProviderForTests()
+				: await this.#abortWithOutcome({ cause: "user_interrupt", timeoutMs: 5_000 });
+			if (outcome.kind === "settled") {
+				const deadline = Date.now() + 5_000;
+				while (this.isStreaming && Date.now() < deadline) await Bun.sleep(1);
+				if (this.isStreaming) outcome = { kind: "error", cause: new Error("Interrupted prompt did not finalize") };
+			}
+			if (outcome.kind !== "settled") {
+				const queueAdditions = queueAdditionsSince(queueSnapshot);
+				this.agent.restoreQueues({
+					steering: [...queueSnapshot.steering, ...queueAdditions.steering],
+					followUp: [...queueSnapshot.followUp, ...queueAdditions.followUp],
+				});
+				this.#pendingNextTurnMessages = [...pendingNextTurnSnapshot, ...pendingNextTurnAdditionsSince()];
+				this.#steeringMessages = [
+					...steeringDisplaySnapshot,
+					...additionsSince(this.#steeringMessages, steeringDisplaySnapshot),
+				];
+				this.#followUpMessages = [
+					...followUpDisplaySnapshot,
+					...additionsSince(this.#followUpMessages, followUpDisplaySnapshot),
+				];
+				if (outcome.kind === "error") {
+					logger.error("Cancel-and-submit abort failed", { cause: outcome.cause });
+					this.emitNotice("error", `Unable to send immediately: ${String(outcome.cause)}`, "cancel-and-submit");
+				}
+				return { kind: "rolled_back", outcome };
+			}
+
+			const postAbortQueueAdditions = queueAdditionsSince(queueSnapshot);
+			const postAbortSteeringDisplayAdditions = additionsSince(this.#steeringMessages, steeringDisplaySnapshot);
+			const postAbortFollowUpDisplayAdditions = additionsSince(this.#followUpMessages, followUpDisplaySnapshot);
+			const selectedMessage = selected?.message;
+			const preflightQueueSnapshot: AgentQueueSnapshot = {
+				steering: postAbortQueueAdditions.steering,
+				followUp: [
+					...queueSnapshot.steering.filter(message => message !== selectedMessage),
+					...queueSnapshot.followUp.filter(message => message !== selectedMessage),
+					...postAbortQueueAdditions.followUp,
+				],
+			};
+			this.agent.restoreQueues(preflightQueueSnapshot);
+			this.#steeringMessages = postAbortSteeringDisplayAdditions;
+			this.#followUpMessages = [
+				...steeringDisplaySnapshot,
+				...followUpDisplaySnapshot,
+				...postAbortFollowUpDisplayAdditions,
+			];
+
+			let preflightAccepted = false;
+			try {
+				await this.prompt(text, {
+					onPreflightAccepted: () => {
+						preflightAccepted = true;
+						if (selected) {
+							this.#steeringMessages = this.#steeringMessages.filter(entry => entry !== selected.display);
+							this.#followUpMessages = this.#followUpMessages.filter(entry => entry !== selected.display);
+						}
+					},
+				});
+				if (!preflightAccepted) throw new Error("Prompt was not accepted");
+			} catch (cause) {
+				if (preflightAccepted) throw cause;
+				const queueAdditions = queueAdditionsSince(preflightQueueSnapshot);
+				this.agent.restoreQueues({
+					steering: [...queueSnapshot.steering, ...postAbortQueueAdditions.steering, ...queueAdditions.steering],
+					followUp: [...queueSnapshot.followUp, ...postAbortQueueAdditions.followUp, ...queueAdditions.followUp],
+				});
+				this.#pendingNextTurnMessages = [...pendingNextTurnSnapshot, ...pendingNextTurnAdditionsSince()];
+				this.#steeringMessages = [
+					...steeringDisplaySnapshot,
+					...postAbortSteeringDisplayAdditions,
+					...additionsSince(this.#steeringMessages, postAbortSteeringDisplayAdditions),
+				];
+				this.#followUpMessages = [
+					...followUpDisplaySnapshot,
+					...postAbortFollowUpDisplayAdditions,
+					...additionsSince(this.#followUpMessages, [
+						...steeringDisplaySnapshot,
+						...followUpDisplaySnapshot,
+						...postAbortFollowUpDisplayAdditions,
+					]),
+				];
+				logger.error("Cancel-and-submit prompt preflight failed", { cause });
+				this.emitNotice("error", `Unable to send immediately: ${String(cause)}`, "cancel-and-submit");
+				return { kind: "rolled_back", outcome: { kind: "error", cause } };
+			}
+			return { kind: "submitted" };
+		} finally {
+			this.#cancelAndSubmitInProgress = false;
+			this.#cancelAndSubmitPendingNextTurnDrained = false;
 		}
 	}
 
@@ -8371,29 +8564,18 @@ export class AgentSession {
 		return this.#cycleAvailableModel(direction);
 	}
 
-	/**
-	 * Cycle through configured role models in a fixed order.
-	 * Skips missing roles.
-	 * @param roleOrder - Order of roles to cycle through (e.g., ["default"])
-	 * @param options - Optional settings: `temporary` to not persist to settings
-	 */
-	async cycleRoleModels(
-		roleOrder: readonly string[],
-		options?: { temporary?: boolean },
-	): Promise<RoleModelCycleResult | undefined> {
+	/** Number of configured role-model candidates that can be cycled. */
+	getRoleModelCycleCandidateCount(roleOrder: readonly string[] = this.settings.get("cycleOrder")): number {
+		return this.#getRoleModelCycleCandidates(roleOrder).length;
+	}
+
+	#getRoleModelCycleCandidates(roleOrder: readonly string[]): RoleModelCycleCandidate[] {
 		const availableModels = this.#modelRegistry.getAvailable();
-		if (availableModels.length === 0) return undefined;
-
 		const currentModel = this.model;
-		if (!currentModel) return undefined;
-		const matchPreferences = { usageOrder: this.settings.getStorage()?.getModelUsageOrder() };
-		const roleModels: Array<{
-			role: string;
-			model: Model;
-			thinkingLevel?: ThinkingLevel;
-			explicitThinkingLevel: boolean;
-		}> = [];
+		if (availableModels.length === 0 || !currentModel) return [];
 
+		const matchPreferences = { usageOrder: this.settings.getStorage()?.getModelUsageOrder() };
+		const roleModels: RoleModelCycleCandidate[] = [];
 		for (const role of roleOrder) {
 			const roleModelStr =
 				role === "default"
@@ -8408,6 +8590,7 @@ export class AgentSession {
 			});
 			if (!resolved.model) continue;
 
+			if (roleModels.some(candidate => modelsAreEqual(candidate.model, resolved.model))) continue;
 			roleModels.push({
 				role,
 				model: resolved.model,
@@ -8415,8 +8598,23 @@ export class AgentSession {
 				explicitThinkingLevel: resolved.explicitThinkingLevel,
 			});
 		}
+		return roleModels;
+	}
 
+	/**
+	 * Cycle through configured role models in a fixed order.
+	 * Skips missing roles.
+	 * @param roleOrder - Order of roles to cycle through (e.g., ["default"])
+	 * @param options - Optional settings: `temporary` to not persist to settings
+	 */
+	async cycleRoleModels(
+		roleOrder: readonly string[],
+		options?: { temporary?: boolean },
+	): Promise<RoleModelCycleResult | undefined> {
+		const roleModels = this.#getRoleModelCycleCandidates(roleOrder);
 		if (roleModels.length <= 1) return undefined;
+
+		const currentModel = this.model!;
 
 		const lastRole = this.sessionManager.getLastModelChangeRole();
 		let currentIndex = lastRole ? roleModels.findIndex(entry => entry.role === lastRole) : -1;

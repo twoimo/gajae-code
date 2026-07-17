@@ -187,6 +187,15 @@ export function getSessionMessageViewportAnchorId(message: AgentMessage): string
 	return sessionMessageViewportAnchorIds.get(message);
 }
 
+/** Returns registered viewport anchors for durable user messages in session order. */
+export function getUserMessageViewportAnchorIds(messages: readonly AgentMessage[]): string[] {
+	return messages.flatMap(message => {
+		if (message.role !== "user" || message.synthetic) return [];
+		const anchorId = getSessionMessageViewportAnchorId(message);
+		return anchorId ? [anchorId] : [];
+	});
+}
+
 export function transferSessionMessageIdentity(source: AgentMessage[], target: AgentMessage[]): void {
 	if (source.length !== target.length) {
 		throw new Error(

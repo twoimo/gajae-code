@@ -45,6 +45,35 @@ type InputListener = (data: string) => InputListenerResult;
 /**
  * Component interface - all components must implement this
  */
+export type MouseEvent = {
+	kind: "wheel" | "click";
+	direction?: -1 | 1;
+	button?: 0;
+	/** Terminal cell coordinates, one-based. */
+	x: number;
+	y: number;
+	/** Focused-overlay cell coordinates, one-based when dispatched to an overlay. */
+	localX?: number;
+	localY?: number;
+};
+
+/** Parse xterm SGR mouse reports. Drag and button-release reports are ignored. */
+export function parseSgrMouseEvent(data: string): MouseEvent | undefined {
+	const match = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
+	if (!match) return undefined;
+	const button = Number(match[1]);
+	const x = Number(match[2]);
+	const y = Number(match[3]);
+	const terminator = match[4];
+	if (![button, x, y].every(Number.isSafeInteger) || x < 1 || y < 1) return undefined;
+
+	if (button & 32 || terminator === "m") return undefined;
+	if (button === 64) return { kind: "wheel", direction: -1, x, y };
+	if (button === 65) return { kind: "wheel", direction: 1, x, y };
+	if (button === 0) return { kind: "click", button, x, y };
+	return undefined;
+}
+
 export interface Component {
 	/**
 	 * Render the component to lines for the given viewport width
@@ -57,6 +86,9 @@ export interface Component {
 	 * Optional handler for keyboard input when component has focus
 	 */
 	handleInput?(data: string): void;
+
+	/** Optional handler for terminal mouse events when component has focus. */
+	handleMouse?(event: MouseEvent): void;
 
 	/**
 	 * If true, component receives key release events (Kitty protocol).
@@ -675,7 +707,11 @@ export class TUI extends Container {
 		hidden: boolean;
 	}[] = [];
 
-	constructor(terminal: Terminal, showHardwareCursor?: boolean) {
+	constructor(
+		terminal: Terminal,
+		showHardwareCursor?: boolean,
+		private readonly options: { enableMouse?: boolean } = {},
+	) {
 		super();
 		this.terminal = terminal;
 		if (showHardwareCursor !== undefined) {
@@ -768,6 +804,50 @@ export class TUI extends Container {
 	/** Allow one semantic-neighbor reconciliation after a definitive same-transcript rebuild. */
 	prepareViewportAnchorForTranscriptRebuild(): void {
 		if (this.#manualViewportAnchor !== null) this.#reconcileMissingViewportAnchor = true;
+	}
+
+	/** Reveal a semantic viewport anchor without changing the rendered content width. */
+	revealViewportAnchor(id: ViewportAnchorId, alignment: "top" | "center" | "bottom"): boolean {
+		const height = this.terminal.rows;
+		const width = this.terminal.columns;
+		const frame = this.#viewportAnchorFrame;
+		if (height <= 0 || width <= 0 || this.#previousLines.length === 0 || frame === null) return false;
+
+		const selectedRow = frame.anchors.findIndex(anchor => anchor?.id === id);
+		const selected = selectedRow < 0 ? null : frame.anchors[selectedRow];
+		if (selected === null) return false;
+
+		const desiredScreenRow = alignment === "top" ? 0 : alignment === "center" ? Math.floor(height / 2) : height - 1;
+		const targetViewportTop = Math.max(0, frame.startRow + selectedRow - desiredScreenRow);
+		this.#manualViewportAnchor = {
+			id: selected.id,
+			graphemeIndex: selected.graphemeStart,
+			cellOffset: selected.cellStart,
+			desiredScreenRow,
+		};
+		const firstCandidateRow = Math.max(0, targetViewportTop - frame.startRow);
+		const lastCandidateRow = Math.min(frame.anchors.length, targetViewportTop + height - frame.startRow);
+		const fallbacks: ManualViewportAnchor[] = [];
+		for (let row = firstCandidateRow; row < lastCandidateRow; row++) {
+			const anchor = frame.anchors[row];
+			if (anchor === null || row === selectedRow) continue;
+			fallbacks.push({
+				id: anchor.id,
+				graphemeIndex: anchor.graphemeStart,
+				cellOffset: anchor.cellStart,
+				desiredScreenRow: row + frame.startRow - targetViewportTop,
+			});
+		}
+		fallbacks.sort(
+			(a, b) =>
+				Math.abs(a.desiredScreenRow - this.#manualViewportAnchor!.desiredScreenRow) -
+				Math.abs(b.desiredScreenRow - this.#manualViewportAnchor!.desiredScreenRow),
+		);
+		this.#manualViewportFallbackAnchors = fallbacks;
+		this.#manualViewportTop = this.#viewportTopRow;
+		this.#reconcileMissingViewportAnchor = false;
+		this.requestRender();
+		return true;
 	}
 
 	scrollViewportPages(direction: -1 | 1): boolean {
@@ -967,6 +1047,7 @@ export class TUI extends Container {
 	start(): void {
 		this.#stopped = false;
 		this.#terminalUnavailable = false;
+		this.terminal.setMouseEnabled?.(this.options.enableMouse === true);
 		this.terminal.start(
 			data => this.#handleInput(data),
 			() => {
@@ -1371,6 +1452,36 @@ export class TUI extends Container {
 			data = current;
 		}
 
+		const mouse = parseSgrMouseEvent(data);
+		if (mouse) {
+			// Coordinates outside the current terminal cannot name a visible cell.
+			if (mouse.x > this.terminal.columns || mouse.y > this.terminal.rows) return;
+			if (mouse.kind === "wheel") this.scrollViewportPages(mouse.direction!);
+			else {
+				const focusedOverlay = this.overlayStack.find(o => o.component === this.#focusedComponent);
+				if (focusedOverlay) {
+					const bounds = this.#overlayMouseBounds(focusedOverlay);
+					if (
+						!bounds ||
+						mouse.x < bounds.col + 1 ||
+						mouse.x > bounds.col + bounds.width ||
+						mouse.y < bounds.row + 1 ||
+						mouse.y > bounds.row + bounds.height
+					)
+						return;
+					this.#focusedComponent?.handleMouse?.({
+						...mouse,
+						localX: mouse.x - bounds.col,
+						localY: mouse.y - bounds.row,
+					});
+				} else this.#focusedComponent?.handleMouse?.(mouse);
+			}
+			this.requestRender(false, "mouse");
+			return;
+		}
+		// SGR-looking reports, including malformed reports, are terminal controls.
+		if (data.startsWith("\x1b[<")) return;
+
 		// Consume terminal cell size responses without blocking unrelated input.
 		if (this.#consumeCellSizeResponse(data)) {
 			return;
@@ -1428,6 +1539,26 @@ export class TUI extends Container {
 		return true;
 	}
 
+	#overlayMouseBounds(
+		entry: (typeof this.overlayStack)[number],
+	): { row: number; col: number; width: number; height: number } | undefined {
+		if (!this.#isOverlayVisible(entry)) return undefined;
+		const { width, maxHeight } = this.#resolveOverlayLayout(
+			entry.options,
+			0,
+			this.terminal.columns,
+			this.terminal.rows,
+		);
+		let lines = safeRenderComponent(entry.component, width, "overlay");
+		if (maxHeight !== undefined) lines = lines.slice(0, maxHeight);
+		const { row, col } = this.#resolveOverlayLayout(
+			entry.options,
+			lines.length,
+			this.terminal.columns,
+			this.terminal.rows,
+		);
+		return { row, col, width, height: lines.length };
+	}
 	/**
 	 * Resolve overlay layout from options.
 	 * Returns { width, row, col, maxHeight } for rendering.

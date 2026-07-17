@@ -238,6 +238,7 @@ export class EventController {
 
 		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
 		await run(event);
+		if (this.ctx.isTranscriptViewerOpen()) this.ctx.refreshTranscriptViewer();
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {

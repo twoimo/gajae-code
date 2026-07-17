@@ -1049,6 +1049,20 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "transcript",
+		description: "Browse the current session transcript",
+		acpDescription: "Browse the current session transcript",
+		handle: async (_command, runtime) => {
+			await runtime.output("Transcript browsing is available in the interactive TUI.");
+			return commandConsumed();
+		},
+		handleTui: (_command, runtime) => {
+			if (runtime.ctx.isTranscriptViewerOpen()) return;
+			runtime.ctx.showTranscriptViewer();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "context",
 		description: "Show active context token usage breakdown",
 		acpDescription: "Show active context token usage breakdown",
@@ -1443,6 +1457,15 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		description: "Resume a previous session",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showSessionSelector();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "sessions",
+		priority: 91,
+		description: "Show all persisted sessions (read-only)",
+		handleTui: (_command, runtime) => {
+			runtime.ctx.showSessionsDashboard();
 			runtime.ctx.editor.setText("");
 		},
 	},

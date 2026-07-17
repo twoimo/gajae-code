@@ -308,6 +308,11 @@ interface CursorToolResultEntry {
 	textLengthAtCall: number;
 }
 
+export type AgentQueueSnapshot = {
+	steering: AgentMessage[];
+	followUp: AgentMessage[];
+};
+
 export class Agent {
 	#state: AgentState = {
 		systemPrompt: [],
@@ -1007,6 +1012,20 @@ export class Agent {
 	restoreFollowUp(messages: AgentMessage[]): void {
 		if (messages.length === 0) return;
 		this.#followUpQueue = [...messages, ...this.#followUpQueue];
+	}
+
+	/** Snapshot both executable queues as one atomic session-level view. */
+	snapshotQueues(): AgentQueueSnapshot {
+		return {
+			steering: this.#steeringQueue.slice(),
+			followUp: this.#followUpQueue.slice(),
+		};
+	}
+
+	/** Replace both executable queues with a prior snapshot. */
+	restoreQueues(snapshot: AgentQueueSnapshot): void {
+		this.#steeringQueue = snapshot.steering.slice();
+		this.#followUpQueue = snapshot.followUp.slice();
 	}
 
 	#dequeueSteeringMessages(): AgentMessage[] {

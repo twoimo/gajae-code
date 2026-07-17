@@ -24,6 +24,16 @@ const ESC = "\x1b";
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
+/** True for complete SGR mouse CSI reports. These remain control input, never text. */
+export function isSgrMouseSequence(sequence: string): boolean {
+	return /^\x1b\[<\d+;\d+;\d+[Mm]$/.test(sequence);
+}
+
+/** True when a buffered sequence begins an SGR mouse report, valid or not. */
+function isSgrMousePrefix(sequence: string): boolean {
+	return sequence.startsWith(`${ESC}[<`);
+}
+
 function isUtf8LeadByte(byte: number): boolean {
 	return byte >= 0xc2 && byte <= 0xf4;
 }
@@ -486,6 +496,12 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		const pendingMeta = this.#consumePendingSingleUtf8LeadAsMeta();
 
 		if (this.#buffer.length === 0) {
+			return pendingMeta === undefined ? [] : [pendingMeta];
+		}
+
+		if (isSgrMousePrefix(this.#buffer)) {
+			this.#buffer = "";
+			this.#pendingKittyPrintableCodepoint = undefined;
 			return pendingMeta === undefined ? [] : [pendingMeta];
 		}
 
