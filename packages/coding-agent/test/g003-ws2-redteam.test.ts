@@ -3,7 +3,7 @@ import { visibleWidth } from "@gajae-code/tui";
 import { KEYBINDINGS, KeybindingsManager } from "../src/config/keybindings";
 import { ActionRegistry } from "../src/modes/action-registry";
 import { CommandPalette } from "../src/modes/components/command-palette";
-import { getAvailableActionHints } from "../src/modes/components/status-line";
+import { getAvailableActionHints } from "../src/modes/components/tool-status-header";
 import { InputController } from "../src/modes/controllers/input-controller";
 import { initTheme } from "../src/modes/theme/theme";
 import type { InteractiveModeContext } from "../src/modes/types";

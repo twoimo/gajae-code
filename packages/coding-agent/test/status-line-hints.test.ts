@@ -3,7 +3,7 @@ import { visibleWidth } from "@gajae-code/tui";
 import { formatKeyHints, KEYBINDINGS, KeybindingsManager } from "../src/config/keybindings";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { ActionRegistry } from "../src/modes/action-registry";
-import { getAvailableActionHints, StatusLineComponent } from "../src/modes/components/status-line";
+import { getAvailableActionHints, StatusLineComponent } from "../src/modes/components/tool-status-header";
 import { initTheme } from "../src/modes/theme/theme";
 
 beforeAll(async () => {
