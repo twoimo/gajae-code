@@ -1480,6 +1480,7 @@ function preflightLifecycleDeleteMetadata(
 	root: string,
 	id: string,
 	record: { pid: number } | undefined,
+	readIncarnation: (pid: number) => string | undefined,
 ): LifecycleDeleteMetadataPreflight {
 	const metadataPaths = [lifecycleMarkerPath(root, id), lifecycleReadyPath(root, id)];
 	const lifecycleMetadata: Array<{
@@ -1501,7 +1502,11 @@ function preflightLifecycleDeleteMetadata(
 		} catch {
 			return fail("terminal_uncertain", "Lifecycle metadata ownership could not be verified.");
 		}
-		if (!isExactEffectMarker(marker) || (record && marker.pid !== record.pid) || !hasObservedProcessExit(marker.pid))
+		if (
+			!isExactEffectMarker(marker) ||
+			(record && marker.pid !== record.pid) ||
+			observeProcess(marker.pid, marker.incarnation, readIncarnation) !== "exited"
+		)
 			return fail("terminal_uncertain", "Lifecycle metadata ownership could not be verified.");
 		lifecycleMetadata.push({ metadataPath, metadata, marker });
 	}
@@ -2932,7 +2937,9 @@ async function executeLifecycleResponse(
 		if (record?.live) return fail("live_session", "Refusing to delete a live session; close it first.");
 		const validated = await validateDeletePath(broker, input, id, record, cleanup);
 		if ("ok" in validated) return validated;
-		const metadataPreflight = preflightLifecycleDeleteMetadata(validated.metadataRoot, id, record);
+		const metadataPreflight = preflightLifecycleDeleteMetadata(validated.metadataRoot, id, record, value =>
+			processIncarnationForBroker(broker, value),
+		);
 		if ("ok" in metadataPreflight) return metadataPreflight;
 		const metadataCleanup = metadataPreflight.cleanup;
 		let cleanupTarget: VerifiedSessionDeleteTarget = {

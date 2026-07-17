@@ -1252,6 +1252,63 @@ test("broker replays one identity-bound lifecycle metadata cleanup plan after th
 		await fs.rm(root, { recursive: true, force: true });
 	}
 }, 30_000);
+
+test("broker uses incarnation-aware observations before fresh lifecycle metadata cleanup", async () => {
+	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-delete-incarnation-"));
+	const agentDir = path.join(root, "agent");
+	const stateRoot = path.join(root, ".gjc", "state");
+	const broker = new Broker({ agentDir });
+	try {
+		await broker.start();
+		for (const [name, observedIncarnation, expectedOk] of [
+			["reused", "replacement-incarnation", true],
+			["matching", "closed-incarnation", false],
+			["unreadable", undefined, false],
+		] as const) {
+			const saved = SessionManager.create(root, SessionManager.getDefaultSessionDir(root, agentDir));
+			await saved.ensureOnDisk();
+			const sessionId = saved.getSessionId();
+			const sessionPath = saved.getSessionFile();
+			if (!sessionPath) throw new Error("Expected persisted delete transcript.");
+			await saved.close();
+			const marker = {
+				pid: process.pid,
+				effectMarker: `closed-${name}`,
+				incarnation: "closed-incarnation",
+			};
+			const markerPath = path.join(stateRoot, "sdk", `${sessionId}.lifecycle.json`);
+			const readyPath = path.join(stateRoot, "sdk", `${sessionId}.lifecycle.ready.json`);
+			await fs.mkdir(path.dirname(markerPath), { recursive: true });
+			await Promise.all([
+				fs.writeFile(markerPath, canonicalJson(marker)),
+				fs.writeFile(readyPath, canonicalJson(marker)),
+			]);
+			expect(() => process.kill(marker.pid, 0)).not.toThrow();
+			const surfaceBeforeDelete = await snapshotDeleteSurface(sessionPath);
+			setProcessIncarnationForTest(broker, () => observedIncarnation);
+			const result = await broker.handleRequest(
+				"session.delete",
+				{ cwd: root, stateRoot, sessionId, sessionPath },
+				`delete-incarnation-${name}`,
+			);
+			if (expectedOk) {
+				expect(result).toMatchObject({ ok: true, result: { sessionId } });
+				await expect(fs.stat(sessionPath)).rejects.toThrow();
+				await expect(fs.stat(markerPath)).rejects.toThrow();
+				await expect(fs.stat(readyPath)).rejects.toThrow();
+			} else {
+				expect(result).toMatchObject({ ok: false, error: { code: "terminal_uncertain" } });
+				expect(await snapshotDeleteSurface(sessionPath)).toEqual(surfaceBeforeDelete);
+				await expect(fs.readFile(markerPath, "utf8")).resolves.toBe(canonicalJson(marker));
+				await expect(fs.readFile(readyPath, "utf8")).resolves.toBe(canonicalJson(marker));
+			}
+		}
+	} finally {
+		setProcessIncarnationForTest(broker, undefined);
+		await broker.stop();
+		await fs.rm(root, { recursive: true, force: true });
+	}
+}, 30_000);
 test("broker refuses fresh lifecycle cleanup when ready sibling has a different owner marker", async () => {
 	const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? "/tmp", "gjc-broker-mismatched-ready-cleanup-"));
 	const agentDir = path.join(root, "agent");
