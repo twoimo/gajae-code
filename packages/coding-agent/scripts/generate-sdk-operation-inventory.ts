@@ -32,6 +32,8 @@ const LOCKED_EXCLUSIONS: Readonly<Record<string, string>> = {
 	"slash_command:notify":
 		"interactive diagnostics command; session on/off delegate to the notifications extension, not an SDK ingress seam",
 	"slash_command:pet": "visual/local-only command, not a user-facing SDK control seam",
+	"slash_command:transcript": "visual/local-only transcript viewer, not a user-facing SDK control seam",
+	"slash_command:sessions": "visual/local-only sessions dashboard, not a user-facing SDK control seam",
 	"agent_session:constructor": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:nextToolChoice": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:setForcedToolChoice": "internal accessor/plumbing, not a user-facing control seam",
@@ -50,6 +52,9 @@ const LOCKED_EXCLUSIONS: Readonly<Record<string, string>> = {
 	"agent_session:estimateMidRunContextTokensForTests": "test-only estimator seam, not a user-facing SDK control seam",
 	"agent_session:activeMidRunBarrierCountForTests": "read-only test seam, not a user-facing SDK control seam",
 	"agent_session:activeMidRunMaintenanceCountForTests": "read-only test seam, not a user-facing SDK control seam",
+	"agent_session:getPendingNextTurnMessagesForTests": "read-only test seam, not a user-facing SDK control seam",
+	"agent_session:setCancelAndSubmitAbortOutcomeProviderForTests":
+		"test-only cancellation seam, not a user-facing SDK control seam",
 	"agent_session:getAgentId": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:emitNotice": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:subscribe": "internal accessor/plumbing, not a user-facing control seam",
@@ -82,6 +87,7 @@ const LOCKED_EXCLUSIONS: Readonly<Record<string, string>> = {
 	"agent_session:setPlanModeState": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:getGoalModeState": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:setGoalModeState": "internal accessor/plumbing, not a user-facing control seam",
+	"agent_session:setSdkPlanModeHandler": "internal host lifecycle plumbing for mode.plan.set",
 	"agent_session:getWorkflowGateEmitter": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:getAskAnswerSource": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:setWorkflowGateEmitter": "internal accessor/plumbing, not a user-facing control seam",
@@ -102,6 +108,7 @@ const LOCKED_EXCLUSIONS: Readonly<Record<string, string>> = {
 	"agent_session:purgeQueuedCustomMessages": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:clearQueue": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:popLastQueuedMessage": "internal accessor/plumbing, not a user-facing control seam",
+	"agent_session:cancelAndSubmit": "interactive queue transaction plumbing, not an independent SDK control seam",
 	"agent_session:applyCompactionPostAppendForTests": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:continuePersistedHistory": "internal startup lifecycle plumbing, not a user-facing control seam",
 	"agent_session:setActiveModelProfile": "internal accessor/plumbing, not a user-facing control seam",
@@ -123,6 +130,7 @@ const LOCKED_EXCLUSIONS: Readonly<Record<string, string>> = {
 	"agent_session:fetchUsageReportsForControl":
 		"internal Telegram control wrapper over the reviewed usage.get seam, not an independent public SDK operation",
 	"agent_session:cycleRoleModels": "internal accessor/plumbing, not a user-facing control seam",
+	"agent_session:getRoleModelCycleCandidateCount": "internal role-model display accessor, not a user-facing SDK seam",
 	"agent_session:isFastModeEnabled": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:isFastForProvider": "internal accessor/plumbing, not a user-facing control seam",
 	"agent_session:isFastForSubagentProvider": "internal accessor/plumbing, not a user-facing control seam",
