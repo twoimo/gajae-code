@@ -1397,6 +1397,8 @@ export class AgentSession {
 	#sessionAdmissionClosed = false;
 	#sessionAdmissionContext = new AsyncLocalStorage<SessionAdmissionEntry>();
 	#defaultModelSelectionMutationRevision = 0;
+	#thinkingLevelMutationRevision = 0;
+	#thinkingVisibilityMutationRevision = 0;
 	#promptTemplates: PromptTemplate[];
 	#slashCommands: FileSlashCommand[];
 
@@ -2358,6 +2360,7 @@ export class AgentSession {
 			this.agent.setModel(scope.model);
 			this.#syncAppendOnlyContext(scope.model);
 		}
+		this.#thinkingLevelMutationRevision++;
 		this.#thinkingLevel = scope.thinkingLevel;
 		this.agent.setThinkingLevel(toReasoningEffort(scope.thinkingLevel));
 		void this.#syncEditToolModeAfterModelChange(previousEditMode);
@@ -8627,6 +8630,7 @@ export class AgentSession {
 		previousSessionFile: string | undefined,
 	): Promise<void> {
 		const inheritedThinkingLevel = resolveThinkingLevelForModel(this.model, this.#getInheritedThinkingLevel());
+		this.#thinkingLevelMutationRevision++;
 		this.#thinkingLevel = inheritedThinkingLevel;
 		this.agent.setThinkingLevel(toReasoningEffort(inheritedThinkingLevel));
 		this.sessionManager.appendThinkingLevelChange(ThinkingLevel.Inherit);
@@ -9048,6 +9052,7 @@ export class AgentSession {
 		this.#clearActiveRetryFallback();
 		this.#setModelWithProviderSessionReset(model);
 		const thinkingLevelChanged = this.#thinkingLevel !== thinkingLevel;
+		this.#thinkingLevelMutationRevision++;
 		this.#thinkingLevel = thinkingLevel;
 		this.agent.setThinkingLevel(toReasoningEffort(thinkingLevel));
 		if (thinkingLevelChanged) {
@@ -9356,7 +9361,16 @@ export class AgentSession {
 	 * Set thinking level.
 	 * Saves the effective metadata-clamped level to the session, and to settings when requested.
 	 */
+	#assertDurableSettingsWritable(): void {
+		if (this.settings.canWriteDurableConfig()) return;
+		throw new Error(
+			"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+		);
+	}
+
 	setThinkingLevel(level: ThinkingLevel | undefined, persist: boolean = false): void {
+		if (persist) this.#assertDurableSettingsWritable();
+		this.#thinkingLevelMutationRevision++;
 		const effectiveLevel = resolveThinkingLevelForModel(this.model, level);
 		const isChanging = effectiveLevel !== this.#thinkingLevel;
 
@@ -9376,11 +9390,10 @@ export class AgentSession {
 	}
 
 	/**
-	 * Set thinking level from a control surface. Global changes are durable or rolled back.
+	 * Set thinking level from a control surface. Global changes commit before affecting live state.
 	 */
 	async setThinkingLevelForControl(level: ThinkingLevel, persist: boolean): Promise<void> {
 		const previousThinkingLevel = this.thinkingLevel;
-		const previousScope = this.getThinkingScopeForControl();
 		if (!persist) {
 			this.setThinkingLevel(level === ThinkingLevel.Inherit ? this.#getInheritedThinkingLevel() : level);
 			if (level === ThinkingLevel.Inherit || this.thinkingLevel === previousThinkingLevel) {
@@ -9389,26 +9402,30 @@ export class AgentSession {
 			return;
 		}
 
-		const previousDefaultThinkingLevel = this.settings.getGlobal("defaultThinkingLevel");
-		if (level === ThinkingLevel.Inherit) {
-			const defaultLevel = getDefault("defaultThinkingLevel");
-			this.settings.set("defaultThinkingLevel", defaultLevel);
-			this.setThinkingLevel(this.#getInheritedThinkingLevel());
-		} else {
-			this.setThinkingLevel(level, true);
-		}
+		this.#assertDurableSettingsWritable();
+		const effectiveLevel = resolveThinkingLevelForModel(
+			this.model,
+			level === ThinkingLevel.Inherit ? this.#getInheritedThinkingLevel() : level,
+		);
+		const persistedLevel = level === ThinkingLevel.Inherit ? getDefault("defaultThinkingLevel") : effectiveLevel;
+		const mutationRevision = ++this.#thinkingLevelMutationRevision;
+		const expectedSessionId = this.sessionManager.getSessionId();
+		const expectedModel = this.model;
 		try {
-			await this.settings.flushOrThrow();
-			this.sessionManager.appendThinkingLevelChange(ThinkingLevel.Inherit);
+			await this.settings.commitAtomicBatch([{ path: "defaultThinkingLevel", op: "set", value: persistedLevel }]);
 		} catch {
-			this.settings.set("defaultThinkingLevel", previousDefaultThinkingLevel ?? getDefault("defaultThinkingLevel"));
-			this.setThinkingLevel(previousThinkingLevel);
-			this.sessionManager.appendThinkingLevelChange(
-				previousScope === "global config" ? ThinkingLevel.Inherit : previousThinkingLevel,
-			);
-			await this.settings.flushOrThrow().catch(() => {});
 			throw new Error("Unable to persist reasoning settings.");
 		}
+
+		if (
+			mutationRevision !== this.#thinkingLevelMutationRevision ||
+			this.sessionManager.getSessionId() !== expectedSessionId ||
+			this.model !== expectedModel
+		) {
+			return;
+		}
+		this.setThinkingLevel(level === ThinkingLevel.Inherit ? this.#getInheritedThinkingLevel() : effectiveLevel);
+		this.sessionManager.appendThinkingLevelChange(ThinkingLevel.Inherit);
 	}
 
 	getThinkingScopeForControl(): "session" | "global config" {
@@ -9424,6 +9441,8 @@ export class AgentSession {
 	}
 
 	setThinkingVisibility(visibility: "visible" | "hidden", persist: boolean = false): void {
+		if (persist) this.#assertDurableSettingsWritable();
+		this.#thinkingVisibilityMutationRevision++;
 		this.agent.hideThinkingSummary = visibility === "hidden";
 		if (persist) {
 			this.settings.set("hideThinkingBlock", visibility === "hidden");
@@ -9431,7 +9450,7 @@ export class AgentSession {
 	}
 
 	/**
-	 * Set thinking visibility from a control surface. Global changes are durable or rolled back.
+	 * Set thinking visibility from a control surface. Global changes commit before affecting live state.
 	 */
 	async setThinkingVisibilityForControl(visibility: "visible" | "hidden", persist: boolean): Promise<void> {
 		if (!persist) {
@@ -9439,17 +9458,24 @@ export class AgentSession {
 			return;
 		}
 
-		const previousVisibility = this.getThinkingVisibility();
-		const previousHideThinkingBlock = this.settings.getGlobal("hideThinkingBlock");
-		this.setThinkingVisibility(visibility, true);
+		this.#assertDurableSettingsWritable();
+		const mutationRevision = ++this.#thinkingVisibilityMutationRevision;
+		const expectedSessionId = this.sessionManager.getSessionId();
 		try {
-			await this.settings.flushOrThrow();
+			await this.settings.commitAtomicBatch([
+				{ path: "hideThinkingBlock", op: "set", value: visibility === "hidden" },
+			]);
 		} catch {
-			this.settings.set("hideThinkingBlock", previousHideThinkingBlock ?? getDefault("hideThinkingBlock"));
-			this.setThinkingVisibility(previousVisibility);
-			await this.settings.flushOrThrow().catch(() => {});
 			throw new Error("Unable to persist reasoning settings.");
 		}
+
+		if (
+			mutationRevision !== this.#thinkingVisibilityMutationRevision ||
+			this.sessionManager.getSessionId() !== expectedSessionId
+		) {
+			return;
+		}
+		this.setThinkingVisibility(visibility);
 	}
 
 	/**
@@ -9626,6 +9652,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setSteeringMode(mode: "all" | "one-at-a-time"): void {
+		this.#assertDurableSettingsWritable();
 		this.agent.setSteeringMode(mode);
 		this.settings.set("steeringMode", mode);
 	}
@@ -9635,6 +9662,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
+		this.#assertDurableSettingsWritable();
 		this.agent.setFollowUpMode(mode);
 		this.settings.set("followUpMode", mode);
 	}
@@ -9644,6 +9672,7 @@ export class AgentSession {
 	 * Saves to settings.
 	 */
 	setInterruptMode(mode: "immediate" | "wait"): void {
+		this.#assertDurableSettingsWritable();
 		this.agent.setInterruptMode(mode);
 		this.settings.set("interruptMode", mode);
 	}
@@ -13835,6 +13864,7 @@ export class AgentSession {
 					? this.#getInheritedThinkingLevel()
 					: persistedThinkingLevel,
 			);
+			this.#thinkingLevelMutationRevision++;
 			this.#thinkingLevel = nextThinkingLevel;
 			this.agent.setThinkingLevel(toReasoningEffort(nextThinkingLevel));
 			this.agent.serviceTier = hasServiceTierEntry
@@ -13901,6 +13931,7 @@ export class AgentSession {
 			if (previousModel) {
 				this.agent.setModel(previousModel);
 			}
+			this.#thinkingLevelMutationRevision++;
 			this.#thinkingLevel = previousThinkingLevel;
 			this.agent.setThinkingLevel(toReasoningEffort(previousThinkingLevel));
 			this.agent.serviceTier = previousServiceTier;
