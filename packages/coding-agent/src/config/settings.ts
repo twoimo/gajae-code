@@ -373,6 +373,8 @@ export class Settings implements NotificationSettingsReader {
 	/** A newer config schema must never be rewritten by legacy migrations. */
 	#futureSchemaVersion = false;
 	#hasMalformedConfigRoot = false;
+	/** YAML syntax was unrecoverable, so the loaded defaults are read-only until config.yml is repaired. */
+	#hasRecoveredConfigSyntax = false;
 	#hasInvalidNotificationConfiguration = false;
 	#notificationValidationGeneration = 0;
 	/** Notification subtree fingerprint from the last raw durable config read. */
@@ -532,6 +534,7 @@ export class Settings implements NotificationSettingsReader {
 			this.unset(path);
 			return;
 		}
+		this.#assertDurableConfigWritable();
 		this.#set(path, value, true);
 	}
 
@@ -562,6 +565,7 @@ export class Settings implements NotificationSettingsReader {
 	 * `undefined` value. Defaults/project settings become visible immediately.
 	 */
 	unset<P extends SettingPath>(path: P): void {
+		this.#assertDurableConfigWritable();
 		const prev = this.get(path);
 		const patch: SettingsPatch = {
 			path,
@@ -586,6 +590,7 @@ export class Settings implements NotificationSettingsReader {
 	 * {@link set}, canonical state and hooks change only after the rename succeeds.
 	 */
 	async commitAtomicBatch(patches: readonly SettingsAtomicPatch[]): Promise<CasReceipt> {
+		this.#assertDurableConfigWritable();
 		if (!this.#persist || !this.#configPath) {
 			const notificationValidationGuard = this.#notificationValidationRestoreGuard();
 			const changes = new Map<string, { before: unknown; beforeHash: string; afterHash: string }>();
@@ -714,6 +719,7 @@ export class Settings implements NotificationSettingsReader {
 			current: Readonly<RawSettings>,
 		) => Promise<readonly SettingsAtomicPatch[]> | readonly SettingsAtomicPatch[],
 	): Promise<CasReceipt> {
+		this.#assertDurableConfigWritable();
 		if (!this.#persist || !this.#configPath) {
 			const patches = await buildPatches(structuredClone(this.#global));
 			return this.commitAtomicBatch(patches);
@@ -940,6 +946,7 @@ export class Settings implements NotificationSettingsReader {
 	}
 
 	setGlobalModelRole(role: ModelRole | string, modelId: ModelSelectorValue | undefined): void {
+		this.#assertDurableConfigWritable();
 		const revision = ++this.#nextRevision;
 		const patch: SettingsPatch = {
 			path: "modelRoles",
@@ -1075,6 +1082,7 @@ export class Settings implements NotificationSettingsReader {
 
 	async #loadYaml(filePath: string): Promise<RawSettings> {
 		this.#hasMalformedConfigRoot = false;
+		this.#hasRecoveredConfigSyntax = false;
 		this.#hasInvalidNotificationConfiguration = false;
 		this.#captureRawNotificationConfig({});
 		let content: string;
@@ -1091,13 +1099,34 @@ export class Settings implements NotificationSettingsReader {
 		try {
 			parsed = YAML.parse(content);
 		} catch {
+			this.#hasRecoveredConfigSyntax = true;
 			this.#hasMalformedConfigRoot = true;
+			this.#schemaReport = {
+				valid: false,
+				issues: [
+					{
+						path: "config.yml",
+						kind: "invalid",
+						detail: "Configuration YAML syntax is invalid; repair config.yml before changing settings.",
+					},
+				],
+			};
 			this.#captureRawNotificationConfig(undefined);
 			return {};
 		}
 		if (parsed === undefined) return {};
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 			this.#hasMalformedConfigRoot = true;
+			this.#schemaReport = {
+				valid: false,
+				issues: [
+					{
+						path: "config.yml",
+						kind: "invalid",
+						detail: "Configuration root must be a YAML mapping.",
+					},
+				],
+			};
 			this.#captureRawNotificationConfig(undefined);
 			return {};
 		}
@@ -1526,7 +1555,7 @@ export class Settings implements NotificationSettingsReader {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	#queueSave(): void {
-		if (!this.#persist || !this.#configPath) return;
+		if (!this.#persist || !this.#configPath || this.#hasRecoveredConfigSyntax) return;
 
 		const currentSlot = this.#pendingSaveSlot;
 		if (currentSlot && !currentSlot.captured && !currentSlot.released) {
@@ -1721,6 +1750,12 @@ export class Settings implements NotificationSettingsReader {
 		const current = await this.#loadYaml(this.#configPath);
 		if (previousFingerprint !== this.#durableNotificationFingerprint) this.#notificationValidationGeneration++;
 		this.#replaceGlobalWithDurable(current);
+	}
+	#assertDurableConfigWritable(): void {
+		if (!this.#persist || !this.#hasRecoveredConfigSyntax) return;
+		throw new Error(
+			"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+		);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
