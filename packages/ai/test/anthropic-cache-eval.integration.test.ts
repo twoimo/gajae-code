@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import { streamAnthropic } from "@gajae-code/ai/providers/anthropic";
 import type { Context, Model, TJsonSchema } from "@gajae-code/ai/types";
 
@@ -33,7 +34,10 @@ type EvalArtifact = {
 };
 
 const artifactPath = new URL("../../../artifacts/architecture-2383-eval.json", import.meta.url);
-const providerSourcePath = "packages/ai/src/providers/anthropic.ts";
+const repoRoot = path.resolve(import.meta.dir, "../../..");
+const packageRoot = path.resolve(import.meta.dir, "..");
+const providerSourceGitPath = "packages/ai/src/providers/anthropic.ts";
+const providerSourcePath = path.resolve(import.meta.dir, "../src/providers/anthropic.ts");
 const model: Model<"anthropic-messages"> = {
 	id: "claude-sonnet-4-5",
 	name: "Claude Sonnet 4.5",
@@ -63,15 +67,17 @@ function cacheIdentityJson(value: unknown): string {
 	return JSON.stringify(value, (key, nestedValue) => (key === "cache_control" ? undefined : nestedValue));
 }
 
-function git(args: string[]): string {
-	const result = Bun.spawnSync(["git", ...args]);
+function git(args: string[], cwd = repoRoot): string {
+	const result = Bun.spawnSync(["git", ...args], { cwd });
 	if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed`);
 	return result.stdout.toString().trim();
 }
 
-async function currentSourceIdentity(): Promise<{ providerSourceBlobOid: string; providerSourceSha256: string }> {
+async function currentSourceIdentity(
+	cwd = repoRoot,
+): Promise<{ providerSourceBlobOid: string; providerSourceSha256: string }> {
 	return {
-		providerSourceBlobOid: git(["rev-parse", `HEAD:${providerSourcePath}`]),
+		providerSourceBlobOid: git(["rev-parse", `HEAD:${providerSourceGitPath}`], cwd),
 		providerSourceSha256: await sha256(await Bun.file(providerSourcePath).text()),
 	};
 }
@@ -312,6 +318,9 @@ async function buildArtifact(): Promise<EvalArtifact> {
 }
 
 describe("Anthropic cache placement eval (deterministic sequential three-request integration)", () => {
+	it("resolves the immutable provider identity from repo and package working directories", async () => {
+		expect(await currentSourceIdentity(packageRoot)).toEqual(await currentSourceIdentity(repoRoot));
+	});
 	it("binds immutable source/fixture evidence and simulates documented explicit cache retention", async () => {
 		const derivedArtifact = await buildArtifact();
 		if (process.env.WRITE_ARCHITECTURE_2383_EVAL === "1")

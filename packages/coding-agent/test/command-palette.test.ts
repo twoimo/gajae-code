@@ -54,10 +54,11 @@ function createInputControllerContext(options: {
 		planModeController: { enabled: false, handleCommand: async () => {} },
 		showError: () => {},
 		showStatus: (status: string) => statuses.push(status),
+		handleChangelogCommand: options.onSubmit ?? (async () => {}),
 		historyStorage: { getRecent: () => [] },
 		skillCommands: new Map(),
 		pendingImages: options.pendingImages ?? [],
-		getSlashCommands: () => [{ name: "clear", description: "Clear the session" }],
+		getSlashCommands: () => [{ name: "changelog", description: "Show changelog" }],
 	} as unknown as InteractiveModeContext;
 	if (options.delegated) {
 		ctx.showCommandPalette = (_commands, _actions, execute) => {
@@ -261,18 +262,10 @@ describe("CommandPalette", () => {
 		expect(order).toEqual(["hide", "focus", "execute"]);
 	});
 
-	it("dispatches a selected skill slash command through the composer submit handler", async () => {
+	it("dispatches a selected slash command through the canonical controller path", async () => {
 		let overlay: CommandPalette | undefined;
-		const submitted: string[] = [];
 		const order: string[] = [];
-		const editor = {
-			getText: () => "",
-			setText: () => {},
-			onSubmit: async (text: string) => {
-				submitted.push(text);
-				order.push("execute");
-			},
-		};
+		const editor = { getText: () => "", setText: () => {} };
 		const ctx = {
 			editor,
 			ui: {
@@ -298,24 +291,23 @@ describe("CommandPalette", () => {
 			pendingImages: [],
 			goalModeController: { enabled: false, paused: false, handleCommand: async () => {} },
 			planModeController: { enabled: false, handleCommand: async () => {} },
-
+			handleChangelogCommand: async () => order.push("execute"),
 			showError: () => {},
 			showStatus: () => {},
 			historyStorage: { getRecent: () => [] },
-			skillCommands: new Map([["skill:demo", { description: "Demo skill" }]]),
-			getSlashCommands: () => [{ name: "skill:demo", description: "Demo skill" }],
+			skillCommands: new Map(),
+			getSlashCommands: () => [{ name: "changelog", description: "Show changelog" }],
 		} as unknown as InteractiveModeContext;
 		new InputController(ctx).openCommandPalette();
-		for (const key of "/skill:demo") overlay?.handleInput(key);
+		for (const key of "/changelog") overlay?.handleInput(key);
 		overlay?.handleInput("\n");
 		await Promise.resolve();
-		expect(submitted).toEqual(["/skill:demo"]);
 		expect(order).toEqual(["hide", "focus", "execute"]);
 	});
 	it("preserves drafts when slash commands are selected through either palette route", async () => {
 		const local = createInputControllerContext({ draft: "keep this draft" });
 		local.controller.openCommandPalette();
-		for (const key of "/clear") local.getOverlay()?.handleInput(key);
+		for (const key of "/changelog") local.getOverlay()?.handleInput(key);
 		local.getOverlay()?.handleInput("\n");
 		await Promise.resolve();
 		expect(local.getText()).toBe("keep this draft");
@@ -323,7 +315,7 @@ describe("CommandPalette", () => {
 
 		const delegated = createInputControllerContext({ draft: "keep this draft", delegated: true });
 		delegated.controller.openCommandPalette();
-		await delegated.getExecuteDelegated()?.("clear");
+		await delegated.getExecuteDelegated()?.("changelog");
 		expect(delegated.getText()).toBe("keep this draft");
 		expect(delegated.statuses).toEqual(["Send or clear the draft before running a palette command."]);
 	});
@@ -334,7 +326,7 @@ describe("CommandPalette", () => {
 			onSubmit: () => new Promise<void>(resolve => (releaseLocal = resolve)),
 		});
 		local.controller.openCommandPalette();
-		for (const key of "/clear") local.getOverlay()?.handleInput(key);
+		for (const key of "/changelog") local.getOverlay()?.handleInput(key);
 		local.getOverlay()?.handleInput("\n");
 		local.getOverlay()?.handleInput("\n");
 		await Promise.resolve();
@@ -349,8 +341,8 @@ describe("CommandPalette", () => {
 		});
 		delegated.controller.openCommandPalette();
 		const execute = delegated.getExecuteDelegated();
-		const first = execute?.("clear");
-		const second = execute?.("clear");
+		const first = execute?.("changelog");
+		const second = execute?.("changelog");
 		await Promise.resolve();
 		expect(delegated.statuses).toEqual(["A palette command is still running."]);
 		releaseDelegated();

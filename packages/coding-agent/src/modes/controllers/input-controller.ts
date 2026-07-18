@@ -1749,7 +1749,7 @@ export class InputController {
 		restoreComposer();
 		this.#paletteCommandInFlight = true;
 		try {
-			await this.ctx.editor.onSubmit?.(`/${name}`);
+			await this.submitText(`/${name}`, { ownsComposer: false, editor: this.ctx.editor });
 		} finally {
 			this.#paletteCommandInFlight = false;
 		}
@@ -1815,7 +1815,7 @@ export class InputController {
 		}
 		this.ctx.showCommandPalette(slashCommands, actions, name =>
 			this.#dispatchPaletteSlashCommand(name, () => {
-				this.ctx.ui.setFocus(this.ctx.editor);
+				this.ctx.ui.setFocus?.(this.ctx.editor);
 				this.ctx.ui.requestRender(true);
 			}),
 		);
