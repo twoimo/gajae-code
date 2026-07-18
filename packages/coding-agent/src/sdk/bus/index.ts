@@ -3280,6 +3280,22 @@ export function createNotificationsExtension(
 				return;
 			}
 			const json = JSON.stringify(frame);
+			if (connectionId.startsWith("seam:")) {
+				try {
+					pushSessionFrame(runtime!, {
+						type: "control_command_result",
+						sessionId: runtime!.id,
+						requestId: connectionId.slice("seam:".length),
+						status: "ok",
+						message: json,
+					});
+				} catch (error) {
+					logger.warn(`sdk: seam response delivery failed for ${connectionId}: ${String(error)}`);
+					abandonPromptResponse(connectionId, frame);
+					throw error;
+				}
+				return;
+			}
 			try {
 				server.sendTo(connectionId, json);
 			} catch (error) {
@@ -3731,7 +3747,7 @@ export function createNotificationsExtension(
 				if (inbound.kind === "control_command") {
 					const frame = sdkInboundFrame(inbound.commandJson);
 					if (frame) {
-						inboundSdkFrame?.(authenticatedInbound.connectionId, frame);
+						inboundSdkFrame?.(`seam:${inbound.requestId ?? "notification"}`, frame);
 						return;
 					}
 				}
