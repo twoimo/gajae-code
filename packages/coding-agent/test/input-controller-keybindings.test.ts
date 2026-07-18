@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-
+import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { QueuedMessageSelectorComponent } from "../src/modes/components/queued-message-selector";
 import { InputController } from "../src/modes/controllers/input-controller";
 import { initTheme } from "../src/modes/theme/theme";
@@ -359,6 +359,31 @@ describe("InputController keybinding setup", () => {
 
 		expect(spies.showModelSelector).toHaveBeenNthCalledWith(1, { temporaryOnly: true });
 		expect(spies.showModelSelector).toHaveBeenNthCalledWith(2);
+	});
+	it("routes accepted thinking visibility changes through the session", async () => {
+		const activeSettings = await Settings.init({ inMemory: true });
+		const set = vi.spyOn(activeSettings, "set");
+		const { InputController, ctx } = await createContext();
+		const setThinkingVisibility = vi.fn();
+		const session = ctx.session as unknown as { setThinkingVisibility: (visibility: "visible" | "hidden") => void };
+		session.setThinkingVisibility = setThinkingVisibility;
+		ctx.hideThinkingBlock = false;
+		ctx.chatContainer = {
+			detachChild: vi.fn(),
+			addChild: vi.fn(),
+		} as unknown as InteractiveModeContext["chatContainer"];
+		ctx.rebuildChatFromMessages = vi.fn();
+
+		try {
+			new InputController(ctx).toggleThinkingBlockVisibility();
+
+			expect(set).toHaveBeenCalledWith("hideThinkingBlock", true);
+			expect(setThinkingVisibility).toHaveBeenCalledWith("hidden");
+			expect(set.mock.invocationCallOrder[0]).toBeLessThan(setThinkingVisibility.mock.invocationCallOrder[0]);
+		} finally {
+			set.mockRestore();
+			resetSettingsForTest();
+		}
 	});
 
 	it("registers the default IRC sidebar shortcut and consumes its dispatch", async () => {

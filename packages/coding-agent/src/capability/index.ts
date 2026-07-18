@@ -258,6 +258,13 @@ export function initializeWithSettings(activeSettings: Settings): void {
 	}
 }
 
+function assertDisabledProvidersWritable(): void {
+	if (settings && !settings.canWriteDurableConfig()) {
+		throw new Error(
+			"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+		);
+	}
+}
 /**
  * Persist current disabled providers to settings.
  */
@@ -271,6 +278,7 @@ function persistDisabledProviders(): void {
  * Disable a provider globally (across all capabilities).
  */
 export function disableProvider(providerId: string): void {
+	assertDisabledProvidersWritable();
 	disabledProviders.add(providerId);
 	persistDisabledProviders();
 }
@@ -279,6 +287,7 @@ export function disableProvider(providerId: string): void {
  * Enable a previously disabled provider.
  */
 export function enableProvider(providerId: string): void {
+	assertDisabledProvidersWritable();
 	disabledProviders.delete(providerId);
 	persistDisabledProviders();
 }
