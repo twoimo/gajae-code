@@ -310,6 +310,7 @@ export function getDisabledProviders(): string[] {
  * Set disabled providers from a list (replaces current set).
  */
 export function setDisabledProviders(providerIds: string[]): void {
+	assertDisabledProvidersWritable();
 	disabledProviders.clear();
 	for (const id of providerIds) {
 		disabledProviders.add(id);
