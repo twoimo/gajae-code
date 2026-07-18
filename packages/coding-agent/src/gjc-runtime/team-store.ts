@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { sessionIdFromDirName } from "./session-layout";
-import { createJsonNoClobber, deleteIfOwned, removeFileAudited, writeJsonAtomic } from "./state-writer";
+import {
+	createJsonNoClobber,
+	deleteIfOwned,
+	removeFileAudited,
+	withWorkflowStateLock,
+	writeJsonAtomic,
+} from "./state-writer";
 import type { GjcTeamConfig, GjcTeamMailboxMessage } from "./team-runtime";
 
 export type GjcTeamNotificationDeliveryState =
@@ -131,6 +137,119 @@ type EventAppender = (event: {
 const now = () => new Date().toISOString();
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isEnoent = (error: unknown): error is { code: string } => isRecord(error) && error.code === "ENOENT";
+const canonicalTaskKeys = new Set([
+	"id",
+	"subject",
+	"description",
+	"title",
+	"objective",
+	"status",
+	"assignee",
+	"owner",
+	"result",
+	"completion_evidence",
+	"error",
+	"blocked_by",
+	"depends_on",
+	"lane",
+	"required_role",
+	"allowed_roles",
+	"version",
+	"claim",
+	"created_at",
+	"updated_at",
+	"completed_at",
+]);
+const canonicalClaimKeys = new Set(["owner", "token", "leased_until"]);
+const canonicalEvidenceKeys = new Set(["summary", "items", "files", "notes", "recorded_by", "recorded_at"]);
+const canonicalEvidenceItemKeys = new Set(["kind", "status", "summary", "command", "artifact", "location", "output"]);
+const hasExactKeys = (value: Record<string, unknown>, keys: Set<string>) =>
+	Object.keys(value).every(key => keys.has(key));
+const isNonEmptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+const isSafePersistedId = (value: unknown): value is string =>
+	isNonEmptyString(value) && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/.test(value) && !value.includes("..");
+const isFiniteTimestamp = (value: unknown): value is string =>
+	typeof value === "string" && Number.isFinite(Date.parse(value));
+
+/** The sole strict schema gate for persisted task and claim authority records. */
+export function isCanonicalPersistedGjcTeamTaskClaim(value: unknown): value is GjcTeamTaskClaim {
+	if (!isRecord(value) || Array.isArray(value) || !hasExactKeys(value, canonicalClaimKeys)) return false;
+	return isSafePersistedId(value.owner) && isNonEmptyString(value.token) && isFiniteTimestamp(value.leased_until);
+}
+
+function isCanonicalCompletionEvidence(value: unknown): value is GjcTeamTaskCompletionEvidence {
+	if (!isRecord(value) || Array.isArray(value) || !hasExactKeys(value, canonicalEvidenceKeys)) return false;
+	if (
+		!isNonEmptyString(value.summary) ||
+		!isSafePersistedId(value.recorded_by) ||
+		!isFiniteTimestamp(value.recorded_at)
+	)
+		return false;
+	if (!Array.isArray(value.items) || value.items.length === 0) return false;
+	if (
+		!value.items.every(item => {
+			if (!isRecord(item) || Array.isArray(item) || !hasExactKeys(item, canonicalEvidenceItemKeys)) return false;
+			if (!isNonEmptyString(item.summary) || !["command", "inspection", "artifact"].includes(String(item.kind)))
+				return false;
+			if (
+				(item.kind === "command" && !["passed", "failed", "not_run"].includes(String(item.status))) ||
+				(item.kind !== "command" && !["verified", "rejected"].includes(String(item.status)))
+			)
+				return false;
+			if (item.command !== undefined && !isNonEmptyString(item.command)) return false;
+			if (item.artifact !== undefined && !isNonEmptyString(item.artifact)) return false;
+			if (item.location !== undefined && !isNonEmptyString(item.location)) return false;
+			if (item.output !== undefined && typeof item.output !== "string") return false;
+			return item.kind !== "command" || isNonEmptyString(item.command);
+		})
+	)
+		return false;
+	if (
+		value.files !== undefined &&
+		(!Array.isArray(value.files) || !value.files.every(file => typeof file === "string" && file.trim().length > 0))
+	)
+		return false;
+	return value.notes === undefined || typeof value.notes === "string";
+}
+
+export function isCanonicalPersistedGjcTeamTask(value: unknown, fileId?: string): value is GjcTeamTask {
+	if (!isRecord(value) || Array.isArray(value) || !hasExactKeys(value, canonicalTaskKeys)) return false;
+	if (!isSafePersistedId(value.id) || (fileId !== undefined && value.id !== fileId)) return false;
+	if (!["pending", "blocked", "in_progress", "completed", "failed"].includes(String(value.status))) return false;
+	if (!["subject", "description", "title", "objective"].every(key => typeof value[key] === "string")) return false;
+	if (!Number.isInteger(value.version) || (value.version as number) <= 0) return false;
+	if (!isFiniteTimestamp(value.created_at) || !isFiniteTimestamp(value.updated_at)) return false;
+	if (value.completed_at !== undefined && !isFiniteTimestamp(value.completed_at)) return false;
+	if (value.owner !== undefined && !isSafePersistedId(value.owner)) return false;
+	if (value.assignee !== undefined && !isSafePersistedId(value.assignee)) return false;
+	if (value.result !== undefined && typeof value.result !== "string") return false;
+	if (value.error !== undefined && typeof value.error !== "string") return false;
+	if (value.lane !== undefined && !isNonEmptyString(value.lane)) return false;
+	if (value.required_role !== undefined && !isNonEmptyString(value.required_role)) return false;
+	if (
+		value.allowed_roles !== undefined &&
+		(!Array.isArray(value.allowed_roles) || !value.allowed_roles.every(isNonEmptyString))
+	)
+		return false;
+	if (
+		value.depends_on !== undefined &&
+		(!Array.isArray(value.depends_on) || !value.depends_on.every(isSafePersistedId))
+	)
+		return false;
+	if (
+		value.blocked_by !== undefined &&
+		(!Array.isArray(value.blocked_by) || !value.blocked_by.every(isSafePersistedId))
+	)
+		return false;
+	if (value.completion_evidence !== undefined && !isCanonicalCompletionEvidence(value.completion_evidence))
+		return false;
+	if (value.claim !== undefined) {
+		if (!isCanonicalPersistedGjcTeamTaskClaim(value.claim)) return false;
+		if (value.status !== "in_progress" || value.owner !== value.claim.owner || value.assignee !== value.claim.owner)
+			return false;
+	}
+	return true;
+}
 const safeId = (kind: string, value: string) => {
 	if (
 		!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/.test(value) ||
@@ -170,6 +289,18 @@ async function readJson<T>(filePath: string): Promise<T | null> {
 }
 async function writeJson(filePath: string, value: unknown): Promise<void> {
 	await writeJsonAtomic(filePath, value, writerOptions(filePath, "state", "write"));
+}
+
+/**
+ * Serializes mutable team facts across processes. Callers must not re-enter this
+ * fence; use unlocked helpers when composing operations under one transaction.
+ */
+export async function withGjcTeamMutationFence<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+	return withWorkflowStateLock(
+		path.join(dir, "operations", "team-mutation.json"),
+		fn,
+		writerOptions(path.join(dir, "operations", "team-mutation.json"), "state", "mutation-fence"),
+	);
 }
 function optionalString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -336,9 +467,10 @@ export async function readGjcTeamTasksFromDir(dir: string): Promise<GjcTeamTask[
 		throw error;
 	}
 }
-export async function writeGjcTeamTaskToDir(dir: string, task: GjcTeamTask): Promise<void> {
+async function writeGjcTeamTaskToDir(dir: string, task: GjcTeamTask): Promise<void> {
 	await writeJson(taskPath(dir, task.id), normalizeGjcTeamTask(task));
 }
+
 function eligibility(task: GjcTeamTask, worker: GjcTeamTaskWorker, tasks: GjcTeamTask[]): string | null {
 	if (task.status !== "pending") return `task_not_pending:${task.id}`;
 	if (task.owner && task.owner !== worker.id) return `task_owner_mismatch:${task.id}:${task.owner}`;
@@ -373,11 +505,101 @@ function claimRecord(value: unknown): GjcTeamTaskClaim | undefined {
 }
 const expired = (value: string | undefined) =>
 	Boolean(value && Number.isFinite(Date.parse(value)) && Date.parse(value) <= Date.now());
+
+const teamTaskMutationCapability = Symbol("team-task-mutation-capability");
+
+/**
+ * This is intentionally structural only: callers can invoke methods supplied by
+ * `withGjcTeamTaskMutation`, but cannot create an active capability. Each method
+ * closes over a private brand and is revoked when that callback settles.
+ */
+export interface GjcTeamTaskMutationCapability {
+	create(subject: string, description: string, options: GjcTeamTaskMetadataInput): Promise<GjcTeamTask>;
+	update(
+		id: string,
+		updates: Partial<
+			Pick<
+				GjcTeamTask,
+				"subject" | "description" | "blocked_by" | "depends_on" | "lane" | "required_role" | "allowed_roles"
+			>
+		>,
+	): Promise<GjcTeamTask>;
+	claim(worker: GjcTeamTaskWorker, id?: string): Promise<GjcTeamApiClaimResult>;
+	transition(
+		id: string,
+		status: GjcTeamTaskStatus,
+		token?: string,
+		workerId?: string,
+		evidenceInput?: unknown,
+	): Promise<GjcTeamTask>;
+	release(id: string, token: string, workerId: string): Promise<GjcTeamTask>;
+	writeRecovered(task: GjcTeamTask): Promise<void>;
+}
+
+export async function withGjcTeamTaskMutation<T>(
+	store: GjcTeamTaskStore,
+	fn: (capability: GjcTeamTaskMutationCapability) => Promise<T>,
+): Promise<T> {
+	return withGjcTeamMutationFence(store.dir, () => store.withMutationCapability(teamTaskMutationCapability, fn));
+}
+
 export class GjcTeamTaskStore {
 	constructor(
 		readonly dir: string,
 		readonly appendEvent: EventAppender,
 	) {}
+	async withMutationCapability<T>(
+		capabilityBrand: typeof teamTaskMutationCapability,
+		fn: (capability: GjcTeamTaskMutationCapability) => Promise<T>,
+	): Promise<T> {
+		if (capabilityBrand !== teamTaskMutationCapability) throw new Error("team_mutation_capability_required");
+		const brand = Symbol("active-team-task-mutation");
+		let active = true;
+		const mutations: Promise<unknown>[] = [];
+		const assertActive = () => {
+			if (!active || brand.description !== "active-team-task-mutation")
+				throw new Error("team_mutation_capability_revoked");
+		};
+		const track = <T>(mutation: () => Promise<T>): Promise<T> => {
+			assertActive();
+			const pending = mutation();
+			mutations.push(pending);
+			void pending.catch(() => undefined);
+			return pending;
+		};
+		const capability = Object.freeze<GjcTeamTaskMutationCapability>({
+			create: (subject, description, options) => track(() => this.#createUnlocked(subject, description, options)),
+			update: (id, updates) => track(() => this.#updateUnlocked(id, updates)),
+			claim: (worker, id) => track(() => this.#claimUnlocked(worker, id)),
+			transition: (id, status, token, workerId, evidenceInput) =>
+				track(() => this.#transitionUnlocked(id, status, token, workerId, evidenceInput)),
+			release: (id, token, workerId) => track(() => this.#releaseUnlocked(id, token, workerId)),
+			writeRecovered: task => track(() => writeGjcTeamTaskToDir(this.dir, task)),
+		});
+		let callbackResult: T | undefined;
+		let callbackError: unknown;
+		let callbackFailed = false;
+		try {
+			callbackResult = await fn(capability);
+		} catch (error) {
+			callbackFailed = true;
+			callbackError = error;
+		}
+		// Callback settlement is the admission boundary. Drain only mutations that
+		// were admitted before it; an escaped capability cannot add work while draining.
+		active = false;
+		const settled: PromiseSettledResult<unknown>[] = [];
+		let drained = 0;
+		while (drained < mutations.length) {
+			const pending = mutations.slice(drained);
+			drained = mutations.length;
+			settled.push(...(await Promise.allSettled(pending)));
+		}
+		if (callbackFailed) throw callbackError;
+		const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+		if (failed) throw failed.reason;
+		return callbackResult as T;
+	}
 	async list() {
 		return readGjcTeamTasksFromDir(this.dir);
 	}
@@ -387,6 +609,9 @@ export class GjcTeamTaskStore {
 		return task;
 	}
 	async create(subject: string, description: string, options: GjcTeamTaskMetadataInput) {
+		return withGjcTeamMutationFence(this.dir, () => this.#createUnlocked(subject, description, options));
+	}
+	async #createUnlocked(subject: string, description: string, options: GjcTeamTaskMetadataInput) {
 		const task: GjcTeamTask = {
 			id: `task-${(await this.list()).length + 1}`,
 			subject,
@@ -416,6 +641,17 @@ export class GjcTeamTaskStore {
 			>
 		>,
 	) {
+		return withGjcTeamMutationFence(this.dir, () => this.#updateUnlocked(id, updates));
+	}
+	async #updateUnlocked(
+		id: string,
+		updates: Partial<
+			Pick<
+				GjcTeamTask,
+				"subject" | "description" | "blocked_by" | "depends_on" | "lane" | "required_role" | "allowed_roles"
+			>
+		>,
+	) {
 		const task = await this.read(id);
 		const updated = normalizeGjcTeamTask({
 			...task,
@@ -434,6 +670,9 @@ export class GjcTeamTaskStore {
 		return updated;
 	}
 	async claim(worker: GjcTeamTaskWorker, id?: string): Promise<GjcTeamApiClaimResult> {
+		return withGjcTeamMutationFence(this.dir, () => this.#claimUnlocked(worker, id));
+	}
+	async #claimUnlocked(worker: GjcTeamTaskWorker, id?: string): Promise<GjcTeamApiClaimResult> {
 		const tasks = await this.list();
 		const task = id
 			? tasks.find(candidate => candidate.id === id)
@@ -507,6 +746,17 @@ export class GjcTeamTaskStore {
 		};
 	}
 	async transition(id: string, status: GjcTeamTaskStatus, token?: string, workerId?: string, evidenceInput?: unknown) {
+		return withGjcTeamMutationFence(this.dir, () =>
+			this.#transitionUnlocked(id, status, token, workerId, evidenceInput),
+		);
+	}
+	async #transitionUnlocked(
+		id: string,
+		status: GjcTeamTaskStatus,
+		token?: string,
+		workerId?: string,
+		evidenceInput?: unknown,
+	) {
 		const task = await this.read(id);
 		if (status === "pending") throw new Error(`invalid_task_transition:${id}:pending_requires_release`);
 		if (task.status === "completed" || task.status === "failed") throw new Error(`task_terminal:${id}`);
@@ -548,6 +798,9 @@ export class GjcTeamTaskStore {
 		return updated;
 	}
 	async release(id: string, token: string, workerId: string) {
+		return withGjcTeamMutationFence(this.dir, () => this.#releaseUnlocked(id, token, workerId));
+	}
+	async #releaseUnlocked(id: string, token: string, workerId: string) {
 		const task = await this.read(id);
 		if (!task.claim || task.claim.token !== token || task.claim.owner !== workerId)
 			throw new Error(`claim_token_mismatch:${id}`);

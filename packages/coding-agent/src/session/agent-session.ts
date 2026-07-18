@@ -786,6 +786,35 @@ function isLocalModelEndpoint(model: Model | undefined): boolean {
 }
 
 const IRC_REPLY_MAX_BYTES = 4096;
+const BTW_ESTABLISHMENT_TIMEOUT_MS = 15_000;
+
+export type EphemeralTurnPurpose = "btw" | "background";
+
+interface EphemeralTurnBaseArgs {
+	promptText: string;
+	onTextDelta?: (delta: string) => void;
+	signal?: AbortSignal;
+}
+
+export type EphemeralTurnArgs =
+	| (EphemeralTurnBaseArgs & { purpose: "btw" })
+	| (EphemeralTurnBaseArgs & {
+			purpose?: "background";
+			/** Internal caller-supplied, non-persistent context such as the IRC roster. */
+			prependMessages?: AgentMessage[];
+			/** Revalidates optional caller context after asynchronous boundaries. */
+			prependMessagesValid?: () => boolean;
+			/**
+			 * An existing IRC roster claim owned by the caller. `undefined` makes this
+			 * turn claim and commit its own roster candidate; `null` opts out.
+			 */
+			ircRosterClaim?: IrcRosterClaim | null;
+	  });
+
+interface EphemeralTurnResult {
+	replyText: string;
+	assistantMessage: AssistantMessage;
+}
 
 /**
  * Hard cap for {@link AgentSession.disposeChildSubprocesses}. A `SIGINT`/`SIGTERM` handler
@@ -13397,150 +13426,193 @@ export class AgentSession {
 
 	/**
 	 * Run a single ephemeral side-channel turn against this session's current
-	 * model + system prompt + history.  No tools are used; the side request
-	 * does not block on, or interfere with, any in-flight main turn.  The
-	 * session's history and persisted state are NOT modified by this call.
-	 *
-	 * Used by `respondAsBackground` (IRC) and `BtwController` (`/btw`) to share
-	 * the snapshot + stream pipeline.  The snapshot includes any in-flight
-	 * streaming assistant text so the model sees the half-finished response
-	 * rather than missing context.
+	 * model + system prompt + history. No tools are used and session history is
+	 * not modified. Background turns retain the IRC/session behavior used by
+	 * autoreplies; `/btw` turns use an isolated committed-context policy.
 	 */
-	async runEphemeralTurn(args: {
-		promptText: string;
-		onTextDelta?: (delta: string) => void;
-		signal?: AbortSignal;
-		/** Internal caller-supplied, non-persistent context such as the IRC roster. */
-		prependMessages?: AgentMessage[];
-		/** Revalidates optional caller context after asynchronous boundaries. */
-		prependMessagesValid?: () => boolean;
-		/**
-		 * An existing IRC roster claim owned by the caller. `undefined` makes this
-		 * turn claim and commit its own roster candidate; `null` opts out.
-		 */
-		ircRosterClaim?: IrcRosterClaim | null;
-	}): Promise<{
-		replyText: string;
-		assistantMessage: AssistantMessage;
-	}> {
+	async runEphemeralTurn(args: EphemeralTurnArgs): Promise<EphemeralTurnResult> {
 		args.signal?.throwIfAborted();
-		const callerOwnsRosterClaim = args.ircRosterClaim !== undefined;
-		const rosterClaim = callerOwnsRosterClaim ? args.ircRosterClaim : this.#claimIrcRosterCandidate();
+		const isBtw = args.purpose === "btw";
+		// `/btw` captures every provider-facing parent facet synchronously so an
+		// in-flight foreground mutation cannot create a mixed-generation request.
+		const btwSnapshot = isBtw
+			? this.#buildBtwEphemeralSnapshot(
+					cloneJsonValueForForkSeed(this.buildDisplaySessionContext().messages),
+					args.promptText,
+				)
+			: undefined;
+		const model = this.model;
+		const systemPrompt = isBtw ? [...this.systemPrompt] : undefined;
+		const thinkingLevel = this.thinkingLevel;
+		const hideThinkingSummary = this.agent.hideThinkingSummary;
+		const serviceTier = this.serviceTier;
+		const providerAffinitySessionId = this.agent.providerSessionId ?? this.agent.sessionId ?? this.sessionId;
+		const sideSessionId = isBtw ? `${providerAffinitySessionId}:btw:${crypto.randomUUID()}` : undefined;
+		const backgroundArgs = isBtw ? undefined : args;
+		const callerOwnsRosterClaim = backgroundArgs?.ircRosterClaim !== undefined;
+		const rosterClaim = isBtw
+			? null
+			: callerOwnsRosterClaim
+				? backgroundArgs?.ircRosterClaim
+				: this.#claimIrcRosterCandidate();
 		const rosterClaimIsCurrent = () =>
 			!rosterClaim || this.#isCurrentIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
-		const prependMessagesValid = () => rosterClaimIsCurrent() && args.prependMessagesValid?.() !== false;
+		const prependMessagesValid = () => rosterClaimIsCurrent() && backgroundArgs?.prependMessagesValid?.() !== false;
 		const rosterMessage = !callerOwnsRosterClaim && rosterClaimIsCurrent() ? rosterClaim?.message : undefined;
 		try {
-			const model = this.model;
-			if (!model) {
-				throw new Error("No active model on session");
-			}
-			const apiKey = await awaitEphemeralAbort(this.#modelRegistry.getApiKey(model, this.sessionId), args.signal);
-			if (!apiKey) {
-				throw new Error(`No API key for ${model.provider}/${model.id}`);
-			}
+			if (!model) throw new Error("No active model on session");
+			const credentialSessionId = isBtw ? providerAffinitySessionId : this.sessionId;
+			const apiKey = await awaitEphemeralAbort(
+				this.#modelRegistry.getApiKey(model, credentialSessionId),
+				args.signal,
+			);
+			if (!apiKey) throw new Error(`No API key for ${model.provider}/${model.id}`);
 
 			const prependMessages = prependMessagesValid()
-				? [...(rosterMessage ? [rosterMessage] : []), ...(args.prependMessages ?? [])]
+				? [...(rosterMessage ? [rosterMessage] : []), ...(backgroundArgs?.prependMessages ?? [])]
 				: undefined;
-			let snapshot = this.#buildEphemeralSnapshot(args.promptText, prependMessages);
+			let snapshot = btwSnapshot ?? this.#buildEphemeralSnapshot(args.promptText, prependMessages);
 			let llmMessages = await awaitEphemeralAbort(this.convertMessagesToLlm(snapshot, args.signal), args.signal);
-			if (prependMessages && !prependMessagesValid()) {
+			if (!isBtw && prependMessages && !prependMessagesValid()) {
 				snapshot = this.#buildEphemeralSnapshot(args.promptText);
 				llmMessages = await awaitEphemeralAbort(this.convertMessagesToLlm(snapshot, args.signal), args.signal);
 			}
 			const context: Context = {
-				systemPrompt: this.systemPrompt,
+				systemPrompt: systemPrompt ?? this.systemPrompt,
 				messages: llmMessages,
-				// Empty tools array: with toolChoice="none" some encoders still serialize the
-				// recipient's tool catalog and the model leaks raw call markup
-				// (<function_calls>, DSML envelopes) into IRC replies. Stripping tools here
-				// removes the surface entirely.
 				tools: [],
 			};
-			// Providers use sessionId as their sticky stream identity. Reusing the
-			// active turn's identity makes this no-history request wait behind its
-			// stream (notably on the WebSocket transport), so it must be unique.
-			const ephemeralSessionId = crypto.randomUUID();
-			const options = this.prepareSimpleStreamOptions(
-				{
-					apiKey,
-					sessionId: ephemeralSessionId,
-					metadata: buildSessionMetadata(
-						ephemeralSessionId,
-						model.provider,
-						this.#modelRegistry.authStorage,
-						this.sessionId,
-					),
-					reasoning: toReasoningEffort(this.thinkingLevel),
-					hideThinkingSummary: this.agent.hideThinkingSummary,
-					serviceTier: this.serviceTier,
-					signal: args.signal,
-					toolChoice: "none",
-				},
-				model.provider,
-			);
 
 			let replyText = "";
 			let assistantMessage: AssistantMessage | undefined;
-			args.signal?.throwIfAborted();
-			const stream = streamSimple(model, context, options);
-			for await (const event of stream) {
-				if (event.type === "text_delta") {
-					replyText += event.delta;
-					if (args.onTextDelta) args.onTextDelta(event.delta);
-					continue;
+			if (isBtw) {
+				const establishmentAbort = new AbortController();
+				const requestSignal = args.signal
+					? AbortSignal.any([args.signal, establishmentAbort.signal])
+					: establishmentAbort.signal;
+				const timeoutError = new Error(
+					`/btw provider did not produce an event within ${BTW_ESTABLISHMENT_TIMEOUT_MS / 1000} seconds`,
+				);
+				timeoutError.name = "TimeoutError";
+				let establishmentTimer: NodeJS.Timeout | undefined;
+				try {
+					requestSignal.throwIfAborted();
+					const options: SimpleStreamOptions = {
+						apiKey,
+						sessionId: sideSessionId!,
+						metadata: buildSessionMetadata(
+							sideSessionId!,
+							model.provider,
+							this.#modelRegistry.authStorage,
+							providerAffinitySessionId,
+						),
+						reasoning: toReasoningEffort(thinkingLevel),
+						hideThinkingSummary,
+						serviceTier,
+						onPayload: this.#onPayload,
+						signal: requestSignal,
+						toolChoice: "none",
+						requestMaxRetries: 0,
+						streamMaxRetries: 0,
+						streamFirstEventTimeoutMs: 0,
+					};
+					establishmentTimer = setTimeout(
+						() => establishmentAbort.abort(timeoutError),
+						BTW_ESTABLISHMENT_TIMEOUT_MS,
+					);
+					establishmentTimer.unref?.();
+					const stream = streamSimple(model, context, options);
+					let receivedProviderEvent = false;
+					for await (const event of stream) {
+						if (!receivedProviderEvent && event.type !== "start") {
+							receivedProviderEvent = true;
+							clearTimeout(establishmentTimer);
+							establishmentTimer = undefined;
+						}
+						if (event.type === "text_delta") {
+							replyText += event.delta;
+							args.onTextDelta?.(event.delta);
+						} else if (event.type === "done") {
+							assistantMessage = event.message;
+							break;
+						} else if (event.type === "error") {
+							throw new Error(event.error.errorMessage || "Ephemeral turn failed");
+						}
+					}
+					requestSignal.throwIfAborted();
+				} catch (error) {
+					if (establishmentAbort.signal.aborted && !args.signal?.aborted) throw timeoutError;
+					throw error;
+				} finally {
+					if (establishmentTimer) clearTimeout(establishmentTimer);
 				}
-				if (event.type === "done") {
-					assistantMessage = event.message;
-					break;
-				}
-				if (event.type === "error") {
-					throw new Error(event.error.errorMessage || "Ephemeral turn failed");
+			} else {
+				const ephemeralSessionId = crypto.randomUUID();
+				const options = this.prepareSimpleStreamOptions(
+					{
+						apiKey,
+						sessionId: ephemeralSessionId,
+						metadata: buildSessionMetadata(
+							ephemeralSessionId,
+							model.provider,
+							this.#modelRegistry.authStorage,
+							this.sessionId,
+						),
+						reasoning: toReasoningEffort(thinkingLevel),
+						hideThinkingSummary,
+						serviceTier,
+						signal: args.signal,
+						toolChoice: "none",
+					},
+					model.provider,
+				);
+				args.signal?.throwIfAborted();
+				const stream = streamSimple(model, context, options);
+				for await (const event of stream) {
+					if (event.type === "text_delta") {
+						replyText += event.delta;
+						args.onTextDelta?.(event.delta);
+					} else if (event.type === "done") {
+						assistantMessage = event.message;
+						break;
+					} else if (event.type === "error") {
+						throw new Error(event.error.errorMessage || "Ephemeral turn failed");
+					}
 				}
 			}
 
-			if (!assistantMessage) {
-				throw new Error("Ephemeral turn ended without a final message");
-			}
-			// A provider may ignore the caller signal and yield a normal terminal event.
-			// Do not let that completion commit a direct roster claim or report success.
+			if (!assistantMessage) throw new Error("Ephemeral turn ended without a final message");
 			args.signal?.throwIfAborted();
 			if (
+				!isBtw &&
 				!callerOwnsRosterClaim &&
 				rosterClaim &&
 				assistantMessage.stopReason !== "error" &&
 				assistantMessage.stopReason !== "aborted"
 			) {
-				args.signal?.throwIfAborted();
 				this.#commitIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
 			}
 			args.signal?.throwIfAborted();
-			return {
-				replyText: replyText.trim(),
-				assistantMessage,
-			};
+			return { replyText: replyText.trim(), assistantMessage };
 		} finally {
-			if (!callerOwnsRosterClaim && rosterClaim) {
+			if (!isBtw && !callerOwnsRosterClaim && rosterClaim) {
 				this.#releaseIrcRosterClaim(rosterClaim.token, rosterClaim.epoch);
 			}
 		}
 	}
 
-	/**
-	 * Build a message snapshot for an ephemeral side-channel turn.  Includes
-	 * the in-flight streaming assistant message (if any) so the model sees
-	 * the partial response in context, then appends the prompt as a virtual
-	 * user message.
-	 */
+	/** Build a `/btw` snapshot from an already-cloned committed context. */
+	#buildBtwEphemeralSnapshot(messages: AgentMessage[], promptText: string): AgentMessage[] {
+		messages.push(this.#buildEphemeralPromptMessage(promptText));
+		return messages;
+	}
+
+	/** Build a background snapshot with in-flight assistant and optional context. */
 	#buildEphemeralSnapshot(promptText: string, prependMessages?: AgentMessage[]): AgentMessage[] {
 		const messages = [...this.messages];
 		const streaming = this.agent.state.streamMessage;
 		if (streaming && streaming.role === "assistant") {
 			const preservedBlocks: AssistantMessage["content"] = [];
-			// Preserve thinking blocks: DeepSeek-class encoders replay them as
-			// `reasoning_content` and reject the request (HTTP 400) when the field
-			// goes missing on a turn that previously emitted thinking.
 			for (const c of streaming.content) {
 				if (c.type === "thinking") preservedBlocks.push(c);
 			}
@@ -13548,30 +13620,26 @@ export class AgentSession {
 				.filter((c): c is TextContent => c.type === "text")
 				.map(c => c.text)
 				.join("");
-			if (streamingText) {
-				preservedBlocks.push({ type: "text", text: streamingText });
-			}
+			if (streamingText) preservedBlocks.push({ type: "text", text: streamingText });
 			if (preservedBlocks.length > 0) {
-				const normalized: AssistantMessage = {
-					...streaming,
-					content: preservedBlocks,
-				};
+				const normalized: AssistantMessage = { ...streaming, content: preservedBlocks };
 				const lastMessage = messages.at(-1);
-				if (lastMessage?.role === "assistant") {
-					messages[messages.length - 1] = normalized;
-				} else {
-					messages.push(normalized);
-				}
+				if (lastMessage?.role === "assistant") messages[messages.length - 1] = normalized;
+				else messages.push(normalized);
 			}
 		}
 		if (prependMessages) messages.push(...prependMessages);
-		messages.push({
+		messages.push(this.#buildEphemeralPromptMessage(promptText));
+		return cloneJsonValueForForkSeed(messages);
+	}
+
+	#buildEphemeralPromptMessage(promptText: string): AgentMessage {
+		return {
 			role: "user",
 			content: [{ type: "text", text: promptText }],
 			attribution: "agent",
 			timestamp: Date.now(),
-		});
-		return cloneJsonValueForForkSeed(messages);
+		};
 	}
 
 	#queueBackgroundExchangeInjection(messages: CustomMessage[], options?: { deferFlush?: boolean }): void {
