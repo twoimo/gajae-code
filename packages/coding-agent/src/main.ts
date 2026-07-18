@@ -654,7 +654,7 @@ async function promptForkSession(session: SessionInfo): Promise<boolean> {
 	}
 }
 
-async function getChangelogForDisplay(parsed: Args): Promise<string | undefined> {
+export async function getChangelogForDisplay(parsed: Args): Promise<string | undefined> {
 	if (parsed.continue || parsed.resume) {
 		return undefined;
 	}
@@ -666,15 +666,19 @@ async function getChangelogForDisplay(parsed: Args): Promise<string | undefined>
 
 	const lastVersion = settings.get("lastChangelogVersion");
 	if (!lastVersion) {
-		settings.set("lastChangelogVersion", VERSION);
-		await flushChangelogVersion();
+		if (settings.canWriteDurableConfig()) {
+			settings.set("lastChangelogVersion", VERSION);
+			await flushChangelogVersion();
+		}
 		return getInstalledVersionChangelogEntry(entries, VERSION)?.content;
 	}
 
 	if (lastVersion !== VERSION) {
 		const newEntries = getNewEntries(entries, lastVersion);
-		settings.set("lastChangelogVersion", VERSION);
-		await flushChangelogVersion();
+		if (settings.canWriteDurableConfig()) {
+			settings.set("lastChangelogVersion", VERSION);
+			await flushChangelogVersion();
+		}
 		if (newEntries.length > 0) {
 			return newEntries.map(e => e.content).join("\n\n");
 		}
