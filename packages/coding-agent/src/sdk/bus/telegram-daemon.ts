@@ -1418,9 +1418,19 @@ interface TopicAuthorityLease {
 	authorityEpoch: number;
 }
 
+interface ToolActivityOwner {
+	sessionId: string;
+	toolCallId: string;
+	toolName: string;
+	endpointDigest: string;
+	phase: "started" | "terminal";
+}
+
 interface PendingThreadedFrame {
 	send: ThreadedSend;
 	msg: Record<string, unknown>;
+	endpointDigest: string;
+	toolActivity?: ToolActivityOwner;
 }
 
 type SelectedAckOutcome =
@@ -1454,6 +1464,7 @@ interface TelegramQueuePayload {
 	topicLease?: TopicAuthorityLease;
 	selectedAck?: SelectedAckQueueItem;
 	btwDelivery?: BtwQueuedDelivery;
+	toolActivity?: ToolActivityOwner;
 }
 
 interface PendingBtwTurn {
@@ -1544,6 +1555,10 @@ export class TelegramNotificationDaemon {
 	readonly messageRoutes = new Map<string | number, CallbackRoute | Omit<CallbackRoute, "answer">>();
 	/** Telegram message id backing each streamed `${sessionId}:${coalesceKey}`, for in-place edits. */
 	private readonly liveMessages = new Map<string, number>();
+	/** Endpoint-bound ownership for visible or dispatching tool bubbles. */
+	private readonly toolActivityOwners = new Map<string, ToolActivityOwner>();
+	private readonly revokedToolEndpoints = new Set<string>();
+	private toolTerminalizationChain: Promise<void> = Promise.resolve();
 	readonly sessions = new Map<string, SessionSocket>();
 	/** Ephemeral aliases for model choices; deliberately never serialized across daemon restarts. */
 	#modelChoiceAliases = new Map<string, ModelChoiceRoute>();
@@ -1653,6 +1668,7 @@ export class TelegramNotificationDaemon {
 	 * ~25s getUpdates timeout. Safe to call from a signal handler.
 	 */
 	requestStop(_reason?: "reload" | "stop" | "signal"): void {
+		this.scheduleVisibleToolTerminalization().catch(() => undefined);
 		this.effects.beginShutdown();
 		for (const item of new Set(this.selectedAckPending.values())) {
 			if (item.state === "queued") this.pool.removeById(item.itemId);
@@ -2471,7 +2487,67 @@ export class TelegramNotificationDaemon {
 	 * (so a delayed old close cannot delete a replacement), and best-effort closes
 	 * the socket. `scanRoots()` then reconnects the session.
 	 */
+	private enqueueToolTerminalization(
+		claimed: Array<{ messageId: number; owner: ToolActivityOwner }>,
+		awaitDispatch: boolean,
+	): Promise<void> {
+		const terminalize = (): Promise<void> =>
+			this.effects.allowTerminal(async () => {
+				if (awaitDispatch)
+					try {
+						await this.flushChain;
+					} catch {
+						// Shutdown may abort an in-flight delivery; claimed visible messages
+						// still require best-effort terminalization.
+					}
+				for (const { messageId, owner } of claimed) {
+					const send = renderThreadedFrame({
+						type: "tool_activity",
+						sessionId: owner.sessionId,
+						toolCallId: owner.toolCallId,
+						toolName: owner.toolName,
+						phase: "unknown",
+					});
+					if (!send?.text) continue;
+					try {
+						await this.botApi.call("editMessageText", {
+							chat_id: this.opts.chatId,
+							message_id: messageId,
+							text: send.text,
+							parse_mode: TELEGRAM_PARSE_MODE,
+						});
+					} catch {
+						// Best-effort cleanup: ownership is already fenced from replacements.
+					}
+				}
+			});
+		const next = this.toolTerminalizationChain.then(terminalize);
+		this.toolTerminalizationChain = next.catch(() => {});
+		return next;
+	}
+
+	private scheduleVisibleToolTerminalization(endpointDigest?: string): Promise<void> {
+		if (endpointDigest !== undefined) this.revokedToolEndpoints.add(endpointDigest);
+		const claimed: Array<{ messageId: number; owner: ToolActivityOwner }> = [];
+		for (const [key, owner] of this.toolActivityOwners) {
+			if (endpointDigest !== undefined && owner.endpointDigest !== endpointDigest) continue;
+			this.toolActivityOwners.delete(key);
+			const messageId = this.liveMessages.get(key);
+			this.liveMessages.delete(key);
+			if (messageId !== undefined) claimed.push({ messageId, owner });
+		}
+		this.pool.removeWhere(
+			item =>
+				item.payload.toolActivity !== undefined &&
+				(endpointDigest === undefined || item.payload.toolActivity.endpointDigest === endpointDigest),
+		);
+		const next = this.enqueueToolTerminalization(claimed, false);
+		if (endpointDigest !== undefined) void next.finally(() => this.revokedToolEndpoints.delete(endpointDigest));
+		return next;
+	}
+
 	private dropSession(session: SessionSocket, reason: string): void {
+		this.scheduleVisibleToolTerminalization(session.endpointDigest).catch(() => undefined);
 		const clearIntervalImpl = this.opts.clearIntervalImpl ?? clearInterval;
 		if (session.pingTimer) {
 			clearIntervalImpl(session.pingTimer);
@@ -2942,16 +3018,32 @@ export class TelegramNotificationDaemon {
 		return !ownerId || ownerId === session.sessionId;
 	}
 
+	private toolActivityOwner(session: SessionSocket, msg: Record<string, unknown>): ToolActivityOwner | undefined {
+		if (msg.type !== "tool_activity") return undefined;
+		const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : undefined;
+		const toolName = typeof msg.toolName === "string" ? msg.toolName : undefined;
+		const phase = typeof msg.phase === "string" ? msg.phase : undefined;
+		if (!toolCallId || !toolName || !phase) return undefined;
+		return {
+			sessionId: session.sessionId,
+			toolCallId,
+			toolName,
+			endpointDigest: session.endpointDigest,
+			phase: phase === "started" ? "started" : "terminal",
+		};
+	}
+
 	private async submitThreadedFrame(
 		sessionId: string,
 		send: ThreadedSend,
 		topicLease: TopicAuthorityLease,
+		toolActivity?: ToolActivityOwner,
 	): Promise<void> {
 		this.submitPool({
 			sessionId,
 			lane: send.lane,
 			coalesceKey: send.coalesceKey,
-			payload: { send, topicLease },
+			payload: { send, topicLease, ...(toolActivity ? { toolActivity } : {}) },
 		});
 		await this.flushPool();
 	}
@@ -3013,20 +3105,32 @@ export class TelegramNotificationDaemon {
 		}
 	}
 
-	private rememberPendingThreadedFrame(sessionId: string, send: ThreadedSend, msg: Record<string, unknown>): void {
-		const frames = this.pendingThreadedFrames.get(sessionId) ?? [];
-		frames.push({ send, msg });
+	private rememberPendingThreadedFrame(
+		session: SessionSocket,
+		send: ThreadedSend,
+		msg: Record<string, unknown>,
+	): void {
+		const frames = this.pendingThreadedFrames.get(session.sessionId) ?? [];
+		const toolActivity = this.toolActivityOwner(session, msg);
+		frames.push({
+			send,
+			msg,
+			endpointDigest: session.endpointDigest,
+			...(toolActivity ? { toolActivity } : {}),
+		});
 		if (frames.length > PENDING_TOPIC_FRAME_LIMIT) frames.shift();
-		this.pendingThreadedFrames.set(sessionId, frames);
+		this.pendingThreadedFrames.set(session.sessionId, frames);
 	}
 
 	private async flushPendingThreadedFrames(sessionId: string, topicLease: TopicAuthorityLease): Promise<void> {
 		const frames = this.pendingThreadedFrames.get(sessionId);
 		if (!frames || frames.length === 0) return;
 		this.pendingThreadedFrames.delete(sessionId);
+		const session = this.sessions.get(sessionId);
 		for (const frame of frames) {
+			if (session && session.endpointDigest !== frame.endpointDigest) continue;
 			if (frame.msg.type === "tool_activity" && this.opts.toolActivity?.enabled === false) continue;
-			await this.submitThreadedFrame(sessionId, frame.send, topicLease);
+			await this.submitThreadedFrame(sessionId, frame.send, topicLease, frame.toolActivity);
 		}
 	}
 
@@ -3112,7 +3216,11 @@ export class TelegramNotificationDaemon {
 			})) as { ok?: boolean };
 			if (!topicDeleteSettled(res)) return;
 			this.topics.settleDelete(sessionId, record.topicId);
-			for (const k of [...this.liveMessages.keys()]) if (k.startsWith(`${sessionId}:`)) this.liveMessages.delete(k);
+			for (const k of [...this.liveMessages.keys()])
+				if (k.startsWith(`${sessionId}:`)) {
+					this.liveMessages.delete(k);
+					this.toolActivityOwners.delete(k);
+				}
 			this.topicOwnerByIdentity.forEach((ownerSessionId, identityKey) => {
 				if (ownerSessionId === sessionId) this.topicOwnerByIdentity.delete(identityKey);
 			});
@@ -3588,7 +3696,7 @@ export class TelegramNotificationDaemon {
 							}
 						}
 						if (editKey && ckey !== undefined && firstMessageId !== undefined && !send.terminal) {
-							this.recordLiveMessage(item.sessionId, ckey, firstMessageId);
+							this.recordLiveMessage(item.sessionId, ckey, firstMessageId, item.payload.toolActivity);
 						}
 					}
 				}
@@ -3600,7 +3708,12 @@ export class TelegramNotificationDaemon {
 				// A terminal tool frame owns the end of this coalescing key even when both
 				// edit and fallback delivery fail. Retaining the old message id would leak
 				// one entry per failure and let a later reused key edit stale Telegram state.
-				if (send.terminal && editKey) this.liveMessages.delete(editKey);
+				if (send.terminal && editKey) {
+					this.liveMessages.delete(editKey);
+					const owner = this.toolActivityOwners.get(editKey);
+					if (!item.payload.toolActivity || owner?.endpointDigest === item.payload.toolActivity.endpointDigest)
+						this.toolActivityOwners.delete(editKey);
+				}
 			}
 		}
 	}
@@ -3610,7 +3723,12 @@ export class TelegramNotificationDaemon {
 	 * so later live/finalized frames edit it in place. Evicts this session's stale
 	 * same-category entries (e.g. prior turns) so the map stays bounded.
 	 */
-	private recordLiveMessage(sessionId: string, coalesceKey: string, messageId: number): void {
+	private recordLiveMessage(
+		sessionId: string,
+		coalesceKey: string,
+		messageId: number,
+		toolActivity?: ToolActivityOwner,
+	): void {
 		const mapKey = `${sessionId}:${coalesceKey}`;
 		const category = coalesceKey.split(":")[0] ?? "";
 		// Single-slot categories (rolling turn/context/reasoning previews) evict prior
@@ -3625,7 +3743,18 @@ export class TelegramNotificationDaemon {
 				if (k !== mapKey && k.startsWith(prefix)) this.liveMessages.delete(k);
 			}
 		}
+		if (toolActivity) {
+			const owner = this.toolActivityOwners.get(mapKey);
+			if (
+				this.revokedToolEndpoints.has(toolActivity.endpointDigest) ||
+				owner?.endpointDigest !== toolActivity.endpointDigest
+			) {
+				void this.enqueueToolTerminalization([{ messageId, owner: toolActivity }], false);
+				return;
+			}
+		}
 		this.liveMessages.set(mapKey, messageId);
+		if (toolActivity) this.toolActivityOwners.set(mapKey, toolActivity);
 	}
 
 	/**
@@ -3637,11 +3766,20 @@ export class TelegramNotificationDaemon {
 	 * content never lands in a shared chat. Identity headers are sent at most once per
 	 * session in flat mode.
 	 */
-	private async deliverFlatFallback(sessionId: string, send: ThreadedSend): Promise<void> {
+	private async deliverFlatFallback(
+		sessionId: string,
+		send: ThreadedSend,
+		toolActivity?: ToolActivityOwner,
+	): Promise<void> {
 		if (!(await this.pairedChatIsPrivate())) return;
 		await this.notifyThreadedFallback();
 		if (send.identity && this.flatIdentitySent.has(sessionId)) return;
-		this.submitPool({ sessionId, lane: send.lane, coalesceKey: send.coalesceKey, payload: { send } });
+		this.submitPool({
+			sessionId,
+			lane: send.lane,
+			coalesceKey: send.coalesceKey,
+			payload: { send, ...(toolActivity ? { toolActivity } : {}) },
+		});
 		await this.flushPool();
 		if (send.identity) this.flatIdentitySent.add(sessionId);
 	}
@@ -3864,6 +4002,7 @@ export class TelegramNotificationDaemon {
 
 	async handleSessionMessage(session: SessionSocket, msg: any): Promise<void> {
 		if (session.replayPending) {
+			if (msg?.type === "tool_activity" && this.opts.toolActivity?.enabled === false) return;
 			const matchingReplay = msg?.type === "event_replay_result" && msg.id === session.replayId;
 			if (!matchingReplay) {
 				session.replayQueue.push(msg as Record<string, unknown>);
@@ -4145,25 +4284,38 @@ export class TelegramNotificationDaemon {
 			return;
 		}
 		if (typeof msg?.type === "string" && TelegramNotificationDaemon.THREADED_FRAMES.has(msg.type)) {
-			if (msg.type === "tool_activity" && this.opts.toolActivity?.enabled === false) {
-				const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : undefined;
-				const phase = typeof msg.phase === "string" ? msg.phase : undefined;
-				if (phase === "started" || toolCallId === undefined) return;
-				const liveKey = `${session.sessionId}:tool:${toolCallId}`;
-				if (!this.liveMessages.has(liveKey)) {
-					// A start may already be granted to the serialized dispatcher but not
-					// yet recorded as visible. Wait for that exact dispatch boundary before
-					// deciding whether its terminal frame must close a visible message.
-					await this.flushChain;
+			const toolActivity = this.toolActivityOwner(session, msg as Record<string, unknown>);
+			if (toolActivity) {
+				const liveKey = `${session.sessionId}:tool:${toolActivity.toolCallId}`;
+				const currentOwner = this.toolActivityOwners.get(liveKey);
+				if (toolActivity.phase === "started") {
+					if (this.opts.toolActivity?.enabled === false) return;
+					this.toolActivityOwners.set(liveKey, toolActivity);
+				} else {
+					if (currentOwner && currentOwner.endpointDigest !== session.endpointDigest) return;
+					if (this.opts.toolActivity?.enabled === false) {
+						if (!currentOwner) return;
+						if (!this.liveMessages.has(liveKey)) {
+							// A start may already be granted to the serialized dispatcher but not
+							// yet recorded as visible. Wait for that exact dispatch boundary before
+							// deciding whether its terminal frame must close a visible message.
+							await this.flushChain;
+						}
+						const settledOwner = this.toolActivityOwners.get(liveKey);
+						if (!this.liveMessages.has(liveKey) || settledOwner?.endpointDigest !== session.endpointDigest) {
+							if (settledOwner?.endpointDigest === session.endpointDigest)
+								this.toolActivityOwners.delete(liveKey);
+							return;
+						}
+					}
 				}
-				if (!this.liveMessages.has(liveKey)) return;
 			}
 			const send = renderThreadedFrame(msg);
 			if (!send) return;
 			const existingTopic = await this.existingTopicForPrivateChat(session.sessionId);
 			if (this.topics.get(session.sessionId)?.authorityState === "delete_pending") return;
 			if (!send.identity && !existingTopic && !this.flatIdentitySent.has(session.sessionId)) {
-				this.rememberPendingThreadedFrame(session.sessionId, send, msg as Record<string, unknown>);
+				this.rememberPendingThreadedFrame(session, send, msg as Record<string, unknown>);
 				return;
 			}
 			if (send.identity && !this.sessionCanClaimIdentity(session, msg)) {
@@ -4179,7 +4331,7 @@ export class TelegramNotificationDaemon {
 			const topicLease = await this.topicAuthorityLease(session.sessionId);
 			if (!topicId || !topicLease || topicLease.topicId !== topicId) {
 				if (this.topics.get(session.sessionId)?.authorityState === "delete_pending") return;
-				await this.deliverFlatFallback(session.sessionId, send);
+				await this.deliverFlatFallback(session.sessionId, send, toolActivity);
 				return;
 			}
 			if (send.identity) {
@@ -4227,7 +4379,7 @@ export class TelegramNotificationDaemon {
 				await this.persistTopics();
 				return;
 			}
-			await this.submitThreadedFrame(session.sessionId, send, topicLease);
+			await this.submitThreadedFrame(session.sessionId, send, topicLease, toolActivity);
 			return;
 		}
 		if (msg.type === "action_needed" && msg.id) {
@@ -4614,11 +4766,32 @@ export class TelegramNotificationDaemon {
 				} else {
 					this.opts.toolActivity = { enabled: desired };
 					if (!desired) {
-						this.pool.removeWhere(item => item.lane === "live" && item.coalesceKey?.startsWith("tool:") === true);
+						const removedTools = this.pool.removeWhere(
+							item => item.lane === "live" && item.coalesceKey?.startsWith("tool:") === true,
+						);
+						for (const item of removedTools) {
+							const toolActivity = item.payload.toolActivity;
+							if (!toolActivity) continue;
+							const key = `${toolActivity.sessionId}:tool:${toolActivity.toolCallId}`;
+							const owner = this.toolActivityOwners.get(key);
+							if (!this.liveMessages.has(key) && owner?.endpointDigest === toolActivity.endpointDigest)
+								this.toolActivityOwners.delete(key);
+						}
 						for (const [sessionId, frames] of this.pendingThreadedFrames) {
+							for (const frame of frames) {
+								const toolActivity = frame.toolActivity;
+								if (!toolActivity || frame.msg.type !== "tool_activity") continue;
+								const key = `${toolActivity.sessionId}:tool:${toolActivity.toolCallId}`;
+								const owner = this.toolActivityOwners.get(key);
+								if (!this.liveMessages.has(key) && owner?.endpointDigest === toolActivity.endpointDigest)
+									this.toolActivityOwners.delete(key);
+							}
 							const retained = frames.filter(frame => frame.msg.type !== "tool_activity");
 							if (retained.length === 0) this.pendingThreadedFrames.delete(sessionId);
 							else this.pendingThreadedFrames.set(sessionId, retained);
+						}
+						for (const session of this.sessions.values()) {
+							session.replayQueue = session.replayQueue.filter(frame => frame.type !== "tool_activity");
 						}
 					}
 					// The policy flips before joining the serialized dispatch chain:
@@ -5042,6 +5215,8 @@ export class TelegramNotificationDaemon {
 			let persisted = false;
 			const shutdown = this.effects.allowTerminal(async () => {
 				await this.#drainBtwTurns();
+				await this.scheduleVisibleToolTerminalization();
+				await this.toolTerminalizationChain;
 				this.runtime.stop();
 				this.stopOwnershipHeartbeatTimer();
 				this.stopFlushTimer();

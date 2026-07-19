@@ -8920,6 +8920,185 @@ describe("Telegram tool activity capability and routing", () => {
 		expect(bot.calls.filter(call => call.method === "sendMessage")).toHaveLength(1);
 		expect(liveMessages.has("S:tool:A")).toBe(true);
 	});
+	test("settings-driven daemon replacement terminalizes visible tools before disabled successor starts", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const bot = new FakeBotApi();
+		const oldDaemon = new TelegramNotificationDaemon({
+			settings: s,
+			ownerId: "old-owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+			toolActivity: { enabled: true },
+		});
+		oldDaemon.connectSession("S", "ws://old", "old-token");
+		const oldSession = oldDaemon.sessions.get("S")!;
+		await oldDaemon.handleSessionMessage(oldSession, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "repo",
+			branch: "branch",
+		});
+		bot.calls = [];
+		await oldDaemon.handleSessionMessage(oldSession, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "reload-visible",
+			toolName: "read",
+			phase: "started",
+		});
+		expect(bot.calls.some(call => String(call.body.text).includes("read — started"))).toBe(true);
+		expect(
+			(
+				oldDaemon as unknown as {
+					toolActivityOwners: Map<string, unknown>;
+				}
+			).toolActivityOwners.has("S:tool:reload-visible"),
+		).toBe(true);
+		expect(
+			(oldDaemon as unknown as { liveMessages: Map<string, number> }).liveMessages.has("S:tool:reload-visible"),
+		).toBe(true);
+
+		oldDaemon.requestStop("reload");
+		await (oldDaemon as unknown as { toolTerminalizationChain: Promise<void> }).toolTerminalizationChain;
+		expect(bot.calls.filter(call => call.method === "editMessageText")).toHaveLength(1);
+		expect(
+			bot.calls.some(call => call.method === "editMessageText" && String(call.body.text).includes("read — unknown")),
+		).toBe(true);
+
+		const callsAfterCleanup = bot.calls.length;
+		const successor = new TelegramNotificationDaemon({
+			settings: s,
+			ownerId: "new-owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+			toolActivity: { enabled: false },
+		});
+		successor.connectSession("S", "ws://new", "new-token");
+		await successor.handleSessionMessage(successor.sessions.get("S")!, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "reload-visible",
+			toolName: "read",
+			phase: "completed",
+		});
+		expect(bot.calls).toHaveLength(callsAfterCleanup);
+	});
+
+	test("off then on cannot revive a tool start held behind the reconnect replay barrier", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: s,
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+			toolActivity: { enabled: true },
+		});
+		daemon.connectSession("S", "ws://s", "token");
+		const session = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(session, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "repo",
+			branch: "branch",
+		});
+		bot.calls = [];
+		FakeWs.instances[0]!.dispatchEvent(new Event("open"));
+		expect(session.replayPending).toBe(true);
+		await daemon.handleSessionMessage(session, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "replay-held",
+			toolName: "subagent",
+			phase: "started",
+		});
+		expect(session.replayQueue).toHaveLength(1);
+
+		await daemon.handleTelegramUpdate({
+			update_id: 970,
+			message: { chat: { id: 42, type: "private" }, text: "/toolactivity off", message_id: 70 },
+		});
+		expect(session.replayQueue).toHaveLength(0);
+		await daemon.handleSessionMessage(session, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "admitted-while-off",
+			toolName: "read",
+			phase: "started",
+		});
+		expect(session.replayQueue).toHaveLength(0);
+		await daemon.handleTelegramUpdate({
+			update_id: 971,
+			message: { chat: { id: 42, type: "private" }, text: "/toolactivity on", message_id: 71 },
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "event_replay_result",
+			id: session.replayId,
+			generation: 1,
+			lastSeq: 0,
+			events: [],
+		});
+
+		expect(bot.calls.some(call => String(call.body.text).includes("subagent — started"))).toBe(false);
+	});
+
+	test("disabled terminals cannot cross endpoint authority when toolCallId is reused", async () => {
+		FakeWs.instances = [];
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: setPrivateAgentDir(settings(agentDir), agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			WebSocketImpl: FakeWs as any,
+			toolActivity: { enabled: true },
+		});
+		daemon.connectSession("S", "ws://old", "old-token");
+		const oldSession = daemon.sessions.get("S")!;
+		await daemon.handleSessionMessage(oldSession, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "repo",
+			branch: "branch",
+		});
+		bot.calls = [];
+		await daemon.handleSessionMessage(oldSession, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "reused",
+			toolName: "read",
+			phase: "started",
+		});
+
+		daemon.connectSession("S", "ws://replacement", "replacement-token");
+		await (daemon as unknown as { toolTerminalizationChain: Promise<void> }).toolTerminalizationChain;
+		const editsAfterReplacement = bot.calls.filter(call => call.method === "editMessageText").length;
+		expect(editsAfterReplacement).toBe(1);
+		(daemon as unknown as { opts: { toolActivity?: { enabled: boolean } } }).opts.toolActivity = {
+			enabled: false,
+		};
+		await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "reused",
+			toolName: "read",
+			phase: "completed",
+		});
+
+		expect(bot.calls.filter(call => call.method === "editMessageText")).toHaveLength(editsAfterReplacement);
+	});
 });
 
 describe("telegram daemon /btw reservation and capability boundaries", () => {
