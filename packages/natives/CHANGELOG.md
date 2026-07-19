@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-07-19
+
 ### Fixed
 
 - The compiled-binary embedded-addon loader now re-extracts a cached native when its byte size does not match the embedded payload, so an intra-version rebuild that adds or removes native exports can no longer be shadowed by a stale same-version extraction in the per-version cache. The version sentinel alone cannot detect intra-version drift.
