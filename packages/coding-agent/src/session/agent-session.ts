@@ -4705,6 +4705,7 @@ export class AgentSession {
 					message: event.message,
 					contentIndex: event.assistantMessageEvent.contentIndex,
 				};
+				if (this.#extensionRunner.hasHandlers("reasoning_summary_start")) this.#markRetryReplayUnsafe();
 				await this.#extensionRunner.emit(reasoningEvent, continueWhile);
 			} else if (event.assistantMessageEvent.type === "reasoning_summary_delta") {
 				const reasoningEvent: ReasoningSummaryDeltaEvent = {
@@ -4713,6 +4714,7 @@ export class AgentSession {
 					contentIndex: event.assistantMessageEvent.contentIndex,
 					delta: event.assistantMessageEvent.delta,
 				};
+				if (this.#extensionRunner.hasHandlers("reasoning_summary_delta")) this.#markRetryReplayUnsafe();
 				await this.#extensionRunner.emit(reasoningEvent, continueWhile);
 			} else if (event.assistantMessageEvent.type === "reasoning_summary_end") {
 				const reasoningEvent: ReasoningSummaryEndEvent = {
@@ -4721,6 +4723,7 @@ export class AgentSession {
 					contentIndex: event.assistantMessageEvent.contentIndex,
 					content: event.assistantMessageEvent.content,
 				};
+				if (this.#extensionRunner.hasHandlers("reasoning_summary_end")) this.#markRetryReplayUnsafe();
 				await this.#extensionRunner.emit(reasoningEvent, continueWhile);
 			}
 		} else if (event.type === "message_end") {

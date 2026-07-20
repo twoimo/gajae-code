@@ -255,7 +255,11 @@ describe("AgentSession resilient retry", () => {
 				: undefined,
 		});
 	}
-	function buildBareStreamingSession(options: { tools?: AgentTool[]; streamFn: StreamFn }): AgentSession {
+	function buildBareStreamingSession(options: {
+		tools?: AgentTool[];
+		streamFn: StreamFn;
+		extensionRunner?: ExtensionRunner;
+	}): AgentSession {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled Anthropic test model to exist");
 		const agent = new Agent({
@@ -265,7 +269,13 @@ describe("AgentSession resilient retry", () => {
 		});
 		const settings = Settings.isolated({ "compaction.enabled": false });
 		settings.setModelRole("default", `${model.provider}/${model.id}`);
-		return new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+		return new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+			extensionRunner: options.extensionRunner,
+		});
 	}
 	function createExtensionRunner(handlers = new Map<string, Array<() => Promise<void>>>()) {
 		const extension: Extension = {
@@ -842,6 +852,44 @@ describe("AgentSession resilient retry", () => {
 		expect(requestedModels).toHaveLength(2);
 		expect(retryEndEvents).toEqual([expect.objectContaining({ success: true })]);
 		expect(lastAssistant(session).stopReason).toBe("stop");
+	});
+	it("does not replay a bare-default watchdog after a reasoning summary start hook participates", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		let hookCalls = 0;
+		let streamCalls = 0;
+		session = buildBareStreamingSession({
+			streamFn: () => {
+				streamCalls++;
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const failure = assistantMessage(
+						model,
+						[],
+						"error",
+						"Example Provider Watchdog stream stalled while waiting for the next event",
+					);
+					stream.push({ type: "start", partial: failure });
+					stream.push({ type: "reasoning_summary_start", contentIndex: 0, partial: failure });
+					stream.push({ type: "error", reason: "error", error: failure });
+				});
+				return stream;
+			},
+			extensionRunner: createExtensionRunner(
+				new Map([["reasoning_summary_start", [async () => {
+					hookCalls++;
+				}]]]),
+			),
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents } = track(session);
+
+		await session.prompt("bare-config reasoning summary start watchdog");
+		await session.waitForIdle();
+
+		expect(hookCalls).toBe(1);
+		expect(retryStartEvents).toHaveLength(0);
+		expect(streamCalls).toBe(1);
+		expect(lastAssistant(session).stopReason).toBe("error");
 	});
 	it("does not replay a bare-default watchdog after an extension hook participates", async () => {
 		let hookCalls = 0;
