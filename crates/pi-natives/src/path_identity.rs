@@ -96,11 +96,31 @@ pub struct NativeCanonicalDirectoryIdentity {
 	pub code:           Option<String>,
 }
 
+/// Evidence for one Linux POSIX ACL attribute.
+#[napi(object)]
+pub struct NativeAclAttributeEvidence {
+	pub clear: String,
+	pub query: String,
+}
+
+/// Bounded Linux POSIX ACL evidence for an owner-only result.
+#[napi(object)]
+pub struct NativeAclEvidence {
+	pub access:  NativeAclAttributeEvidence,
+	pub default: Option<NativeAclAttributeEvidence>,
+}
+
 /// Result of applying or checking owner-only path security.
 #[napi(object)]
 pub struct NativeOwnerOnlySecurityResult {
-	pub ok:   bool,
-	pub code: Option<String>,
+	pub ok:           bool,
+	pub platform:     Option<String>,
+	pub kind:         Option<String>,
+	pub protocol:     Option<String>,
+	pub acl_evidence: Option<NativeAclEvidence>,
+	pub code:         Option<String>,
+	pub operation:    Option<String>,
+	pub attribute:    Option<String>,
 }
 
 /// Caller-supplied identity and preauthorized quarantine evidence for exact
@@ -164,6 +184,7 @@ pub struct NativeDirectoryTreeEntry {
 	pub ino:           String,
 	pub size:          String,
 	pub mtime_ns:      String,
+	pub ctime_ns:      String,
 	pub sha256:        Option<String>,
 }
 
@@ -306,7 +327,7 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 	hasher.finalize().into()
 }
 
-fn digest_reader(reader: &mut impl Read) -> io::Result<[u8; 32]> {
+pub(crate) fn digest_reader(reader: &mut impl Read) -> io::Result<[u8; 32]> {
 	let mut hasher = Sha256::new();
 	let mut chunk = [0u8; 16 * 1024];
 	loop {
@@ -381,12 +402,100 @@ impl NativeCanonicalDirectoryIdentity {
 }
 
 impl NativeOwnerOnlySecurityResult {
+	#[allow(dead_code, reason = "used by non-Linux platform implementations")]
 	const fn success() -> Self {
-		Self { ok: true, code: None }
+		Self {
+			ok:           true,
+			platform:     None,
+			kind:         None,
+			protocol:     None,
+			acl_evidence: None,
+			code:         None,
+			operation:    None,
+			attribute:    None,
+		}
+	}
+
+	fn linux_success(
+		kind: &str,
+		access_clear: &str,
+		access_query: &str,
+		default_evidence: Option<(&str, &str)>,
+	) -> Self {
+		Self {
+			ok:           true,
+			platform:     Some("linux".to_owned()),
+			kind:         Some(kind.to_owned()),
+			protocol:     Some("apply".to_owned()),
+			acl_evidence: Some(NativeAclEvidence {
+				access:  NativeAclAttributeEvidence {
+					clear: access_clear.to_owned(),
+					query: access_query.to_owned(),
+				},
+				default: default_evidence.map(|(clear, query)| NativeAclAttributeEvidence {
+					clear: clear.to_owned(),
+					query: query.to_owned(),
+				}),
+			}),
+			code:         None,
+			operation:    None,
+			attribute:    None,
+		}
+	}
+
+	fn linux_verified_success(kind: &str, access_query: &str, default_query: Option<&str>) -> Self {
+		Self {
+			ok:           true,
+			platform:     Some("linux".to_owned()),
+			kind:         Some(kind.to_owned()),
+			protocol:     Some("verify".to_owned()),
+			acl_evidence: Some(NativeAclEvidence {
+				access:  NativeAclAttributeEvidence {
+					clear: "not_run".to_owned(),
+					query: access_query.to_owned(),
+				},
+				default: default_query.map(|query| NativeAclAttributeEvidence {
+					clear: "not_run".to_owned(),
+					query: query.to_owned(),
+				}),
+			}),
+			code:         None,
+			operation:    None,
+			attribute:    None,
+		}
 	}
 
 	fn failure(code: &str) -> Self {
-		Self { ok: false, code: Some(code.to_owned()) }
+		Self {
+			ok:           false,
+			platform:     None,
+			kind:         None,
+			protocol:     None,
+			acl_evidence: None,
+			code:         Some(code.to_owned()),
+			operation:    None,
+			attribute:    None,
+		}
+	}
+
+	fn acl_failure(operation: &str, attribute: &str, category: &str) -> Self {
+		let code = match category {
+			"denied" => "acl_denied",
+			"io_error" => "acl_io_error",
+			"present" => "acl_present",
+			"malformed" => "acl_malformed",
+			_ => "acl_unknown",
+		};
+		Self {
+			ok:           false,
+			platform:     None,
+			kind:         None,
+			protocol:     None,
+			acl_evidence: None,
+			code:         Some(code.to_owned()),
+			operation:    Some(operation.to_owned()),
+			attribute:    Some(attribute.to_owned()),
+		}
 	}
 }
 
@@ -448,6 +557,36 @@ pub fn verify_owner_only_path_security(
 		return NativeOwnerOnlySecurityResult::failure("io_error");
 	}
 	platform::verify_owner_only_path_security(Path::new(&path), &kind)
+}
+
+/// Apply owner-only security to the exact caller descriptor and its retained
+/// no-follow path. The descriptor is duplicated with close-on-exec and is never
+/// returned to JavaScript.
+#[napi]
+pub fn apply_owner_only_fd_security(
+	path: String,
+	kind: String,
+	caller_fd: i32,
+) -> NativeOwnerOnlySecurityResult {
+	if path.contains('\0') {
+		return NativeOwnerOnlySecurityResult::failure("io_error");
+	}
+	platform::apply_owner_only_fd_security(Path::new(&path), &kind, caller_fd)
+}
+
+/// Verify owner-only security for the exact caller descriptor and retained
+/// no-follow path. The descriptor is duplicated with close-on-exec and is never
+/// returned to JavaScript.
+#[napi]
+pub fn verify_owner_only_fd_security(
+	path: String,
+	kind: String,
+	caller_fd: i32,
+) -> NativeOwnerOnlySecurityResult {
+	if path.contains('\0') {
+		return NativeOwnerOnlySecurityResult::failure("io_error");
+	}
+	platform::verify_owner_only_fd_security(Path::new(&path), &kind, caller_fd)
 }
 
 /// Delete only the regular file that still has the supplied platform identity.
@@ -737,7 +876,7 @@ mod publication {
 	}
 }
 #[cfg(unix)]
-mod platform {
+pub(crate) mod platform {
 	#[cfg(test)]
 	use std::sync::{Mutex, OnceLock, mpsc};
 	use std::{
@@ -746,10 +885,7 @@ mod platform {
 		fs::{self, File},
 		os::{
 			fd::{AsRawFd, FromRawFd},
-			unix::{
-				ffi::OsStrExt,
-				fs::{MetadataExt, PermissionsExt},
-			},
+			unix::{ffi::OsStrExt, fs::MetadataExt},
 		},
 		path::{Component, Path},
 	};
@@ -876,119 +1012,649 @@ mod platform {
 		i128::from(stat.st_mtime) * 1_000_000_000 + i128::from(stat.st_mtime_nsec)
 	}
 
+	#[cfg(target_os = "netbsd")]
+	fn stat_ctime_ns(stat: &libc::stat) -> i128 {
+		i128::from(stat.st_ctime) * 1_000_000_000 + i128::from(stat.st_ctimensec)
+	}
+
+	#[cfg(not(target_os = "netbsd"))]
+	fn stat_ctime_ns(stat: &libc::stat) -> i128 {
+		i128::from(stat.st_ctime) * 1_000_000_000 + i128::from(stat.st_ctime_nsec)
+	}
+
+	struct AuthorityEdge {
+		parent:         File,
+		parent_initial: libc::stat,
+		name:           CString,
+		child:          File,
+		child_initial:  libc::stat,
+	}
+
+	struct CheckedPathAuthority {
+		file:           File,
+		parent:         File,
+		parent_initial: libc::stat,
+		name:           CString,
+		initial:        libc::stat,
+		edges:          Vec<AuthorityEdge>,
+	}
+
+	const fn stat_same_object(left: &libc::stat, right: &libc::stat) -> bool {
+		left.st_dev == right.st_dev
+			&& left.st_ino == right.st_ino
+			&& left.st_uid == right.st_uid
+			&& left.st_mode & libc::S_IFMT == right.st_mode & libc::S_IFMT
+	}
+
+	#[allow(clippy::result_large_err, reason = "preserves structured native security evidence")]
+	fn fstat(fd: libc::c_int) -> Result<libc::stat, NativeOwnerOnlySecurityResult> {
+		// SAFETY: libc::stat is a plain C data structure that may be zero-initialized
+		// before fstat fills it.
+		let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+		// SAFETY: fd is caller-retained for this operation and stat points to writable
+		// initialized storage.
+		if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+			return Err(NativeOwnerOnlySecurityResult::failure(security_code(
+				&std::io::Error::last_os_error(),
+			)));
+		}
+		Ok(stat)
+	}
+
+	#[allow(clippy::result_large_err, reason = "preserves structured native security evidence")]
+	fn duplicate_cloexec(fd: libc::c_int) -> Result<File, NativeOwnerOnlySecurityResult> {
+		// SAFETY: fcntl only reads the supplied live descriptor and returns a new
+		// CLOEXEC descriptor.
+		let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+		if duplicate < 0 {
+			return Err(NativeOwnerOnlySecurityResult::failure(security_code(
+				&std::io::Error::last_os_error(),
+			)));
+		}
+		// SAFETY: duplicate is a newly owned descriptor returned by F_DUPFD_CLOEXEC.
+		Ok(unsafe { File::from_raw_fd(duplicate) })
+	}
+
+	#[allow(clippy::result_large_err, reason = "preserves structured native security evidence")]
+	fn statat(parent: &File, name: &CString) -> Result<libc::stat, NativeOwnerOnlySecurityResult> {
+		// SAFETY: libc::stat is a plain C data structure that fstatat fully initializes
+		// on success.
+		let mut named: libc::stat = unsafe { std::mem::zeroed() };
+		// SAFETY: parent is a live directory descriptor, name is NUL-terminated, and
+		// named is writable.
+		if unsafe {
+			libc::fstatat(parent.as_raw_fd(), name.as_ptr(), &mut named, libc::AT_SYMLINK_NOFOLLOW)
+		} != 0
+		{
+			return Err(NativeOwnerOnlySecurityResult::failure(security_code(
+				&std::io::Error::last_os_error(),
+			)));
+		}
+		if named.st_mode & libc::S_IFMT == libc::S_IFLNK {
+			return Err(NativeOwnerOnlySecurityResult::failure("reparse_point"));
+		}
+		Ok(named)
+	}
+
+	/// Open each component through retained directory descriptors. Every name is
+	/// lstat'd and then opened no-follow; the two identities must agree. `..`
+	/// is never accepted, so a pathname cannot escape the authority selected at
+	/// the start of this operation.
+	#[allow(clippy::result_large_err, reason = "preserves structured native security evidence")]
 	fn checked_file(
 		path: &Path,
 		kind: &str,
-	) -> Result<(File, fs::Metadata), NativeOwnerOnlySecurityResult> {
+	) -> Result<CheckedPathAuthority, NativeOwnerOnlySecurityResult> {
 		if !matches!(kind, "directory" | "file") {
 			return Err(NativeOwnerOnlySecurityResult::failure("io_error"));
 		}
-
 		let base = if path.is_absolute() { b"/\0" } else { b".\0" };
-		// SAFETY: the live descriptor, where used, and NUL-terminated path remain
-		// valid.
-		let mut fd = unsafe {
-			libc::open(base.as_ptr().cast(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC)
+		// SAFETY: base is a static NUL-terminated path and the flags request a
+		// no-follow directory descriptor.
+		let fd = unsafe {
+			libc::open(
+				base.as_ptr().cast(),
+				libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+			)
 		};
 		if fd < 0 {
 			return Err(NativeOwnerOnlySecurityResult::failure(security_code(
 				&std::io::Error::last_os_error(),
 			)));
 		}
-
-		let segments: Vec<Vec<u8>> = path
-			.components()
-			.filter_map(|component| match component {
-				Component::Normal(segment) => Some(segment.as_bytes().to_vec()),
-				Component::ParentDir => Some(b"..".to_vec()),
-				Component::RootDir | Component::CurDir => None,
-				Component::Prefix(_) => None,
-			})
-			.collect();
-		for (index, segment) in segments.iter().enumerate() {
-			let Ok(segment) = CString::new(segment.as_slice()) else {
-				// SAFETY: this branch owns the live descriptor and closes it exactly once.
-				unsafe {
-					libc::close(fd);
-				}
-				return Err(NativeOwnerOnlySecurityResult::failure("io_error"));
+		// SAFETY: fd is a newly owned successful open result.
+		let mut current = unsafe { File::from_raw_fd(fd) };
+		let mut edges = Vec::new();
+		let mut segments = Vec::new();
+		for component in path.components() {
+			match component {
+				Component::Normal(segment) => segments.push(segment.as_bytes().to_vec()),
+				Component::RootDir | Component::CurDir => {},
+				Component::ParentDir | Component::Prefix(_) => {
+					return Err(NativeOwnerOnlySecurityResult::failure("identity_unavailable"));
+				},
+			}
+		}
+		let (final_name, parent_segments): (Vec<u8>, &[Vec<u8>]) = match segments.split_last() {
+			Some((name, parents)) => (name.clone(), parents),
+			None if kind == "directory" => (b".".to_vec(), &[]),
+			None => return Err(NativeOwnerOnlySecurityResult::failure("not_directory")),
+		};
+		for segment in parent_segments {
+			let name = CString::new(segment.as_slice())
+				.map_err(|_| NativeOwnerOnlySecurityResult::failure("io_error"))?;
+			let named = statat(&current, &name)?;
+			// SAFETY: current is a live directory descriptor and name is a validated
+			// NUL-terminated component.
+			let next_fd = unsafe {
+				libc::openat(
+					current.as_raw_fd(),
+					name.as_ptr(),
+					libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+				)
 			};
-			// SAFETY: zero is a valid initialized representation for this output struct.
-			let mut named: libc::stat = unsafe { std::mem::zeroed() };
-			// SAFETY: the descriptor and CString are live; the initialized output struct is
-			// writable.
-			if unsafe { libc::fstatat(fd, segment.as_ptr(), &mut named, libc::AT_SYMLINK_NOFOLLOW) }
-				!= 0
-			{
-				let error = std::io::Error::last_os_error();
-				// SAFETY: this branch owns the live descriptor and closes it exactly once.
-				unsafe {
-					libc::close(fd);
-				}
-				return Err(NativeOwnerOnlySecurityResult::failure(security_code(&error)));
-			}
-			if named.st_mode & libc::S_IFMT == libc::S_IFLNK {
-				// SAFETY: this branch owns the live descriptor and closes it exactly once.
-				unsafe {
-					libc::close(fd);
-				}
-				return Err(NativeOwnerOnlySecurityResult::failure("reparse_point"));
-			}
-			let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
-			if index + 1 < segments.len() || kind == "directory" {
-				flags |= libc::O_DIRECTORY;
-			}
-			// SAFETY: the live descriptor, where used, and NUL-terminated path remain
-			// valid.
-			let next_fd = unsafe { libc::openat(fd, segment.as_ptr(), flags) };
-			// SAFETY: this branch owns the live descriptor and closes it exactly once.
-			unsafe {
-				libc::close(fd);
-			}
 			if next_fd < 0 {
 				return Err(NativeOwnerOnlySecurityResult::failure(security_code(
 					&std::io::Error::last_os_error(),
 				)));
 			}
-			fd = next_fd;
+			// SAFETY: next_fd is a newly owned successful openat result.
+			let child = unsafe { File::from_raw_fd(next_fd) };
+			let child_initial = fstat(child.as_raw_fd())?;
+			if !stat_same_object(&named, &child_initial) {
+				return Err(NativeOwnerOnlySecurityResult::failure("identity_mismatch"));
+			}
+			let next = duplicate_cloexec(child.as_raw_fd())?;
+			let parent_initial = fstat(current.as_raw_fd())?;
+			edges.push(AuthorityEdge { parent: current, parent_initial, name, child, child_initial });
+			current = next;
 		}
-
-		// SAFETY: this uniquely transfers the live descriptor to `File` ownership.
-		let file = unsafe { File::from_raw_fd(fd) };
-		let metadata = file
-			.metadata()
-			.map_err(|error| NativeOwnerOnlySecurityResult::failure(security_code(&error)))?;
-		if (kind == "directory" && !metadata.is_dir()) || (kind == "file" && !metadata.is_file()) {
+		let name = CString::new(final_name)
+			.map_err(|_| NativeOwnerOnlySecurityResult::failure("io_error"))?;
+		let named = statat(&current, &name)?;
+		let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+		if kind == "directory" {
+			flags |= libc::O_DIRECTORY;
+		}
+		// SAFETY: current is retained, name is validated and NUL-terminated, and
+		// O_NOFOLLOW rejects symlinks.
+		let target_fd = unsafe { libc::openat(current.as_raw_fd(), name.as_ptr(), flags) };
+		if target_fd < 0 {
+			return Err(NativeOwnerOnlySecurityResult::failure(security_code(
+				&std::io::Error::last_os_error(),
+			)));
+		}
+		// SAFETY: target_fd is a newly owned successful openat result.
+		let file = unsafe { File::from_raw_fd(target_fd) };
+		let initial = fstat(file.as_raw_fd())?;
+		if !stat_same_object(&named, &initial) {
+			return Err(NativeOwnerOnlySecurityResult::failure("identity_mismatch"));
+		}
+		let expected_kind = if kind == "directory" {
+			libc::S_IFDIR
+		} else {
+			libc::S_IFREG
+		};
+		if initial.st_mode & libc::S_IFMT != expected_kind {
 			return Err(NativeOwnerOnlySecurityResult::failure("not_directory"));
 		}
-		Ok((file, metadata))
+		let parent_initial = fstat(current.as_raw_fd())?;
+		Ok(CheckedPathAuthority { file, parent: current, parent_initial, name, initial, edges })
+	}
+
+	#[allow(clippy::result_large_err, reason = "preserves structured native security evidence")]
+	fn revalidate_authority(
+		authority: &CheckedPathAuthority,
+	) -> Result<libc::stat, NativeOwnerOnlySecurityResult> {
+		for edge in &authority.edges {
+			let parent = fstat(edge.parent.as_raw_fd())?;
+			let child = fstat(edge.child.as_raw_fd())?;
+			let named = statat(&edge.parent, &edge.name)?;
+			if !stat_same_object(&edge.parent_initial, &parent)
+				|| !stat_same_object(&edge.child_initial, &child)
+				|| !stat_same_object(&edge.child_initial, &named)
+			{
+				return Err(NativeOwnerOnlySecurityResult::failure("identity_mismatch"));
+			}
+		}
+		let parent = fstat(authority.parent.as_raw_fd())?;
+		let actual = fstat(authority.file.as_raw_fd())?;
+		let named = statat(&authority.parent, &authority.name)?;
+		if !stat_same_object(&authority.parent_initial, &parent)
+			|| !stat_same_object(&authority.initial, &actual)
+			|| !stat_same_object(&authority.initial, &named)
+		{
+			return Err(NativeOwnerOnlySecurityResult::failure("identity_mismatch"));
+		}
+		Ok(actual)
 	}
 
 	#[cfg(target_os = "linux")]
-	fn clear_extended_acl(file: &File) -> Result<(), NativeOwnerOnlySecurityResult> {
-		let name = b"system.posix_acl_access\0";
-		// SAFETY: the file descriptor and NUL-terminated attribute name remain valid.
-		let result = unsafe { libc::fremovexattr(file.as_raw_fd(), name.as_ptr().cast()) };
-		if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ENODATA) {
-			Ok(())
-		} else {
-			Err(NativeOwnerOnlySecurityResult::failure("acl_unavailable"))
+	#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+	enum AclAttribute {
+		Access,
+		Default,
+	}
+
+	#[cfg(target_os = "linux")]
+	impl AclAttribute {
+		const fn name(self) -> &'static [u8] {
+			match self {
+				Self::Access => b"system.posix_acl_access\0",
+				Self::Default => b"system.posix_acl_default\0",
+			}
 		}
 	}
 
 	#[cfg(target_os = "linux")]
-	fn has_extended_acl(file: &File) -> Result<bool, NativeOwnerOnlySecurityResult> {
-		let name = b"system.posix_acl_access\0";
-		// SAFETY: the file descriptor and NUL-terminated attribute name remain valid.
-		let result = unsafe {
-			libc::fgetxattr(file.as_raw_fd(), name.as_ptr().cast(), std::ptr::null_mut(), 0)
-		};
-		if result >= 0 {
-			Ok(true)
-		} else if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENODATA) {
-			Ok(false)
+	const fn acl_attribute_name(attribute: AclAttribute) -> &'static str {
+		match attribute {
+			AclAttribute::Access => "access",
+			AclAttribute::Default => "default",
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	const fn acl_operation_name(operation: AclOperation) -> &'static str {
+		match operation {
+			AclOperation::Clear => "clear",
+			AclOperation::Query => "query",
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	fn acl_observation_failure(
+		operation: AclOperation,
+		attribute: AclAttribute,
+		code: &'static str,
+	) -> NativeOwnerOnlySecurityResult {
+		let category = if code.ends_with("_denied") {
+			"denied"
+		} else if code.ends_with("_io") {
+			"io_error"
+		} else if code.ends_with("_errno_missing") {
+			"errno_missing"
+		} else if code.ends_with("_unknown") {
+			"unknown"
+		} else if code.ends_with("_malformed") {
+			"malformed"
+		} else if code.ends_with("_present") {
+			"present"
 		} else {
-			Err(NativeOwnerOnlySecurityResult::failure("acl_unavailable"))
+			"impossible"
+		};
+		NativeOwnerOnlySecurityResult::acl_failure(
+			acl_operation_name(operation),
+			acl_attribute_name(attribute),
+			category,
+		)
+	}
+	#[cfg(target_os = "linux")]
+	#[derive(Clone, Copy)]
+	enum AclOperation {
+		Clear,
+		Query,
+	}
+
+	#[cfg(target_os = "linux")]
+	#[derive(Debug, PartialEq, Eq)]
+	enum AclObservation {
+		Cleared,
+		Absent,
+		UnsupportedRequiresQuery,
+		Unsupported,
+		Present,
+		Failure(&'static str),
+	}
+
+	#[cfg(target_os = "linux")]
+	const fn classify_acl_observation(
+		operation: AclOperation,
+		attribute: AclAttribute,
+		result: libc::ssize_t,
+		errno: Option<i32>,
+	) -> AclObservation {
+		match (operation, result) {
+			(AclOperation::Clear, 0) => AclObservation::Cleared,
+			(AclOperation::Query, result) if result > 0 => AclObservation::Present,
+			(AclOperation::Clear | AclOperation::Query, -1) => match errno {
+				Some(libc::ENODATA) => AclObservation::Absent,
+				Some(errno) if errno == libc::EOPNOTSUPP || errno == libc::ENOTSUP => match operation {
+					AclOperation::Clear => AclObservation::UnsupportedRequiresQuery,
+					AclOperation::Query => AclObservation::Unsupported,
+				},
+				Some(libc::EACCES | libc::EPERM) => AclObservation::Failure(match operation {
+					AclOperation::Clear => "acl_clear_denied",
+					AclOperation::Query => "acl_query_denied",
+				}),
+				Some(libc::EIO) => AclObservation::Failure(match operation {
+					AclOperation::Clear => "acl_clear_io",
+					AclOperation::Query => "acl_query_io",
+				}),
+				None => AclObservation::Failure(match operation {
+					AclOperation::Clear => "acl_clear_errno_missing",
+					AclOperation::Query => "acl_query_errno_missing",
+				}),
+				Some(_) => AclObservation::Failure(match (operation, attribute) {
+					(AclOperation::Clear, AclAttribute::Default) => "acl_default_clear_unknown",
+					(AclOperation::Query, AclAttribute::Default) => "acl_default_query_unknown",
+					(AclOperation::Clear, AclAttribute::Access) => "acl_clear_unknown",
+					(AclOperation::Query, AclAttribute::Access) => "acl_query_unknown",
+				}),
+			},
+			(AclOperation::Clear, _) => AclObservation::Failure("acl_clear_impossible"),
+			(AclOperation::Query, 0) => AclObservation::Failure(match attribute {
+				AclAttribute::Access => "acl_access_malformed",
+				AclAttribute::Default => "acl_default_malformed",
+			}),
+			(AclOperation::Query, _) => AclObservation::Failure("acl_query_impossible"),
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	#[allow(clippy::result_large_err, reason = "preserves operation-specific ACL failure evidence")]
+	fn clear_extended_acl(
+		file: &File,
+		attribute: AclAttribute,
+	) -> Result<&'static str, NativeOwnerOnlySecurityResult> {
+		// SAFETY: file is a live descriptor and attribute.name() is a static
+		// NUL-terminated xattr name.
+		let result =
+			unsafe { libc::fremovexattr(file.as_raw_fd(), attribute.name().as_ptr().cast()) };
+		let errno = if result == 0 {
+			None
+		} else {
+			std::io::Error::last_os_error().raw_os_error()
+		}; // capture immediately after this failed syscall
+		match classify_acl_observation(AclOperation::Clear, attribute, result as libc::ssize_t, errno)
+		{
+			AclObservation::Cleared => Ok("cleared"),
+			AclObservation::Absent => Ok("already_absent"),
+			AclObservation::UnsupportedRequiresQuery => Ok("unsupported"),
+			AclObservation::Failure(code) => {
+				Err(acl_observation_failure(AclOperation::Clear, attribute, code))
+			},
+			AclObservation::Present | AclObservation::Unsupported => {
+				Err(acl_observation_failure(AclOperation::Clear, attribute, "acl_clear_impossible"))
+			},
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	#[allow(clippy::result_large_err, reason = "preserves operation-specific ACL failure evidence")]
+	fn query_extended_acl(
+		file: &File,
+		attribute: AclAttribute,
+	) -> Result<&'static str, NativeOwnerOnlySecurityResult> {
+		// SAFETY: file is live, the xattr name is NUL-terminated, and a null
+		// zero-length buffer is a size query.
+		let result = unsafe {
+			libc::fgetxattr(
+				file.as_raw_fd(),
+				attribute.name().as_ptr().cast(),
+				std::ptr::null_mut(),
+				0,
+			)
+		};
+		let errno = if result >= 0 {
+			None
+		} else {
+			std::io::Error::last_os_error().raw_os_error()
+		}; // capture immediately after this failed syscall
+		match classify_acl_observation(AclOperation::Query, attribute, result, errno) {
+			AclObservation::Absent => Ok("absent"),
+			AclObservation::Unsupported => Ok("unsupported"),
+			AclObservation::Present => {
+				Err(acl_observation_failure(AclOperation::Query, attribute, match attribute {
+					AclAttribute::Access => "acl_access_present",
+					AclAttribute::Default => "acl_default_present",
+				}))
+			},
+			AclObservation::Failure(code) => {
+				Err(acl_observation_failure(AclOperation::Query, attribute, code))
+			},
+			AclObservation::Cleared | AclObservation::UnsupportedRequiresQuery => {
+				Err(acl_observation_failure(AclOperation::Query, attribute, "acl_query_impossible"))
+			},
+		}
+	}
+
+	#[cfg(all(test, target_os = "linux"))]
+	mod acl_observation_tests {
+		use super::{
+			AclAttribute, AclObservation, AclOperation, acl_observation_failure,
+			classify_acl_observation,
+		};
+
+		fn classify(
+			operation: AclOperation,
+			attribute: AclAttribute,
+			result: libc::ssize_t,
+			errno: Option<i32>,
+		) -> AclObservation {
+			classify_acl_observation(operation, attribute, result, errno)
+		}
+
+		#[test]
+		fn clear_acl_observations_are_fail_closed_except_absence_and_exact_unsupported() {
+			assert_eq!(
+				classify(AclOperation::Clear, AclAttribute::Access, 0, None),
+				AclObservation::Cleared
+			);
+			assert_eq!(
+				classify(AclOperation::Clear, AclAttribute::Access, -1, Some(libc::ENODATA)),
+				AclObservation::Absent
+			);
+			for errno in [libc::EOPNOTSUPP, libc::ENOTSUP] {
+				assert_eq!(
+					classify(AclOperation::Clear, AclAttribute::Access, -1, Some(errno)),
+					AclObservation::UnsupportedRequiresQuery
+				);
+			}
+			for errno in [libc::EACCES, libc::EPERM] {
+				assert_eq!(
+					classify(AclOperation::Clear, AclAttribute::Access, -1, Some(errno)),
+					AclObservation::Failure("acl_clear_denied")
+				);
+			}
+			assert_eq!(
+				classify(AclOperation::Clear, AclAttribute::Access, -1, Some(libc::EIO)),
+				AclObservation::Failure("acl_clear_io")
+			);
+			assert_eq!(
+				classify(AclOperation::Clear, AclAttribute::Default, -1, Some(12345)),
+				AclObservation::Failure("acl_default_clear_unknown")
+			);
+			assert_eq!(
+				classify(AclOperation::Clear, AclAttribute::Access, -1, Some(12345)),
+				AclObservation::Failure("acl_clear_unknown")
+			);
+			assert_eq!(
+				classify(AclOperation::Clear, AclAttribute::Access, -1, None),
+				AclObservation::Failure("acl_clear_errno_missing")
+			);
+			assert_eq!(
+				classify(AclOperation::Clear, AclAttribute::Access, 1, None),
+				AclObservation::Failure("acl_clear_impossible")
+			);
+		}
+
+		#[test]
+		fn query_acl_observations_are_fail_closed_except_absence_and_exact_unsupported() {
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Access, 1, None),
+				AclObservation::Present
+			);
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Access, 0, None),
+				AclObservation::Failure("acl_access_malformed")
+			);
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Default, 0, None),
+				AclObservation::Failure("acl_default_malformed")
+			);
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Access, -1, Some(libc::ENODATA)),
+				AclObservation::Absent
+			);
+			for errno in [libc::EOPNOTSUPP, libc::ENOTSUP] {
+				assert_eq!(
+					classify(AclOperation::Query, AclAttribute::Access, -1, Some(errno)),
+					AclObservation::Unsupported
+				);
+			}
+			for errno in [libc::EACCES, libc::EPERM] {
+				assert_eq!(
+					classify(AclOperation::Query, AclAttribute::Access, -1, Some(errno)),
+					AclObservation::Failure("acl_query_denied")
+				);
+			}
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Access, -1, Some(libc::EIO)),
+				AclObservation::Failure("acl_query_io")
+			);
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Default, -1, Some(12345)),
+				AclObservation::Failure("acl_default_query_unknown")
+			);
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Access, -1, Some(12345)),
+				AclObservation::Failure("acl_query_unknown")
+			);
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Access, -1, None),
+				AclObservation::Failure("acl_query_errno_missing")
+			);
+			assert_eq!(
+				classify(AclOperation::Query, AclAttribute::Access, -2, None),
+				AclObservation::Failure("acl_query_impossible")
+			);
+		}
+
+		#[test]
+		fn unsupported_clear_is_not_classified_as_acl_absence() {
+			let clear =
+				classify(AclOperation::Clear, AclAttribute::Access, -1, Some(libc::EOPNOTSUPP));
+			assert_eq!(clear, AclObservation::UnsupportedRequiresQuery);
+			assert_ne!(clear, AclObservation::Absent);
+		}
+
+		#[test]
+		fn acl_failures_always_name_the_exact_operation_attribute_and_category() {
+			for (operation, attribute, code, expected_code) in [
+				(AclOperation::Clear, AclAttribute::Default, "acl_clear_denied", "acl_denied"),
+				(AclOperation::Query, AclAttribute::Access, "acl_query_io", "acl_io_error"),
+				(AclOperation::Clear, AclAttribute::Access, "acl_clear_errno_missing", "acl_unknown"),
+				(
+					AclOperation::Query,
+					AclAttribute::Default,
+					"acl_default_query_unknown",
+					"acl_unknown",
+				),
+				(AclOperation::Query, AclAttribute::Access, "acl_access_malformed", "acl_malformed"),
+				(AclOperation::Query, AclAttribute::Default, "acl_default_present", "acl_present"),
+				(AclOperation::Clear, AclAttribute::Access, "acl_clear_impossible", "acl_unknown"),
+			] {
+				let failure = acl_observation_failure(operation, attribute, code);
+				assert!(!failure.ok);
+				assert_eq!(failure.code.as_deref(), Some(expected_code));
+				assert_eq!(
+					failure.operation.as_deref(),
+					Some(match operation {
+						AclOperation::Clear => "clear",
+						AclOperation::Query => "query",
+					})
+				);
+				assert_eq!(
+					failure.attribute.as_deref(),
+					Some(match attribute {
+						AclAttribute::Access => "access",
+						AclAttribute::Default => "default",
+					})
+				);
+			}
+		}
+	}
+
+	#[cfg(all(test, target_os = "linux"))]
+	mod caller_fd_authority_tests {
+		use std::{
+			fs,
+			os::fd::{AsRawFd, IntoRawFd},
+			path::PathBuf,
+			sync::atomic::{AtomicU64, Ordering},
+		};
+
+		use super::{checked_caller_file, checked_file, duplicate_cloexec, revalidate_authority};
+
+		static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+		struct TempDir(PathBuf);
+		impl TempDir {
+			fn new() -> Self {
+				let path = std::env::temp_dir().join(format!(
+					"gjc-caller-fd-authority-{}-{}",
+					std::process::id(),
+					NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed),
+				));
+				fs::create_dir(&path).expect("create temp directory");
+				Self(path)
+			}
+		}
+		impl Drop for TempDir {
+			fn drop(&mut self) {
+				let _ = fs::remove_dir_all(&self.0);
+			}
+		}
+
+		#[test]
+		fn caller_fd_mismatch_and_reuse_are_rejected_and_duplicate_is_close_on_exec() {
+			let root = TempDir::new();
+			let expected = root.0.join("expected");
+			let replacement = root.0.join("replacement");
+			fs::write(&expected, b"expected").expect("write expected");
+			fs::write(&replacement, b"replacement").expect("write replacement");
+			let expected_file = fs::File::open(&expected).expect("open expected");
+			let reused_fd = expected_file.into_raw_fd();
+			assert_eq!(unsafe { libc::close(reused_fd) }, 0);
+			let replacement_fd = fs::File::open(&replacement)
+				.expect("open replacement")
+				.into_raw_fd();
+			assert_eq!(unsafe { libc::dup2(replacement_fd, reused_fd) }, reused_fd);
+			if replacement_fd != reused_fd {
+				assert_eq!(unsafe { libc::close(replacement_fd) }, 0);
+			}
+			let result = checked_caller_file(&expected, "file", reused_fd);
+			assert!(result.is_err());
+			let duplicate = match duplicate_cloexec(reused_fd) {
+				Ok(file) => file,
+				Err(_) => panic!("duplicate caller fd"),
+			};
+			assert_ne!(duplicate.as_raw_fd(), reused_fd);
+			assert_ne!(
+				unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+				0
+			);
+			assert_eq!(unsafe { libc::close(reused_fd) }, 0);
+		}
+
+		#[test]
+		fn retained_edges_detect_replacement_and_root_and_self_remain_authoritative() {
+			let root = TempDir::new();
+			let parent = root.0.join("parent");
+			fs::create_dir(&parent).expect("create parent");
+			let child = parent.join("child");
+			fs::write(&child, b"child").expect("write child");
+			let authority = match checked_file(&child, "file") {
+				Ok(authority) => authority,
+				Err(_) => panic!("open authority"),
+			};
+			fs::rename(&parent, root.0.join("old-parent")).expect("replace parent path");
+			fs::create_dir(&parent).expect("create replacement parent");
+			fs::write(parent.join("child"), b"replacement").expect("write replacement child");
+			assert!(revalidate_authority(&authority).is_err());
+			assert!(checked_file(std::path::Path::new("."), "directory").is_ok());
+			assert!(checked_file(std::path::Path::new("/"), "directory").is_ok());
 		}
 	}
 
@@ -1010,6 +1676,24 @@ mod platform {
 	const ACL_FIRST_ENTRY: libc::c_int = 0;
 
 	#[cfg(target_os = "macos")]
+	fn macos_acl_unsupported(errno: Option<i32>) -> bool {
+		matches!(errno, Some(libc::ENOTSUP))
+	}
+
+	#[cfg(all(test, target_os = "macos"))]
+	mod macos_acl_classification_tests {
+		use super::macos_acl_unsupported;
+
+		#[test]
+		fn only_enotsup_is_acl_storage_unsupported() {
+			assert!(macos_acl_unsupported(Some(libc::ENOTSUP)));
+			assert!(!macos_acl_unsupported(Some(libc::ENOENT)));
+			assert!(!macos_acl_unsupported(Some(libc::EIO)));
+			assert!(!macos_acl_unsupported(None));
+		}
+	}
+
+	#[cfg(target_os = "macos")]
 	fn clear_extended_acl(file: &File) -> Result<(), NativeOwnerOnlySecurityResult> {
 		// SAFETY: this creates an owned ACL allocation for the requested entry count.
 		let acl = unsafe { acl_init(1) };
@@ -1019,10 +1703,15 @@ mod platform {
 		// SAFETY: the file descriptor and owned ACL allocation remain live for this
 		// call.
 		let result = unsafe { acl_set_fd(file.as_raw_fd(), acl) };
+		let errno = if result == 0 {
+			None
+		} else {
+			std::io::Error::last_os_error().raw_os_error()
+		};
 		// SAFETY: this owns the ACL allocation from the preceding ACL API and frees it
 		// once.
 		unsafe { acl_free(acl) };
-		if result == 0 {
+		if result == 0 || macos_acl_unsupported(errno) {
 			Ok(())
 		} else {
 			Err(NativeOwnerOnlySecurityResult::failure("acl_unavailable"))
@@ -1034,9 +1723,10 @@ mod platform {
 		// SAFETY: the file descriptor is live; the returned ACL is freed exactly once.
 		let acl = unsafe { acl_get_fd(file.as_raw_fd()) };
 		if acl.is_null() {
+			let errno = std::io::Error::last_os_error().raw_os_error();
 			// On macOS `acl_get_fd` returns NULL with errno ENOENT when the file has no
-			// extended ACL; that is the common case, not a failure.
-			if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+			// extended ACL; ENOTSUP likewise means the filesystem has no ACL storage.
+			if matches!(errno, Some(libc::ENOENT)) || macos_acl_unsupported(errno) {
 				return Ok(false);
 			}
 			return Err(NativeOwnerOnlySecurityResult::failure("acl_unavailable"));
@@ -1044,6 +1734,11 @@ mod platform {
 		let mut entry = std::ptr::null_mut();
 		// SAFETY: the ACL allocation is live and `entry` is a writable output pointer.
 		let result = unsafe { acl_get_entry(acl, ACL_FIRST_ENTRY, &mut entry) };
+		let errno = if result == 0 {
+			None
+		} else {
+			std::io::Error::last_os_error().raw_os_error()
+		};
 		// SAFETY: this owns the ACL allocation from the preceding ACL API and frees it
 		// once.
 		unsafe { acl_free(acl) };
@@ -1052,51 +1747,54 @@ mod platform {
 		// extended ACL.
 		match result {
 			0 => Ok(true),
+			-1 if macos_acl_unsupported(errno) => Ok(false),
 			-1 => Ok(false),
 			_ => Err(NativeOwnerOnlySecurityResult::failure("acl_unavailable")),
 		}
 	}
 
-	pub(super) fn apply_owner_only_path_security(
-		path: &Path,
+	fn verify_authority(
+		authority: &CheckedPathAuthority,
 		kind: &str,
 	) -> NativeOwnerOnlySecurityResult {
-		let (file, metadata) = match checked_file(path, kind) {
-			Ok(result) => result,
+		let metadata = match revalidate_authority(authority) {
+			Ok(value) => value,
 			Err(result) => return result,
 		};
-		let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
-		let mut permissions = metadata.permissions();
-		permissions.set_mode(mode);
-		match file.set_permissions(permissions) {
-			Ok(()) => {
-				#[cfg(any(target_os = "linux", target_os = "macos"))]
-				if let Err(result) = clear_extended_acl(&file) {
-					return result;
-				}
-				verify_owner_only_path_security(path, kind)
-			},
-			Err(error) => NativeOwnerOnlySecurityResult::failure(security_code(&error)),
+		let expected = if kind == "directory" { 0o700 } else { 0o600 };
+		// SAFETY: geteuid has no preconditions and only reads the process effective
+		// user identity.
+		if metadata.st_uid != unsafe { libc::geteuid() } {
+			return NativeOwnerOnlySecurityResult::failure("owner_mismatch");
 		}
-	}
-
-	pub(super) fn verify_owner_only_path_security(
-		path: &Path,
-		kind: &str,
-	) -> NativeOwnerOnlySecurityResult {
-		let (file, metadata) = match checked_file(path, kind) {
-			Ok(result) => result,
-			Err(result) => return result,
-		};
-		let expected = if metadata.is_dir() { 0o700 } else { 0o600 };
-		// SAFETY: geteuid has no pointer, lifetime, or ownership requirements.
-		if metadata.uid() != unsafe { libc::geteuid() }
-			|| metadata.permissions().mode() & 0o777 != expected
+		if metadata.st_mode & 0o777 != expected {
+			return NativeOwnerOnlySecurityResult::failure("mode_mismatch");
+		}
+		#[cfg(target_os = "linux")]
 		{
-			return NativeOwnerOnlySecurityResult::failure("acl_verify_failed");
+			let access_query = match query_extended_acl(&authority.file, AclAttribute::Access) {
+				Ok(evidence) => evidence,
+				Err(result) => return result,
+			};
+			let default_query = if kind == "directory" {
+				match query_extended_acl(&authority.file, AclAttribute::Default) {
+					Ok(evidence) => Some(evidence),
+					Err(result) => return result,
+				}
+			} else {
+				None
+			};
+			match revalidate_authority(authority) {
+				Ok(_) => NativeOwnerOnlySecurityResult::linux_verified_success(
+					kind,
+					access_query,
+					default_query,
+				),
+				Err(result) => result,
+			}
 		}
-		#[cfg(any(target_os = "linux", target_os = "macos"))]
-		match has_extended_acl(&file) {
+		#[cfg(target_os = "macos")]
+		match has_extended_acl(&authority.file) {
 			Ok(false) => NativeOwnerOnlySecurityResult::success(),
 			Ok(true) => NativeOwnerOnlySecurityResult::failure("acl_verify_failed"),
 			Err(result) => result,
@@ -1104,6 +1802,280 @@ mod platform {
 		#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 		NativeOwnerOnlySecurityResult::failure("acl_unavailable")
 	}
+
+	#[cfg(target_os = "linux")]
+	pub fn secure_created_owner_only_file(file: &File) -> Result<(), &'static str> {
+		let before = file.metadata().map_err(|_| "io_error")?;
+		// SAFETY: geteuid has no preconditions and only reads the process effective
+		// user identity.
+		if before.uid() != unsafe { libc::geteuid() } {
+			return Err("owner_mismatch");
+		}
+		if before.mode() & libc::S_IFMT != libc::S_IFREG {
+			return Err("not_directory");
+		}
+		// SAFETY: file is a live retained descriptor and mode 0600 is valid for fchmod.
+		if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } != 0 {
+			return Err(security_code(&std::io::Error::last_os_error()));
+		}
+		clear_extended_acl(file, AclAttribute::Access).map_err(|result| {
+			match result.code.as_deref() {
+				Some("acl_denied") => "acl_denied",
+				Some("acl_io_error") => "acl_io_error",
+				Some("acl_present") => "acl_present",
+				Some("acl_malformed") => "acl_malformed",
+				_ => "acl_unknown",
+			}
+		})?;
+		query_extended_acl(file, AclAttribute::Access).map_err(|result| {
+			match result.code.as_deref() {
+				Some("acl_denied") => "acl_denied",
+				Some("acl_io_error") => "acl_io_error",
+				Some("acl_present") => "acl_present",
+				Some("acl_malformed") => "acl_malformed",
+				_ => "acl_unknown",
+			}
+		})?;
+		let after = file.metadata().map_err(|_| "io_error")?;
+		if after.dev() != before.dev() || after.ino() != before.ino() {
+			return Err("identity_mismatch");
+		}
+		// SAFETY: geteuid has no preconditions and only reads the process effective
+		// user identity.
+		if after.uid() != unsafe { libc::geteuid() } {
+			return Err("owner_mismatch");
+		}
+		if after.mode() & 0o777 != 0o600 {
+			return Err("mode_mismatch");
+		}
+		Ok(())
+	}
+
+	#[cfg(target_os = "linux")]
+	pub fn verify_created_owner_only_file(file: &File) -> Result<(), &'static str> {
+		let metadata = file.metadata().map_err(|_| "io_error")?;
+		if metadata.file_type().is_symlink() || !metadata.is_file() {
+			return Err("not_directory");
+		}
+		// SAFETY: geteuid has no preconditions and only reads the process effective
+		// user identity.
+		if metadata.uid() != unsafe { libc::geteuid() } {
+			return Err("owner_mismatch");
+		}
+		if metadata.mode() & 0o777 != 0o600 {
+			return Err("mode_mismatch");
+		}
+		query_extended_acl(file, AclAttribute::Access).map_err(|result| {
+			match result.code.as_deref() {
+				Some("acl_denied") => "acl_denied",
+				Some("acl_io_error") => "acl_io_error",
+				Some("acl_present") => "acl_present",
+				Some("acl_malformed") => "acl_malformed",
+				_ => "acl_unknown",
+			}
+		})?;
+		Ok(())
+	}
+
+	#[cfg(target_os = "linux")]
+	pub fn verify_retained_owner_only_directory(file: &File) -> Result<(), &'static str> {
+		let metadata = file.metadata().map_err(|_| "io_error")?;
+		if !metadata.is_dir() {
+			return Err("not_directory");
+		}
+		// SAFETY: geteuid has no preconditions and only reads the process effective
+		// user identity.
+		if metadata.uid() != unsafe { libc::geteuid() } {
+			return Err("owner_mismatch");
+		}
+		if metadata.mode() & 0o777 != 0o700 {
+			return Err("mode_mismatch");
+		}
+		for attribute in [AclAttribute::Access, AclAttribute::Default] {
+			query_extended_acl(file, attribute).map_err(|result| match result.code.as_deref() {
+				Some("acl_denied") => "acl_denied",
+				Some("acl_io_error") => "acl_io_error",
+				Some("acl_present") => "acl_present",
+				Some("acl_malformed") => "acl_malformed",
+				_ => "acl_unknown",
+			})?;
+		}
+		Ok(())
+	}
+
+	#[cfg(target_os = "linux")]
+	pub fn secure_created_owner_only_directory(file: &File) -> Result<(), &'static str> {
+		let metadata = file.metadata().map_err(|_| "io_error")?;
+		if !metadata.is_dir() {
+			return Err("not_directory");
+		}
+		// SAFETY: geteuid has no preconditions and only reads process credentials.
+		if metadata.uid() != unsafe { libc::geteuid() } {
+			return Err("owner_mismatch");
+		}
+		// SAFETY: file is a live retained directory descriptor and mode 0700 is valid.
+		if unsafe { libc::fchmod(file.as_raw_fd(), 0o700) } != 0 {
+			return Err(security_code(&std::io::Error::last_os_error()));
+		}
+		for attribute in [AclAttribute::Access, AclAttribute::Default] {
+			clear_extended_acl(file, attribute).map_err(|result| match result.code.as_deref() {
+				Some("acl_denied") => "acl_denied",
+				Some("acl_io_error") => "acl_io_error",
+				Some("acl_present") => "acl_present",
+				Some("acl_malformed") => "acl_malformed",
+				_ => "acl_unknown",
+			})?;
+		}
+		verify_retained_owner_only_directory(file)
+	}
+
+	fn apply_authority(
+		authority: CheckedPathAuthority,
+		kind: &str,
+	) -> NativeOwnerOnlySecurityResult {
+		// The retained path/name chain and the selected descriptor must agree before
+		// any mutation.
+		let metadata = match revalidate_authority(&authority) {
+			Ok(metadata) => metadata,
+			Err(result) => return result,
+		};
+		// SAFETY: geteuid has no preconditions and only reads the process effective
+		// user identity.
+		if metadata.st_uid != unsafe { libc::geteuid() } {
+			return NativeOwnerOnlySecurityResult::failure("owner_mismatch");
+		}
+		let mode = if kind == "directory" { 0o700 } else { 0o600 };
+		// SAFETY: authority.file is retained and live, and mode is exactly 0600 or
+		// 0700.
+		if unsafe { libc::fchmod(authority.file.as_raw_fd(), mode) } != 0 {
+			return NativeOwnerOnlySecurityResult::failure(security_code(
+				&std::io::Error::last_os_error(),
+			));
+		}
+		#[cfg(target_os = "linux")]
+		{
+			// Each attribute is cleared and then immediately queried. In particular, do
+			// not let a successful access-ACL clear authorize mutating the default ACL.
+			let access_clear = match clear_extended_acl(&authority.file, AclAttribute::Access) {
+				Ok(evidence) => evidence,
+				Err(result) => return result,
+			};
+			let access_query = match query_extended_acl(&authority.file, AclAttribute::Access) {
+				Ok(evidence) => evidence,
+				Err(result) => return result,
+			};
+			let default_evidence = if kind == "directory" {
+				let clear = match clear_extended_acl(&authority.file, AclAttribute::Default) {
+					Ok(evidence) => evidence,
+					Err(result) => return result,
+				};
+				let query = match query_extended_acl(&authority.file, AclAttribute::Default) {
+					Ok(evidence) => evidence,
+					Err(result) => return result,
+				};
+				Some((clear, query))
+			} else {
+				None
+			};
+			match revalidate_authority(&authority) {
+				Ok(_) => NativeOwnerOnlySecurityResult::linux_success(
+					kind,
+					access_clear,
+					access_query,
+					default_evidence,
+				),
+				Err(result) => result,
+			}
+		}
+		#[cfg(target_os = "macos")]
+		if let Err(result) = clear_extended_acl(&authority.file) {
+			return result;
+		}
+		#[cfg(not(target_os = "linux"))]
+		verify_authority(&authority, kind)
+	}
+
+	#[cfg(target_os = "linux")]
+	#[allow(clippy::result_large_err, reason = "preserves structured native security evidence")]
+	fn checked_caller_file(
+		path: &Path,
+		kind: &str,
+		caller_fd: libc::c_int,
+	) -> Result<CheckedPathAuthority, NativeOwnerOnlySecurityResult> {
+		let mut authority = checked_file(path, kind)?;
+		let caller = duplicate_cloexec(caller_fd)?;
+		let caller_stat = fstat(caller.as_raw_fd())?;
+		if !stat_same_object(&authority.initial, &caller_stat) {
+			return Err(NativeOwnerOnlySecurityResult::failure("identity_mismatch"));
+		}
+		authority.file = caller;
+		// Verify the retained path authority again after taking the caller descriptor.
+		revalidate_authority(&authority)?;
+		Ok(authority)
+	}
+
+	pub(super) fn apply_owner_only_path_security(
+		path: &Path,
+		kind: &str,
+	) -> NativeOwnerOnlySecurityResult {
+		match checked_file(path, kind) {
+			Ok(authority) => apply_authority(authority, kind),
+			Err(result) => result,
+		}
+	}
+
+	pub(super) fn verify_owner_only_path_security(
+		path: &Path,
+		kind: &str,
+	) -> NativeOwnerOnlySecurityResult {
+		match checked_file(path, kind) {
+			Ok(authority) => verify_authority(&authority, kind),
+			Err(result) => result,
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	pub(super) fn apply_owner_only_fd_security(
+		path: &Path,
+		kind: &str,
+		caller_fd: libc::c_int,
+	) -> NativeOwnerOnlySecurityResult {
+		match checked_caller_file(path, kind, caller_fd) {
+			Ok(authority) => apply_authority(authority, kind),
+			Err(result) => result,
+		}
+	}
+
+	#[cfg(not(target_os = "linux"))]
+	pub(super) fn apply_owner_only_fd_security(
+		_: &Path,
+		_: &str,
+		_: libc::c_int,
+	) -> NativeOwnerOnlySecurityResult {
+		NativeOwnerOnlySecurityResult::failure("acl_unavailable")
+	}
+
+	#[cfg(target_os = "linux")]
+	pub(super) fn verify_owner_only_fd_security(
+		path: &Path,
+		kind: &str,
+		caller_fd: libc::c_int,
+	) -> NativeOwnerOnlySecurityResult {
+		match checked_caller_file(path, kind, caller_fd) {
+			Ok(authority) => verify_authority(&authority, kind),
+			Err(result) => result,
+		}
+	}
+
+	#[cfg(not(target_os = "linux"))]
+	pub(super) fn verify_owner_only_fd_security(
+		_: &Path,
+		_: &str,
+		_: libc::c_int,
+	) -> NativeOwnerOnlySecurityResult {
+		NativeOwnerOnlySecurityResult::failure("acl_unavailable")
+	}
+
 	#[cfg(target_os = "linux")]
 	fn rename_no_replace(
 		source_parent_fd: libc::c_int,
@@ -1912,6 +2884,7 @@ mod platform {
 			ino: stat.st_ino.to_string(),
 			size: (stat.st_size as u64).to_string(),
 			mtime_ns: stat_mtime_ns(stat).to_string(),
+			ctime_ns: stat_ctime_ns(stat).to_string(),
 			sha256: digest,
 		}
 	}
@@ -3667,6 +4640,22 @@ mod platform {
 			NativeOwnerOnlySecurityResult::failure("acl_verify_failed")
 		}
 	}
+
+	pub(super) fn apply_owner_only_fd_security(
+		_: &Path,
+		_: &str,
+		_: i32,
+	) -> NativeOwnerOnlySecurityResult {
+		NativeOwnerOnlySecurityResult::failure("acl_unavailable")
+	}
+
+	pub(super) fn verify_owner_only_fd_security(
+		_: &Path,
+		_: &str,
+		_: i32,
+	) -> NativeOwnerOnlySecurityResult {
+		NativeOwnerOnlySecurityResult::failure("acl_unavailable")
+	}
 	#[cfg(test)]
 	mod tests {
 		use super::{FILE_ALL_ACCESS, FILE_READ_DATA, GENERIC_ALL, owner_only_ace_mask_is_safe};
@@ -3815,6 +4804,7 @@ mod platform {
 			ino: ino.to_string(),
 			size: size.to_string(),
 			mtime_ns: mtime_ns.to_string(),
+			ctime_ns: mtime_ns.to_string(),
 			sha256: if is_directory {
 				None
 			} else {
@@ -4233,6 +5223,20 @@ mod platform {
 	pub(super) fn verify_owner_only_path_security(
 		_: &Path,
 		_: &str,
+	) -> NativeOwnerOnlySecurityResult {
+		NativeOwnerOnlySecurityResult::failure("acl_unavailable")
+	}
+	pub(super) fn apply_owner_only_fd_security(
+		_: &Path,
+		_: &str,
+		_: i32,
+	) -> NativeOwnerOnlySecurityResult {
+		NativeOwnerOnlySecurityResult::failure("acl_unavailable")
+	}
+	pub(super) fn verify_owner_only_fd_security(
+		_: &Path,
+		_: &str,
+		_: i32,
 	) -> NativeOwnerOnlySecurityResult {
 		NativeOwnerOnlySecurityResult::failure("acl_unavailable")
 	}

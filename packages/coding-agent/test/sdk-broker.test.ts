@@ -210,6 +210,32 @@ it("initializes the managed target scope before lifecycle fork arguments expose 
 	}
 });
 
+it("exposes the same prepared managed fork scope on repeated lifecycle argument creation", async () => {
+	const agentDir = await temp();
+	const cwd = path.join(agentDir, "repeated-fork-target");
+	await fs.mkdir(cwd);
+	const request: SessionLifecycleLaunchRequest = {
+		operation: "session.fork",
+		sessionId: "fork-destination",
+		cwd,
+		stateRoot: path.join(cwd, ".gjc", "state"),
+		...deriveLifecycleDeadlines(Date.now(), 10_000),
+		sourceCwd: cwd,
+		sourceSessionId: "source-session",
+		sourceSessionPath: path.join(cwd, "source.jsonl"),
+		sourceSessionIdentity: { dev: "1", ino: "2", size: 3, mtimeMs: 4, mtimeNs: "5", sha256: "a".repeat(64) },
+	};
+	try {
+		const first = await lifecycleArgs(request, cwd, agentDir);
+		const second = await lifecycleArgs(request, cwd, agentDir);
+		expect(first.sessionDir).toBe(second.sessionDir);
+		expect(first.sessionDir).toEqual(expect.any(String));
+		expect(syncFs.existsSync(path.join(first.sessionDir!, ".gjc-managed-session-scope.v2.json"))).toBe(true);
+	} finally {
+		await fs.rm(agentDir, { recursive: true, force: true });
+	}
+});
+
 it("SDK lifecycle launch requests require a worktree identity", () => {
 	expect(() =>
 		readSessionLifecycleLaunchRequest(

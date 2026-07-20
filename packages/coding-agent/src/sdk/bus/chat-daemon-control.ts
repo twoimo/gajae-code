@@ -24,10 +24,11 @@ export type ChatDaemonAction = "stop" | "reload";
 /**
  * Operational generations of the Discord/Slack daemon lifecycle contracts.
  * These are intentionally separate from per-session endpoint generations.
+ * Generation 6 carries the retained managed filesystem authority boundary.
  */
 export const CHAT_DAEMON_GENERATIONS: Readonly<Record<ChatDaemonKind, number>> = {
-	discord: 5,
-	slack: 5,
+	discord: 6,
+	slack: 6,
 };
 
 export function chatDaemonGeneration(kind: ChatDaemonKind): number {

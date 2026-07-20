@@ -15,7 +15,8 @@ export const NOTIFICATION_PROTOCOL_VERSION = 3;
  * on every daemon-behavior change independent of the wire version.
  * The current development baseline already includes #2299's generation 4,
  * incarnation fencing in generation 5, owner-lock authority in generation 6,
- * identity-atomic transition markers in generation 7, and stable signaling plus
- * tri-state foreign-owner provenance in generation 8.
+ * identity-atomic transition markers in generation 7, stable signaling plus
+ * tri-state foreign-owner provenance in generation 8, and retained managed
+ * filesystem authority changes in generation 9.
  */
-export const DAEMON_GENERATION = 8;
+export const DAEMON_GENERATION = 9;

@@ -61,6 +61,7 @@ import type { AgentSession } from "./session/agent-session";
 import {
 	type ResumeSessionIdentity,
 	resolveResumableSession,
+	type SessionDestination,
 	type SessionDirectoryMigrationPolicy,
 	type SessionInfo,
 	SessionManager,
@@ -538,7 +539,8 @@ type ListForResumePickerReadOnly = (cwd: string, sessionDir?: string) => Promise
 type SelectResumeSession = (sessions: SessionInfo[]) => Promise<SessionSelectionResult>;
 type OpenExistingSessionStrict = (
 	identity: ResumeSessionIdentity,
-	sessionDir?: string,
+	destination: SessionDestination,
+	storage?: undefined,
 	migrationPolicy?: SessionDirectoryMigrationPolicy,
 ) => Promise<StrictSessionOpenResult>;
 
@@ -725,6 +727,10 @@ export async function createSessionManager(
 	activeSettings: Settings = settings,
 ): Promise<SessionManager | undefined> {
 	const migrationPolicy = activeSettings.get("session.directoryMigration") === "disabled" ? "disabled" : "copy-retain";
+	const sessionDestination = () =>
+		parsed.sessionDir
+			? SessionManager.explicitDestination(parsed.sessionDir)
+			: SessionManager.managedDestination(cwd, activeSettings.getAgentDir());
 	if (parsed.resume === true) {
 		return undefined;
 	}
@@ -734,13 +740,13 @@ export async function createSessionManager(
 		}
 		const forkSource = parsed.fork;
 		if (forkSource.includes("/") || forkSource.includes("\\") || forkSource.endsWith(".jsonl")) {
-			return await SessionManager.forkFrom(forkSource, cwd, parsed.sessionDir, undefined, migrationPolicy);
+			return await SessionManager.forkFrom(forkSource, cwd, sessionDestination(), undefined, migrationPolicy);
 		}
 		const match = await resolveResumableSession(forkSource, cwd, parsed.sessionDir);
 		if (!match) {
 			throw new Error(`Session "${forkSource}" not found.`);
 		}
-		return await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir, undefined, migrationPolicy);
+		return await SessionManager.forkFrom(match.session.path, cwd, sessionDestination(), undefined, migrationPolicy);
 	}
 
 	if (parsed.noSession) {
@@ -749,7 +755,12 @@ export async function createSessionManager(
 	if (typeof parsed.resume === "string") {
 		const sessionArg = parsed.resume;
 		if (sessionArg.includes("/") || sessionArg.includes("\\") || sessionArg.endsWith(".jsonl")) {
-			return await SessionManager.open(sessionArg, parsed.sessionDir, undefined, migrationPolicy);
+			return await SessionManager.open(
+				sessionArg,
+				SessionManager.explicitDestination(path.dirname(sessionArg)),
+				undefined,
+				migrationPolicy,
+			);
 		}
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);
 		if (!match) {
@@ -766,21 +777,21 @@ export async function createSessionManager(
 				return await SessionManager.forkFrom(
 					match.session.path,
 					cwd,
-					parsed.sessionDir,
+					sessionDestination(),
 					undefined,
 					migrationPolicy,
 				);
 			}
 		}
-		return await SessionManager.open(match.session.path, parsed.sessionDir, undefined, migrationPolicy);
+		return await SessionManager.open(match.session.path, sessionDestination(), undefined, migrationPolicy);
 	}
 	if (parsed.continue) {
-		return await SessionManager.continueRecent(cwd, parsed.sessionDir, undefined, migrationPolicy);
+		return await SessionManager.continueRecent(cwd, sessionDestination(), undefined, migrationPolicy);
 	}
 	// --resume without value is handled separately (needs picker UI)
 	// If --session-dir provided without --continue/--resume, create new session there
 	if (parsed.sessionDir) {
-		return SessionManager.create(cwd, parsed.sessionDir);
+		return SessionManager.create(cwd, SessionManager.explicitDestination(parsed.sessionDir));
 	}
 	// A lifecycle `/session_create` child must start a FRESH session that adopts
 	// the pre-allocated id (GJC_SESSION_ID), never auto-resume existing history in
@@ -798,14 +809,13 @@ export async function createSessionManager(
 	// buildSessionOptions restores the session's model/thinking instead of
 	// overriding them with CLI defaults.
 	if (activeSettings.get("autoResume")) {
-		const manager = await SessionManager.continueRecent(cwd, parsed.sessionDir, undefined, migrationPolicy);
+		const manager = await SessionManager.continueRecent(cwd, sessionDestination(), undefined, migrationPolicy);
 		if (manager.getEntries().length > 0) {
 			parsed.continue = true;
 		}
 		return manager;
 	}
-	const sessionDir = parsed.sessionDir ?? SessionManager.getDefaultSessionDir(cwd, activeSettings.getAgentDir());
-	return SessionManager.create(cwd, sessionDir);
+	return SessionManager.create(cwd, SessionManager.managedDestination(cwd, activeSettings.getAgentDir()));
 }
 
 async function maybeAutoChdir(parsed: Args): Promise<void> {
@@ -1109,7 +1119,9 @@ export async function runRootCommand(
 		try {
 			opened = await (deps.openExistingSessionStrict ?? SessionManager.openExistingStrict)(
 				selection.identity,
-				parsedArgs.sessionDir,
+				parsedArgs.sessionDir
+					? SessionManager.explicitDestination(parsedArgs.sessionDir)
+					: SessionManager.managedDestination(resumeCwd, settings.getAgentDir()),
 				undefined,
 				resumeMigrationPolicy,
 			);

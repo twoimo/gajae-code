@@ -205,9 +205,9 @@ describe("AgentSession pre-admission artifact spill", () => {
 			},
 		});
 		const sessionManager = SessionManager.inMemory(tempDir.path());
-		(
-			sessionManager as unknown as { allocateArtifactPath: typeof sessionManager.allocateArtifactPath }
-		).allocateArtifactPath = async () => ({ id: "write-failure", path: tempDir!.path() });
+		(sessionManager as unknown as { saveArtifact: typeof sessionManager.saveArtifact }).saveArtifact = async () => {
+			throw new Error("simulated artifact write failure");
+		};
 		session = new AgentSession({
 			agent,
 			sessionManager,

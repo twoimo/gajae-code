@@ -51,6 +51,8 @@ Migration does not automatically clean up legacy files, copied files, locks, art
 
 Managed storage enforces owner-only directory/file security and refuses unsafe symlinks or malformed bindings on the paths it verifies. This is a local storage-integrity boundary, not authentication, authorization, encryption, or a guarantee against a hostile concurrent local actor/race outside the verified operations. Callers must still protect the agent directory and session contents.
 
+On Linux filesystems where the exact POSIX ACL xattr operation returns `ENOTSUP`/`EOPNOTSUPP`, GJC treats that result only as proof that the filesystem cannot store that ACL attribute. The ACL gate still requires the same opened object to pass effective-owner, exact `0700` directory or `0600` file mode, safe-type, no-follow traversal, and identity/replacement checks. Permission denial, I/O errors, present or malformed ACL data, and unknown results remain failures. Managed descriptors use close-on-exec and are not delegated as authority to subprocesses. This compatibility rule does not change explicit `--session-dir`, macOS ACL, or Windows DACL policy.
+
 Blob store location:
 
 ```text

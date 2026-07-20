@@ -31,6 +31,7 @@ export const Shell = nativeBindings.Shell;
 // functions
 export const __piNativesV0_11_4 = nativeBindings.__piNativesV0_11_4;
 export const applyBashFixups = nativeBindings.applyBashFixups;
+export const applyOwnerOnlyFdSecurity = nativeBindings.applyOwnerOnlyFdSecurity;
 export const applyOwnerOnlyPathSecurity = nativeBindings.applyOwnerOnlyPathSecurity;
 export const astEdit = nativeBindings.astEdit;
 export const astGrep = nativeBindings.astGrep;
@@ -84,6 +85,7 @@ export const summarizeCode = nativeBindings.summarizeCode;
 export const supportsLanguage = nativeBindings.supportsLanguage;
 export const truncateLinesToWidth = nativeBindings.truncateLinesToWidth;
 export const truncateToWidth = nativeBindings.truncateToWidth;
+export const verifyOwnerOnlyFdSecurity = nativeBindings.verifyOwnerOnlyFdSecurity;
 export const verifyOwnerOnlyPathSecurity = nativeBindings.verifyOwnerOnlyPathSecurity;
 export const visibleWidth = nativeBindings.visibleWidth;
 export const visibleWidths = nativeBindings.visibleWidths;

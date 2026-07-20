@@ -500,6 +500,7 @@ describe("SessionManager temp cwd session dirs", () => {
 			fs.writeFileSync(
 				file,
 				`${JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id, timestamp: "2025-01-01T00:00:00Z", cwd })}\n${JSON.stringify({ type: "message", id: "message", parentId: null, timestamp: "2025-01-01T00:00:01Z", message: { role: "user", content: id, timestamp: 1 } })}\n`,
+				{ mode: 0o600 },
 			);
 		};
 		writeSession(legacyFile, intendedId);

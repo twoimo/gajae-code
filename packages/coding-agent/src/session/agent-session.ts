@@ -245,7 +245,6 @@ import {
 	persistCoordinatorRuntimeStateFromEvent,
 	registerCoordinatorRuntimeStateFinalizer,
 } from "../gjc-runtime/session-state-sidecar";
-import { writeArtifact } from "../gjc-runtime/state-writer";
 import { requestGjcWorkerIntegrationAttempt } from "../gjc-runtime/team-runtime";
 import { GoalRuntime } from "../goals/runtime";
 import type { Goal, GoalModeState } from "../goals/state";
@@ -435,11 +434,6 @@ export type AgentSessionEvent =
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| { type: "thinking_level_changed"; thinkingLevel: ThinkingLevel | undefined }
 	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState };
-
-function isUnderProjectGjc(cwd: string, targetPath: string): boolean {
-	const relative = path.relative(path.join(path.resolve(cwd), ".gjc"), path.resolve(targetPath));
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -994,11 +988,6 @@ const noOpUIContext: ExtensionUIContext = {
 
 function createHandoffContext(document: string): string {
 	return `<handoff-context>\n${document}\n</handoff-context>\n\nThe above is a handoff document from a previous session. Use this context to continue the work seamlessly.`;
-}
-
-function createHandoffFileName(date = new Date()): string {
-	const fileTimestamp = date.toISOString().replace(/[:.]/g, "-");
-	return `handoff-${fileTimestamp}.md`;
 }
 
 // ============================================================================
@@ -3032,17 +3021,16 @@ export class AgentSession {
 		if (thresholdTokens <= 0 || estimateTextTokensHeuristic(fullText) <= thresholdTokens) return;
 
 		try {
-			const artifact = await this.sessionManager.allocateArtifactPath("tool-result");
-			if (!artifact.id || !artifact.path) return;
-			await Bun.write(artifact.path, fullText);
+			const artifactId = await this.sessionManager.saveArtifact(fullText, "tool-result");
+			if (!artifactId) return;
 			const digest = crypto.createHash("sha256").update(fullText).digest("hex");
-			const preview = createPreAdmissionArtifactSpillPreview(fullText, artifact.id, digest);
+			const preview = createPreAdmissionArtifactSpillPreview(fullText, artifactId, digest);
 			const spillMeta = outputMeta()
 				.truncationFromText(preview, {
 					direction: "middle",
 					totalLines: fullText.split("\n").length,
 					totalBytes: Buffer.byteLength(fullText, "utf-8"),
-					artifactId: artifact.id,
+					artifactId,
 				})
 				.get();
 			const existingDetails = message.details;
@@ -9004,25 +8992,6 @@ export class AgentSession {
 			return false;
 		}
 
-		// Copy artifacts directory if it exists
-		const oldArtifactDir = forkResult.oldSessionFile.slice(0, -6);
-		const newArtifactDir = forkResult.newSessionFile.slice(0, -6);
-
-		try {
-			const oldDirStat = await fs.promises.stat(oldArtifactDir);
-			if (oldDirStat.isDirectory()) {
-				await fs.promises.cp(oldArtifactDir, newArtifactDir, { recursive: true });
-			}
-		} catch (err) {
-			if (!isEnoent(err)) {
-				logger.warn("Failed to copy artifacts during fork", {
-					oldArtifactDir,
-					newArtifactDir,
-					error: err instanceof Error ? err.message : String(err),
-				});
-			}
-		}
-
 		// Update agent session ID
 		this.#syncAgentSessionId();
 		this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
@@ -10365,27 +10334,13 @@ export class AgentSession {
 			await this.sessionManager.ensureOnDisk();
 			let savedPath: string | undefined;
 			if (options?.autoTriggered && this.settings.get("compaction.handoffSaveToDisk")) {
-				const artifactsDir = this.sessionManager.getArtifactsDir();
-				if (artifactsDir) {
-					const handoffFilePath = path.join(artifactsDir, createHandoffFileName());
-					try {
-						if (isUnderProjectGjc(this.sessionManager.getCwd(), handoffFilePath)) {
-							await writeArtifact(handoffFilePath, `${handoffText}\n`, {
-								cwd: this.sessionManager.getCwd(),
-								audit: { category: "artifact", verb: "write", owner: "gjc-runtime" },
-							});
-						} else {
-							await Bun.write(handoffFilePath, `${handoffText}\n`);
-						}
-						savedPath = handoffFilePath;
-					} catch (error) {
-						logger.warn("Failed to save handoff document to disk", {
-							path: handoffFilePath,
-							error: error instanceof Error ? error.message : String(error),
-						});
-					}
-				} else {
-					logger.debug("Skipping handoff document save because session is not persisted");
+				try {
+					const artifactId = await this.sessionManager.saveArtifact(`${handoffText}\n`, "handoff");
+					savedPath = `artifact://${artifactId}`;
+				} catch (error) {
+					logger.warn("Failed to save handoff document", {
+						error: error instanceof Error ? error.message : String(error),
+					});
 				}
 			}
 
@@ -13177,7 +13132,7 @@ export class AgentSession {
 				cwd,
 				timeout: clampTimeout("bash") * 1000,
 				env: buildGjcRuntimeSessionEnv({
-					sessionFile: this.sessionManager.getSessionFile(),
+					sessionFile: null,
 					sessionId: this.sessionId,
 					cwd,
 				}),

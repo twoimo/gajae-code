@@ -90,7 +90,7 @@ import { loadActiveSubskillTools } from "../extensibility/gjc-plugins/tools";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { HindsightSessionState } from "../hindsight/state";
-import { LocalProtocolHandler, type LocalProtocolOptions } from "../internal-urls";
+import { initializeLocalRoot, LocalProtocolHandler, type LocalProtocolOptions } from "../internal-urls";
 import { resolveMemoryBackend } from "../memory-backend";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
@@ -1171,8 +1171,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const sessionManager =
 			options.sessionManager ??
 			(await logger.time("sessionManager", async () => {
-				const sessionDir = SessionManager.getDefaultSessionDir(cwd, agentDir);
-				return SessionManager.create(cwd, sessionDir);
+				return SessionManager.create(cwd, SessionManager.managedDestination(cwd, agentDir));
 			}));
 		const logicalSessionId = sessionManager.getSessionId();
 		const providerSessionId = options.providerSessionId ?? options.forkContextSeed?.cacheIdentity ?? logicalSessionId;
@@ -1596,6 +1595,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (asyncJobManager) AsyncJobManager.setInstance(asyncJobManager);
 		}
 		if (options.localProtocolOptions) {
+			await initializeLocalRoot(options.localProtocolOptions);
 			disposeLocalProtocolOverride = LocalProtocolHandler.installOverride(options.localProtocolOptions);
 		}
 		toolSession.getArtifactsDir = getArtifactsDir;

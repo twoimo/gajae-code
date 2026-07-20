@@ -1943,9 +1943,9 @@ describe("telegram daemon", () => {
 			}),
 		);
 	}
-	test("keeps the wire protocol at 3 while stable signaling uses generation 8", () => {
+	test("keeps the wire protocol at 3 while retained authority uses generation 9", () => {
 		expect(NOTIFICATION_PROTOCOL_VERSION).toBe(3);
-		expect(DAEMON_GENERATION).toBe(8);
+		expect(DAEMON_GENERATION).toBe(9);
 	});
 
 	test("#2028 acquire flags a reload for a live pre-upgrade owner missing the generation field", async () => {

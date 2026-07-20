@@ -167,7 +167,7 @@ export async function openLifecycleSessionManager(
 	if (request.operation === "session.resume") {
 		const opened = await SessionManager.openExistingStrict(
 			snapshot.identity,
-			parsed.sessionDir,
+			SessionManager.managedDestination(cwd, agentDir),
 			undefined,
 			migrationPolicy,
 		);
@@ -181,7 +181,12 @@ export async function openLifecycleSessionManager(
 			throw error;
 		}
 	} else {
-		const forked = await SessionManager.forkFromCaptured(snapshot, cwd, parsed.sessionDir, migrationPolicy);
+		const forked = await SessionManager.forkFromCaptured(
+			snapshot,
+			cwd,
+			SessionManager.managedDestination(cwd, agentDir),
+			migrationPolicy,
+		);
 		if (forked.kind === "error")
 			throw new Error("Lifecycle saved session authority changed while the session host forked it.");
 		sessionManager = forked.manager;
