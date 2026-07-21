@@ -100,6 +100,19 @@ describe("managed session write protocol", () => {
 			expect(coalesced.owned[0]?.migrationState).toBe("migrated_v2");
 		}
 		const receipts = path.join(scope.directoryPath, ".gjc-managed-session-internal", "receipts");
+		const committedReceipt = path.join(
+			receipts,
+			(await fs.readdir(receipts)).find(name => name.endsWith(".json")) ?? "",
+		);
+		const receipt = JSON.parse(await fs.readFile(committedReceipt, "utf8")) as Record<string, unknown>;
+		expect(receipt).toMatchObject({
+			state: "committed",
+			policy: "copy-retain",
+			source: { path: source, sessionId: "session-a" },
+			destination: { path: first.path, sessionId: "session-a" },
+			artifactManifest: [],
+		});
+
 		for (const receipt of await fs.readdir(receipts)) await fs.unlink(path.join(receipts, receipt));
 		const interruptedReplay = await openManagedCandidateForWrite(scope, legacyCandidate);
 		expect(interruptedReplay).toMatchObject({ kind: "opened", path: first.path, migrated: true });
@@ -142,6 +155,20 @@ describe("managed session write protocol", () => {
 		expect((await fs.stat(path.join(destinationArtifacts, "nested", "empty"))).isDirectory()).toBe(true);
 		expect(await fs.readFile(path.join(sourceArtifacts, "payload.txt"), "utf8")).toBe("root");
 		expect((await fs.stat(path.join(sourceArtifacts, "nested", "empty"))).isDirectory()).toBe(true);
+		const receipts = path.join(scope.directoryPath, ".gjc-managed-session-internal", "receipts");
+		const committedReceipt = path.join(
+			receipts,
+			(await fs.readdir(receipts)).find(name => name.endsWith(".json")) ?? "",
+		);
+		const receipt = JSON.parse(await fs.readFile(committedReceipt, "utf8")) as { artifactManifest?: unknown[] };
+		expect(receipt.artifactManifest).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ kind: "directory", path: "nested" }),
+				expect.objectContaining({ kind: "directory", path: "nested/empty" }),
+				expect.objectContaining({ kind: "file", path: "payload.txt" }),
+				expect.objectContaining({ kind: "file", path: "nested/payload.txt" }),
+			]),
+		);
 	});
 	it("retains a detached legacy artifact root when exact restoration collides", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();

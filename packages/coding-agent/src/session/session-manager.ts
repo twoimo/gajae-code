@@ -1838,10 +1838,44 @@ function inspectResumeSessionFile(
 			mtimeNs: snapshot.mtimeNs,
 			sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
 		};
-		return { identity, content: Uint8Array.from(bytes), entries, context, migrationApplied };
+		return { identity, content: bytes, entries, context, migrationApplied };
 	} catch {
 		return { kind: "error", reason: "malformed" };
 	}
+}
+
+/** Revalidate previously parsed authority without another decode, parse, migration, or context build. */
+function revalidateResumeSessionIdentity(
+	filePath: string,
+	storage: SessionStorage,
+	expected: ResumeSessionIdentity,
+): StrictSessionOpenFailure | { kind: "valid" } {
+	const canonicalPath = resolveEquivalentPath(path.resolve(filePath));
+	let before: SessionStorageStat;
+	let snapshot: SessionStorageSnapshot;
+	let after: SessionStorageStat;
+	try {
+		before = storage.statSync(canonicalPath);
+		if (!before.isFile || !storage.readSnapshotSync) return { kind: "error", reason: "read-failed" };
+		snapshot = storage.readSnapshotSync(canonicalPath);
+		after = storage.statSync(canonicalPath);
+	} catch (error) {
+		return resumeReadFailure(error, storage, canonicalPath);
+	}
+	if (!sameResumeStat(before, snapshot.stat) || !sameResumeStat(snapshot.stat, after)) {
+		return { kind: "error", reason: "unstable" };
+	}
+	const observed: ResumeSessionIdentity = {
+		canonicalPath,
+		sessionId: expected.sessionId,
+		dev: snapshot.stat.dev,
+		ino: snapshot.stat.ino,
+		size: snapshot.stat.size,
+		mtimeMs: snapshot.stat.mtimeMs,
+		mtimeNs: snapshot.stat.mtimeNs,
+		sha256: crypto.createHash("sha256").update(snapshot.bytes).digest("hex"),
+	};
+	return sameResumeIdentity(expected, observed) ? { kind: "valid" } : { kind: "error", reason: "identity-mismatch" };
 }
 
 /**
@@ -4181,15 +4215,16 @@ export class SessionManager {
 	}
 
 	async #hydrateExistingSession(sessionFile: string, entries: FileEntry[], migrationApplied: boolean): Promise<void> {
-		const ownedEntries = structuredClone(entries) as FileEntry[];
-		const header = ownedEntries[0] as SessionHeader;
+		// Strict inspection creates these entries solely for this hydration path. Adopt that
+		// final, validated representation instead of cloning the complete transcript again.
+		const header = entries[0] as SessionHeader;
 		this.#sessionFile = this.storage instanceof FileSessionStorage ? path.resolve(sessionFile) : sessionFile;
 		this.#sessionId = header.id;
 		this.#sessionName = header.title;
 		this.#titleSource = header.titleSource;
 		this.#needsFullRewriteOnNextPersist = migrationApplied;
-		await resolveBlobRefsInEntries(ownedEntries, this.#blobStore);
-		this.#fileEntries = ownedEntries;
+		await resolveBlobRefsInEntries(entries, this.#blobStore);
+		this.#fileEntries = entries;
 		this.#resetResidentTextBlobStore();
 		this.#fileEntries = this.#fileEntries.map(entry =>
 			prepareEntryForResidentSync(entry, this.#residentBlobStores()),
@@ -7719,14 +7754,10 @@ export class SessionManager {
 		const dir = destination.directory;
 		const manager = new SessionManager(header.cwd || getProjectDir(), dir, true, storage, destination);
 		await manager.#hydrateExistingSession(sessionPath, entries, inspected.migrationApplied);
-		const ownershipInspection = inspectResumeSessionFile(sessionPath, storage);
-		if ("kind" in ownershipInspection) {
+		const ownershipInspection = revalidateResumeSessionIdentity(sessionPath, storage, inspected.identity);
+		if (ownershipInspection.kind === "error") {
 			await manager.close();
 			return ownershipInspection;
-		}
-		if (!sameResumeIdentity(inspected.identity, ownershipInspection.identity)) {
-			await manager.close();
-			return { kind: "error", reason: "identity-mismatch" };
 		}
 		try {
 			await manager.#sanitizeLoadedOpenAIResponsesReplayMetadataAndPersist();

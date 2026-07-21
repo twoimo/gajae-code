@@ -84,7 +84,7 @@ class FixedMtimeStorage extends WriteTrackingStorage {
 	}
 }
 
-class HandoffMutationStorage extends MemorySessionStorage {
+class PostHydrationDigestMutationStorage extends FixedMtimeStorage {
 	reads = 0;
 
 	constructor(private readonly replacement: string) {
@@ -94,7 +94,8 @@ class HandoffMutationStorage extends MemorySessionStorage {
 	override readSnapshotSync(filePath: string): SessionStorageSnapshot {
 		const snapshot = super.readSnapshotSync(filePath);
 		this.reads++;
-		if (this.reads === 2) queueMicrotask(() => super.writeTextSync(filePath, this.replacement));
+		if (this.reads === 2)
+			queueMicrotask(() => MemorySessionStorage.prototype.writeTextSync.call(this, filePath, this.replacement));
 		return snapshot;
 	}
 }
@@ -199,6 +200,26 @@ function sessionText(id: string, role: "user" | "assistant" = "user"): string {
 	return `${JSON.stringify(header)}\n${JSON.stringify(message)}\n`;
 }
 
+function sanitizableSessionText(id: string): string {
+	const header = { type: "session", id, timestamp: new Date(0).toISOString(), cwd: "/cwd", version: 5 };
+	const message = {
+		type: "message",
+		id: "message",
+		parentId: null,
+		timestamp: new Date(0).toISOString(),
+		message: {
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "stale reasoning", thinkingSignature: "stale-signature" }],
+			provider: "openai",
+			model: "test",
+			timestamp: 0,
+			providerPayload: { type: "openaiResponsesHistory", provider: "openai", items: [] },
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+		},
+	};
+	return `${JSON.stringify(header)}\n${JSON.stringify(message)}\n`;
+}
+
 describe("SessionManager read-only resume", () => {
 	it("keeps strict managed read resolution fail-closed on ACL verification failure", () => {
 		const root = makeTempDir();
@@ -249,6 +270,42 @@ describe("SessionManager read-only resume", () => {
 		if (opened.kind === "error") throw new Error("Expected strict open success");
 		expect(opened.manager.getSessionId()).toBe("session-a");
 		expect(storage.writes).toBe(0);
+	});
+
+	it("adopts strict inspection entries without cloning the hydrated transcript", async () => {
+		const storage = new WriteTrackingStorage();
+		const filePath = "/sessions/adopted.jsonl";
+		storage.writeTextSync(filePath, sessionText("session-a"));
+		const inspection = await SessionManager.inspectSessionTailReadOnly(filePath, storage);
+		if (inspection.kind === "error") throw new Error("Expected resumable inspection");
+
+		const clone = vi.spyOn(globalThis, "structuredClone");
+		const opened = await SessionManager.openExistingStrict(inspection.identity, "/sessions", storage);
+		expect(opened.kind).toBe("opened");
+		expect(clone).not.toHaveBeenCalled();
+		if (opened.kind === "opened") await opened.manager.close();
+	});
+	it("keeps adopted strict entries isolated from public entry aliases", async () => {
+		const storage = new WriteTrackingStorage();
+		const filePath = "/sessions/adopted-isolation.jsonl";
+		storage.writeTextSync(filePath, sessionText("session-a"));
+		const inspection = await SessionManager.inspectSessionTailReadOnly(filePath, storage);
+		if (inspection.kind === "error") throw new Error("Expected resumable inspection");
+
+		const opened = await SessionManager.openExistingStrict(inspection.identity, "/sessions", storage);
+		if (opened.kind === "error") throw new Error("Expected strict open");
+		const exposed = opened.manager.getEntries();
+		const message = exposed.find(entry => entry.type === "message");
+		if (message?.type !== "message" || !("content" in message.message))
+			throw new Error("Expected adopted message entry");
+		(message.message as { content: string }).content = "mutated public alias";
+
+		expect(opened.manager.getEntries().find(entry => entry.type === "message")).toMatchObject({
+			type: "message",
+			message: { content: "resume" },
+		});
+		expect(storage.readTextSync(filePath)).toBe(sessionText("session-a"));
+		await opened.manager.close();
 	});
 
 	it("opens an immutable v4 patch fixture with its final header and message state", async () => {
@@ -395,19 +452,51 @@ describe("SessionManager read-only resume", () => {
 		expect(storage.writes).toBe(0);
 	});
 
-	it("revalidates identity after async hydration before ownership", async () => {
+	it("rejects post-hydration same-identity byte mutations at the final SHA fence", async () => {
 		const filePath = "/sessions/handoff.jsonl";
-		const storage = new HandoffMutationStorage(sessionText("session-a", "assistant"));
-		storage.writeTextSync(filePath, sessionText("session-a"));
+		const original = sessionText("session-a");
+		const mutated = original.replace("resume", "resumf");
+		expect(mutated.length).toBe(original.length);
+		const storage = new PostHydrationDigestMutationStorage(mutated);
+		storage.writeTextSync(filePath, original);
 		const inspection = await SessionManager.inspectSessionTailReadOnly(filePath, storage);
 		if (inspection.kind === "error") throw new Error("Expected inspection identity");
+		const before = storage.statSync(filePath);
 
+		storage.writes = 0;
 		expectStrictFailure(
 			await SessionManager.openExistingStrict(inspection.identity, "/sessions", storage),
 			"identity-mismatch",
 		);
 		expect(storage.reads).toBe(3);
-		expect(storage.readTextSync(filePath)).toContain('"role":"assistant"');
+		expect(storage.statSync(filePath)).toMatchObject({
+			dev: before.dev,
+			ino: before.ino,
+			size: before.size,
+			mtimeMs: before.mtimeMs,
+			mtimeNs: before.mtimeNs,
+		});
+		expect(storage.readTextSync(filePath)).toBe(mutated);
+		expect(storage.writes).toBe(0);
+	});
+	it("does not sanitize or write a breadcrumb when final authority rejects sanitizable history", async () => {
+		const filePath = "/sessions/sanitizable-handoff.jsonl";
+		const original = sanitizableSessionText("session-a");
+		const replacement = original.replace("stale reasoning", "fresh reasoning");
+		expect(replacement.length).toBe(original.length);
+		const storage = new PostHydrationDigestMutationStorage(replacement);
+		storage.writeTextSync(filePath, original);
+		const inspection = await SessionManager.inspectSessionTailReadOnly(filePath, storage);
+		if (inspection.kind === "error") throw new Error("Expected inspection identity");
+
+		storage.writes = 0;
+		expectStrictFailure(
+			await SessionManager.openExistingStrict(inspection.identity, "/sessions", storage),
+			"identity-mismatch",
+		);
+		expect(storage.readTextSync(filePath)).toBe(replacement);
+		expect(storage.readTextSync(filePath)).toContain("stale-signature");
+		expect(storage.writes).toBe(0);
 	});
 
 	it("fails closed on invalid UTF-8 instead of parsing replacement text", async () => {
@@ -720,8 +809,8 @@ describe("readonly session artifact authority", () => {
 
 		expect("saveArtifact" in readonly).toBe(false);
 		const capability = sessionArtifactCapability(readonly);
-		expect(capability).toBeDefined();
-		const artifactId = await capability?.saveArtifact("full SDK tool output", "sdk-tool");
+		if (!capability) throw new Error("Expected artifact capability");
+		const artifactId = await capability.saveArtifact("full SDK tool output", "sdk-tool");
 		expect(artifactId).toBeDefined();
 		if (artifactId) {
 			const artifactPath = await manager.getArtifactPath(artifactId);
