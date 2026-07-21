@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.11.5] - 2026-07-20
 ### Changed
 - Telegram live-message streaming now defaults on for configured Telegram notifications through one durable global preference, supports live in-session preference refresh without weakening redaction, and keeps Discord and Slack finalized-only; process environment overrides remain available.
 - Telegram tool-activity updates can now be disabled persistently with `/toolactivity off` (and restored with `/toolactivity on`) or from the Notifications preferences UI, without disabling final answers, asks, or other notification delivery.

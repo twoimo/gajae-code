@@ -5426,7 +5426,12 @@ mod retained_broker_publication_tests {
 	}
 }
 
-#[cfg(all(test, unix))]
+// These tests pause exact_unlink at internal exchange hooks and block on
+// unbounded channel recvs; macOS renameatx_np(RENAME_SWAP) rejects the
+// file<->directory placeholder swap, so the hook is never reached and the
+// recv hangs the whole nextest run. The exchange protocol they verify is
+// only reachable in production through the Linux managed-session path.
+#[cfg(all(test, target_os = "linux"))]
 mod exact_unlink_placeholder_tests {
 	use std::{
 		fs,
