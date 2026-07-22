@@ -275,6 +275,8 @@ describe("model selector profile red-team", () => {
 	test("Browse all models switches to flat model rows", async () => {
 		const selector = createSelector(() => {});
 		await renderSelector(selector);
+		// Landing rows: [preset group, create custom preset, image generation, browse all models]
+		selector.handleInput("\x1b[B");
 		selector.handleInput("\x1b[B");
 		selector.handleInput("\x1b[B");
 		selector.handleInput("\n");
