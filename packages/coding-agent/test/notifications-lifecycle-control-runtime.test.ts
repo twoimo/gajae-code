@@ -25,7 +25,14 @@ import * as native from "@gajae-code/natives";
 import { getConfigRootDir, logger } from "@gajae-code/utils";
 import { Settings } from "../src/config/settings";
 import { tokenFingerprint } from "../src/sdk/bus/config";
-import { acquireDaemonOwnership, TelegramNotificationDaemon } from "../src/sdk/bus/telegram-daemon";
+import { exactUnlinkNotificationFile, readNotificationEndpointFile } from "../src/sdk/bus/notification-service";
+import {
+	acquireDaemonOwnership,
+	daemonPaths,
+	type TelegramDaemonFs,
+	TelegramNotificationDaemon,
+} from "../src/sdk/bus/telegram-daemon";
+
 import {
 	prepareManagedSessionScopeForWriteSync,
 	resolveManagedScope,
@@ -198,21 +205,28 @@ function immediateTimeout(): typeof setTimeout {
 }
 
 async function startAsOwner(settings: Settings, ownerId: string, botToken: string): Promise<void> {
-	await acquireDaemonOwnership({
+	const acquisition = await acquireDaemonOwnership({
 		settings,
 		tokenFingerprint: tokenFingerprint(botToken),
 		chatId: PAIRED,
 		pid: process.pid,
 		randomId: () => ownerId,
 	});
+	if (!acquisition.acquired) throw new Error(`ownership acquisition failed: ${JSON.stringify(acquisition)}`);
+	const paths = daemonPaths(settings.getAgentDir());
+	const state = JSON.parse(fs.readFileSync(paths.state, "utf8")) as { ownershipPhase: string };
+	state.ownershipPhase = "ready";
+	fs.writeFileSync(paths.state, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+	fs.rmSync(paths.steal, { force: true });
 }
 
 it("passes the daemon-derived audit key through real lifecycle startup without a fallback", async () => {
 	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-daemon-audit-key-"));
 	const settings = daemonSettings(agentDir);
-	await startAsOwner(settings, "audit-key-owner", "bot-token");
+	await startAsOwner(settings, "audit-key-owner", "123456:secret-token");
 
 	let capturedKey: Uint8Array | undefined;
+	const startupOrder: string[] = [];
 	let registered = 0;
 	const factory: LifecycleControlServerFactory = () =>
 		({
@@ -226,9 +240,14 @@ it("passes the daemon-derived audit key through real lifecycle startup without a
 	const daemon = new TelegramNotificationDaemon({
 		settings,
 		ownerId: "audit-key-owner",
-		botToken: "bot-token",
+		botToken: "123456:secret-token",
 		chatId: PAIRED,
-		botApi: { call: async () => ({ ok: true, result: [] }) } as never,
+		botApi: {
+			call: async (method: string) => {
+				startupOrder.push(`bot:${method}`);
+				return { ok: true, result: [] };
+			},
+		} as never,
 		idleTimeoutMs: 10,
 		now: (() => {
 			let now = 0;
@@ -237,6 +256,7 @@ it("passes the daemon-derived audit key through real lifecycle startup without a
 		setTimeoutImpl: immediateTimeout(),
 		createLifecycleControlServer: factory,
 		createLifecycleOrchestratorDeps: input => {
+			startupOrder.push("lifecycle-deps");
 			capturedKey = input.auditRedactionKey;
 			return { ...stubDeps(), auditRedactionKey: input.auditRedactionKey };
 		},
@@ -245,20 +265,21 @@ it("passes the daemon-derived audit key through real lifecycle startup without a
 	await daemon.run();
 
 	expect(Buffer.from(capturedKey ?? []).toString("hex")).toBe(
-		"03936c8324cc679ecdc4bca97b2a88acaedf993ec45a8e6b3196033a6f9727a6",
+		"ff2063f913d83ae42436a9e33c8bdd86ae77006c5a3fe4980dc7062ba4d95aca",
 	);
+	expect(startupOrder[0]).toBe("lifecycle-deps");
 	expect(registered).toBe(1);
 });
 
-it("does not attach lifecycle audit dependencies or fall back when daemon key derivation has no token", async () => {
-	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-daemon-missing-audit-key-"));
+it("rejects a whitespace-only token before lifecycle, timer, or Bot API activity", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-daemon-whitespace-token-"));
 	const settings = daemonSettings(agentDir);
-	await startAsOwner(settings, "missing-audit-key-owner", "bot-token");
-
 	let dependenciesBuilt = 0;
 	let registered = 0;
 	let started = 0;
 	let stopped = 0;
+	let intervalsStarted = 0;
+	let apiCalls = 0;
 	const factory: LifecycleControlServerFactory = () =>
 		({
 			onLifecycleRequest: () => {
@@ -274,16 +295,19 @@ it("does not attach lifecycle audit dependencies or fall back when daemon key de
 		}) as LifecycleControlServer;
 	const daemon = new TelegramNotificationDaemon({
 		settings,
-		ownerId: "missing-audit-key-owner",
-		botToken: undefined as unknown as string,
+		ownerId: "whitespace-token-owner",
+		botToken: " \t\n ",
 		chatId: PAIRED,
-		botApi: { call: async () => ({ ok: true, result: [] }) } as never,
-		idleTimeoutMs: 10,
-		now: (() => {
-			let now = 0;
-			return () => (now += 11);
-		})(),
-		setTimeoutImpl: immediateTimeout(),
+		botApi: {
+			call: async () => {
+				apiCalls++;
+				return { ok: true, result: [] };
+			},
+		} as never,
+		setIntervalImpl: ((..._args: unknown[]) => {
+			intervalsStarted++;
+			return 0;
+		}) as unknown as typeof setInterval,
 		createLifecycleControlServer: factory,
 		createLifecycleOrchestratorDeps: () => {
 			dependenciesBuilt++;
@@ -293,7 +317,196 @@ it("does not attach lifecycle audit dependencies or fall back when daemon key de
 
 	await daemon.run();
 
-	expect([dependenciesBuilt, registered, started, stopped]).toEqual([0, 0, 0, 1]);
+	expect([dependenciesBuilt, registered, started, stopped, intervalsStarted, apiCalls]).toEqual([0, 0, 0, 0, 0, 0]);
+});
+
+it("does not resume daemon startup after stop during deferred lifecycle startup", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-daemon-lifecycle-stop-"));
+	const settings = daemonSettings(agentDir);
+	await startAsOwner(settings, "lifecycle-stop-owner", "123456:secret-token");
+	const lifecycleStarted = Promise.withResolvers<void>();
+	const releaseLifecycleStart = Promise.withResolvers<void>();
+	let registered = 0;
+	let stopped = 0;
+	let intervalsStarted = 0;
+	let apiCalls = 0;
+	let controlsCleared = 0;
+
+	const factory: LifecycleControlServerFactory = () =>
+		({
+			onLifecycleRequest: () => {
+				registered++;
+			},
+			respond: () => {},
+			start: async () => {
+				lifecycleStarted.resolve();
+				await releaseLifecycleStart.promise;
+			},
+			stop: () => {
+				stopped++;
+			},
+		}) as LifecycleControlServer;
+	const daemon = new TelegramNotificationDaemon({
+		settings,
+		ownerId: "lifecycle-stop-owner",
+		botToken: "123456:secret-token",
+		chatId: PAIRED,
+		botApi: {
+			call: async () => {
+				apiCalls++;
+				return { ok: true, result: [] };
+			},
+		} as never,
+		setIntervalImpl: ((..._args: unknown[]) => {
+			intervalsStarted++;
+			return 0;
+		}) as unknown as typeof setInterval,
+		createLifecycleControlServer: factory,
+		createLifecycleOrchestratorDeps: () => stubDeps(),
+		control: {
+			shouldStop: async () => false,
+			clear: async () => {
+				controlsCleared++;
+			},
+		},
+	});
+
+	const run = daemon.run();
+	await lifecycleStarted.promise;
+	daemon.requestStop();
+	releaseLifecycleStart.resolve();
+	await run;
+
+	expect([registered, stopped, intervalsStarted, apiCalls, controlsCleared]).toEqual([1, 1, 0, 0, 1]);
+	const paths = daemonPaths(agentDir);
+	const state = JSON.parse(fs.readFileSync(paths.state, "utf8")) as { stoppedAt?: number };
+	expect(state.stoppedAt).toEqual(expect.any(Number));
+	expect(fs.existsSync(paths.lock)).toBe(false);
+});
+
+it("does not restore running state after stop during deferred initial heartbeat renewal", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-daemon-renewal-stop-"));
+	const settings = daemonSettings(agentDir);
+	await startAsOwner(settings, "renewal-stop-owner", "123456:secret-token");
+	const renewalStarted = Promise.withResolvers<void>();
+	const releaseRenewal = Promise.withResolvers<void>();
+	let delayStateRead = true;
+	let lifecycleFactories = 0;
+	let intervalsStarted = 0;
+	let apiCalls = 0;
+	const paths = daemonPaths(agentDir);
+
+	const daemonFs: TelegramDaemonFs = {
+		mkdir: async (directory, opts) => {
+			await fs.promises.mkdir(directory, opts);
+		},
+		readFile: async (file, encoding) => {
+			if (delayStateRead && file === paths.state) {
+				delayStateRead = false;
+				renewalStarted.resolve();
+				await releaseRenewal.promise;
+			}
+			return await fs.promises.readFile(file, encoding);
+		},
+		writeFile: fs.promises.writeFile.bind(fs.promises),
+		rename: fs.promises.rename.bind(fs.promises),
+		unlink: fs.promises.unlink.bind(fs.promises),
+		open: fs.promises.open.bind(fs.promises),
+		readdir: async file => await fs.promises.readdir(file),
+		chmod: fs.promises.chmod.bind(fs.promises),
+		stat: fs.promises.stat.bind(fs.promises),
+		readEndpointFile: readNotificationEndpointFile,
+		exactUnlink: async (file, identity) =>
+			await exactUnlinkNotificationFile(file, identity, ".gjc-test-daemon-transition.json"),
+	};
+	const daemon = new TelegramNotificationDaemon({
+		settings,
+		ownerId: "renewal-stop-owner",
+		botToken: "123456:secret-token",
+		chatId: PAIRED,
+		fs: daemonFs,
+		botApi: {
+			call: async () => {
+				apiCalls++;
+				return { ok: true, result: [] };
+			},
+		} as never,
+		setIntervalImpl: ((..._args: unknown[]) => {
+			intervalsStarted++;
+			return 0;
+		}) as unknown as typeof setInterval,
+		createLifecycleControlServer: () => {
+			lifecycleFactories++;
+			return {
+				onLifecycleRequest: () => {},
+				respond: () => {},
+				start: async () => {},
+				stop: () => {},
+			} as LifecycleControlServer;
+		},
+		createLifecycleOrchestratorDeps: () => stubDeps(),
+	});
+	const run = daemon.run();
+	await renewalStarted.promise;
+	daemon.requestStop();
+	releaseRenewal.resolve();
+	await run;
+
+	expect([lifecycleFactories, intervalsStarted, apiCalls]).toEqual([0, 0, 0]);
+});
+
+it("does not clean up foreign durable state when initial heartbeat renewal rejects ownership", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-daemon-foreign-renewal-"));
+	const settings = daemonSettings(agentDir);
+	await startAsOwner(settings, "foreign-owner", "123456:secret-token");
+	const paths = daemonPaths(agentDir);
+	const durableFiles = [paths.aliases, path.join(paths.dir, "telegram-topics.json"), paths.seenUpdates];
+	const contents = ['{"version":1,"aliases":{}}\n', '{"version":1,"topics":{}}\n', '{"version":1,"updateIds":[42]}\n'];
+	for (let index = 0; index < durableFiles.length; index++)
+		fs.writeFileSync(durableFiles[index]!, contents[index]!, { mode: 0o600 });
+
+	let stateReads = 0;
+	const daemonFs: TelegramDaemonFs = {
+		mkdir: async (directory, opts) => {
+			await fs.promises.mkdir(directory, opts);
+		},
+		readFile: async (file, encoding) => {
+			if (file === paths.state) stateReads++;
+			return await fs.promises.readFile(file, encoding);
+		},
+		writeFile: fs.promises.writeFile.bind(fs.promises),
+		rename: fs.promises.rename.bind(fs.promises),
+		unlink: fs.promises.unlink.bind(fs.promises),
+		open: fs.promises.open.bind(fs.promises),
+		readdir: async file => await fs.promises.readdir(file),
+		chmod: fs.promises.chmod.bind(fs.promises),
+		readEndpointFile: readNotificationEndpointFile,
+		exactUnlink: async (file, identity) =>
+			await exactUnlinkNotificationFile(file, identity, ".gjc-test-daemon-transition.json"),
+	};
+
+	let controlsCleared = 0;
+	const daemon = new TelegramNotificationDaemon({
+		settings,
+		ownerId: "contending-owner",
+		botToken: "123456:secret-token",
+		chatId: PAIRED,
+		fs: daemonFs,
+		botApi: { call: async () => ({ ok: true, result: [] }) } as never,
+		control: {
+			shouldStop: async () => false,
+			clear: async () => {
+				controlsCleared++;
+			},
+		},
+	});
+
+	await daemon.run();
+
+	expect(durableFiles.map(file => fs.readFileSync(file, "utf8"))).toEqual(contents);
+	expect(controlsCleared).toBe(0);
+	expect(stateReads).toBe(1);
+	expect(fs.existsSync(paths.lock)).toBe(true);
 });
 
 describe("lifecycle control runtime", () => {

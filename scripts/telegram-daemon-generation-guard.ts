@@ -8,7 +8,7 @@ import * as path from "node:path";
 
 const root = path.join(import.meta.dir, "..");
 const SHA = /^[0-9a-f]{40}$/i;
-export const GUARD_CONTRACT_VERSION = 19;
+export const GUARD_CONTRACT_VERSION = 20;
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
 const telegramDaemon = "packages/coding-agent/src/sdk/bus/telegram-daemon.ts";
 const chatControl = "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts";
@@ -42,7 +42,7 @@ type GuardManifest = {
  * endpoint or provider generations: they do not replace daemon owners.
  */
 export const protectedInventory = manifest.inventory as Inventory;
-const PROTECTED_INVENTORY_SHA256 = "c4afe2731edb029ea970dd57d2ba57bd1393bc296e0c223da372d7f457c68ee2";
+const PROTECTED_INVENTORY_SHA256 = "ce4a074f34c7f455be235a3c01b10a3ff45e1ba0936c6c5e16ffa6d1db1c8cd8";
 
 /** Transition-marker generations fence every daemon lifecycle mutation. */
 export const TRANSITION_TOKEN_PROTECTED_DECLARATIONS = [
@@ -69,6 +69,9 @@ export const TELEGRAM_OWNER_LOCK_PROTECTED_DECLARATIONS = [
 	"rebindOwnershipLock",
 	"rollbackOwnershipLockRebind",
 ] as const;
+
+/** Telegram authentication and lifecycle control must remain generation-fenced. */
+export const TELEGRAM_LIFECYCLE_PROTECTED_DECLARATIONS = ["validBotToken", "requestStop", "startLifecycleControl", "run"] as const;
 
 /** Chat daemon CLI helpers determine whether a prior owner can be replaced. */
 export const CHAT_CLI_PROTECTED_DECLARATIONS = ["defaultPidAlive", "loadConfig", "ownerPid"] as const;
@@ -131,6 +134,12 @@ function validateTelegramOwnerLockInventory(inventory: Inventory): void {
 		throw new Error("telegram-daemon-generation-guard: Telegram owner-lock handoff primitives must be protected by the Telegram generation contract");
 }
 
+function validateTelegramLifecycleInventory(inventory: Inventory): void {
+	const symbols = inventory.telegram[telegramDaemon];
+	if (!symbols || TELEGRAM_LIFECYCLE_PROTECTED_DECLARATIONS.some(symbol => !symbols.includes(symbol)))
+		throw new Error("telegram-daemon-generation-guard: Telegram authentication and lifecycle primitives must be protected by the Telegram generation contract");
+}
+
 function validateTransitionTokenInventory(inventory: Inventory): void {
 	const symbols = inventory.telegram["packages/coding-agent/src/sdk/bus/notification-service.ts"];
 	if (!symbols || TRANSITION_TOKEN_PROTECTED_DECLARATIONS.some(symbol => !symbols.includes(symbol)))
@@ -144,7 +153,7 @@ function inventoryHash(inventory: Inventory): string {
 }
 
 export function validateInventory(inventory: Inventory = protectedInventory): void {
-	if (GUARD_CONTRACT_VERSION !== 19) throw new Error("telegram-daemon-generation-guard: unsupported guard contract version");
+	if (GUARD_CONTRACT_VERSION !== 20) throw new Error("telegram-daemon-generation-guard: unsupported guard contract version");
 	for (const [family, files] of Object.entries(inventory)) {
 		for (const [file, symbols] of Object.entries(files)) {
 			if (!file || symbols.length === 0 || new Set(symbols).size !== symbols.length)
@@ -153,6 +162,7 @@ export function validateInventory(inventory: Inventory = protectedInventory): vo
 	}
 	validateTransitionTokenInventory(inventory);
 	validateTelegramOwnerLockInventory(inventory);
+	validateTelegramLifecycleInventory(inventory);
 	validateChatOwnerLockInventory(inventory);
 	validateChatCliInventory(inventory);
 	validateChatConfigInventory(inventory);

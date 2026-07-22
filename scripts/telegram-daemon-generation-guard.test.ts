@@ -427,11 +427,16 @@ test("requires mapped generation bumps for Telegram lease, chat CLI, and configu
 		delete moved.telegram[telegramContract];
 		expect(() => validateManifest({ contractVersion: GUARD_CONTRACT_VERSION, inventory: moved })).toThrow("does not match the protected inventory");
 		const narrowed = mutableInventory();
-		narrowed.telegram[telegramDaemon]!.pop();
+		narrowed.telegram[telegramDaemon] = narrowed.telegram[telegramDaemon]!.filter(name => name !== "writeJsonAtomic");
 		expect(() => validateManifest({ contractVersion: GUARD_CONTRACT_VERSION, inventory: narrowed })).toThrow("Telegram owner-lock handoff primitives");
 	});
 
-	test("rejects inventories missing required Telegram lease, chat CLI, or provider configuration authorities", () => {
+	test("rejects inventories missing required Telegram lifecycle, lease, chat CLI, or provider configuration authorities", () => {
+		for (const symbol of ["validBotToken", "requestStop", "startLifecycleControl", "run"] as const) {
+			const telegram = mutableInventory();
+			telegram.telegram[telegramDaemon] = telegram.telegram[telegramDaemon]!.filter(name => name !== symbol);
+			expect(() => validateInventory(telegram)).toThrow("Telegram authentication and lifecycle primitives");
+		}
 		const telegram = mutableInventory();
 		telegram.telegram[telegramDaemon] = telegram.telegram[telegramDaemon]!.filter(name => name !== "writeJsonAtomic");
 		expect(() => validateInventory(telegram)).toThrow("Telegram owner-lock handoff primitives");
@@ -461,6 +466,10 @@ test("requires mapped generation bumps for Telegram lease, chat CLI, and configu
 				"waitForTelegramDaemonReady",
 				"hasSafeDaemonStateShape",
 				"isPhysicalMatchingOwner",
+				"validBotToken",
+				"requestStop",
+				"startLifecycleControl",
+				"run",
 				"writeJsonAtomic",
 				"ownershipLockMatchesState",
 				"ownershipLockMatchesMetadata",

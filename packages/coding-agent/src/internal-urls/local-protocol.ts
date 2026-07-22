@@ -169,6 +169,26 @@ async function snapshotDirectory(directoryPath: string, relativePath: string): P
 	return { relativePath, dev: stat.dev, ino: stat.ino, size: stat.size };
 }
 
+interface CanonicalLegacyRoot {
+	readonly root: string;
+	readonly identity: LegacyEntrySnapshot;
+}
+
+async function canonicalLegacyRoot(artifactsDir: string): Promise<CanonicalLegacyRoot> {
+	const lexicalRoot = path.resolve(artifactsDir, "local");
+	const lexicalIdentity = await snapshotDirectory(lexicalRoot, "");
+	const [canonicalArtifactsDir, canonicalRoot] = await Promise.all([
+		fs.realpath(path.resolve(artifactsDir)),
+		fs.realpath(lexicalRoot),
+	]);
+	if (canonicalRoot === canonicalArtifactsDir) throw new Error("Unsafe legacy local:// migration source");
+	ensureWithinRoot(canonicalRoot, canonicalArtifactsDir);
+	const canonicalIdentity = await snapshotDirectory(canonicalRoot, "");
+	if (!matchesSnapshot(canonicalIdentity, lexicalIdentity))
+		throw new Error("Legacy local:// migration source changed during capture");
+	return { root: canonicalRoot, identity: lexicalIdentity };
+}
+
 async function snapshotRegularFile(filePath: string, relativePath: string): Promise<LegacyEntrySnapshot> {
 	const before = await fs.lstat(filePath, { bigint: true });
 	if (!before.isFile() || before.isSymbolicLink()) throw new Error("Unsafe legacy local:// migration source");
@@ -202,11 +222,16 @@ function manifestsMatch(left: readonly LegacyEntrySnapshot[], right: readonly Le
 	);
 }
 
-async function captureLegacyManifest(root: string): Promise<readonly LegacyEntrySnapshot[]> {
+async function captureLegacyManifest(
+	root: string,
+	expectedRootIdentity: LegacyEntrySnapshot,
+): Promise<readonly LegacyEntrySnapshot[]> {
 	const manifest: LegacyEntrySnapshot[] = [];
 	let copiedBytes = 0n;
 	const captureDirectory = async (directoryPath: string, relativePath: string): Promise<void> => {
 		const directory = await snapshotDirectory(directoryPath, relativePath);
+		if (relativePath === "" && !matchesSnapshot(directory, expectedRootIdentity))
+			throw new Error("Legacy local:// migration source changed during capture");
 		manifest.push(directory);
 		const entries = (await fs.readdir(directoryPath, { withFileTypes: true })).sort((a, b) =>
 			a.name.localeCompare(b.name),
@@ -384,10 +409,11 @@ async function migrateLegacyLocal(
 		await fs.writeFile(marker, "absent\n", { mode: 0o600, flag: "wx" });
 		return;
 	}
-	const legacyRoot = path.resolve(artifactsDir, "local");
+	let legacySource: CanonicalLegacyRoot;
 	let manifest: readonly LegacyEntrySnapshot[];
 	try {
-		manifest = await captureLegacyManifest(legacyRoot);
+		legacySource = await canonicalLegacyRoot(artifactsDir);
+		manifest = await captureLegacyManifest(legacySource.root, legacySource.identity);
 	} catch (error) {
 		if (isEnoent(error)) {
 			await fs.writeFile(marker, "absent\n", { mode: 0o600, flag: "wx" });
@@ -397,8 +423,8 @@ async function migrateLegacyLocal(
 	}
 	const staging = path.join(scratchParent, `.gjc-local-migration-${randomUUID()}`);
 	try {
-		await copyLegacyManifest(legacyRoot, staging, manifest);
-		const verifiedManifest = await captureLegacyManifest(legacyRoot);
+		await copyLegacyManifest(legacySource.root, staging, manifest);
+		const verifiedManifest = await captureLegacyManifest(legacySource.root, legacySource.identity);
 		if (!manifestsMatch(verifiedManifest, manifest))
 			throw new Error("Legacy local:// migration source changed during capture");
 		for (const entry of await fs.readdir(staging)) {
@@ -410,7 +436,7 @@ async function migrateLegacyLocal(
 			}
 			await fs.rename(path.join(staging, entry), path.join(localRoot, entry));
 		}
-		await retireLegacyTree(legacyRoot, manifest);
+		await retireLegacyTree(legacySource.root, manifest);
 		await fs.writeFile(marker, "verified\n", { mode: 0o600, flag: "wx" });
 	} finally {
 		await fs.rm(staging, { recursive: true, force: true });

@@ -871,7 +871,7 @@ function notificationRootForCwd(cwd: string): string {
 }
 
 function validBotToken(token: unknown): token is string {
-	return typeof token === "string" && token.length > 0;
+	return typeof token === "string" && token.trim().length > 0;
 }
 
 function isExplicitlyStoppedDaemonState(state: unknown): state is DaemonState {
@@ -2956,6 +2956,9 @@ export class TelegramNotificationDaemon {
 	private readonly pollConflictBackoff = new OperatorBackoffPolicy({ initialMs: 500, maxMs: 5_000 });
 	private readonly loopBackoff = new OperatorBackoffPolicy({ initialMs: 250, maxMs: 4_000 });
 	private running = false;
+	/** Once set, a concurrent startup await can never restore a running daemon. */
+	private stopRequested = false;
+
 	private readonly fsImpl: TelegramDaemonFs;
 	private readonly botApi: BotApi;
 	private readonly effects = new TelegramEffectSupervisor();
@@ -3073,6 +3076,8 @@ export class TelegramNotificationDaemon {
 	 * ~25s getUpdates timeout. Safe to call from a signal handler.
 	 */
 	requestStop(_reason?: "reload" | "stop" | "signal"): void {
+		this.stopRequested = true;
+
 		const toolShutdown = this.beginToolActivityShutdown();
 		void toolShutdown
 			.finally(() => {
@@ -7793,31 +7798,38 @@ export class TelegramNotificationDaemon {
 	}
 
 	async run(): Promise<void> {
-		// Runtime callers can bypass TypeScript's option type. Do not derive an
-		// ownership identity from absent credentials; lifecycle startup still owns
-		// cleanup of a factory-created server on this fail-closed path.
-		if (!validBotToken(this.opts.botToken)) {
-			await this.startLifecycleControl();
-			return;
-		}
-		this.running = await renewDaemonHeartbeat({
-			settings: this.opts.settings,
-			ownerId: this.opts.ownerId,
-			acquisitionId: this.opts.ownerId,
-			tokenFingerprint: tokenFingerprint(this.opts.botToken),
-			chatId: this.opts.chatId,
-			fs: this.fsImpl,
-			now: this.opts.now,
-			pid: this.opts.pid ?? process.pid,
-			pidIncarnation: this.opts.pidIncarnation,
-		});
-		if (!this.running) return;
-		this.runtime.start();
-		this.startOwnershipHeartbeatTimer();
-		this.startFlushTimer();
-		this.startScanTimer();
-		this.startTypingTimer();
+		// Runtime callers can bypass TypeScript's option type. Without a valid bot
+		// token, there is no authenticated daemon identity or lifecycle authority.
+		if (!validBotToken(this.opts.botToken)) return;
+		let ownershipProved = false;
 		try {
+			const renewed = await renewDaemonHeartbeat({
+				settings: this.opts.settings,
+				ownerId: this.opts.ownerId,
+				acquisitionId: this.opts.ownerId,
+				tokenFingerprint: tokenFingerprint(this.opts.botToken),
+				chatId: this.opts.chatId,
+				fs: this.fsImpl,
+				now: this.opts.now,
+				pid: this.opts.pid ?? process.pid,
+				pidIncarnation: this.opts.pidIncarnation,
+			});
+			if (!renewed) return;
+			ownershipProved = true;
+			this.running = !this.stopRequested;
+			if (!this.running) return;
+			// Owner-only: start lifecycle control immediately after ownership proof,
+			// before timers or pre-poll startup work can invalidate this run.
+			// Best-effort; notification delivery remains available on failure.
+			await this.startLifecycleControl();
+			// A stop may arrive while lifecycle startup awaits its control endpoint.
+			// Do not re-enable runtime work after that stop; close the partial server.
+			if (!this.running) return;
+			this.runtime.start();
+			this.startOwnershipHeartbeatTimer();
+			this.startFlushTimer();
+			this.startScanTimer();
+			this.startTypingTimer();
 			await this.refreshBotIdentity();
 			await this.registerBotCommands();
 			await this.loadAliases();
@@ -7825,9 +7837,6 @@ export class TelegramNotificationDaemon {
 			await this.loadSeenUpdateIds();
 			await this.replyStore.load();
 			await this.runScan();
-			// Owner-only: start the session-lifecycle control server now that
-			// ownership is confirmed (singleton-safe). Best-effort; degrades.
-			await this.startLifecycleControl();
 			let idleSince = this.runtime.now();
 			while (this.running) {
 				if (await this.controlStopRequested()) break;
@@ -7879,61 +7888,64 @@ export class TelegramNotificationDaemon {
 				await this.runtime.sleep(10);
 			}
 		} finally {
-			let toolShutdownError: unknown;
-			try {
-				await this.beginToolActivityShutdown();
-			} catch (error) {
-				toolShutdownError = error;
-			}
-			this.effects.beginShutdown();
-			this.#deliveryAbort.abort();
-			let persisted = false;
-			const shutdown = this.effects.allowTerminal(async () => {
-				if (toolShutdownError) throw toolShutdownError;
-				await this.#drainBtwTurns();
-				await this.toolTerminalizationChain;
-				this.runtime.stop();
-				this.stopOwnershipHeartbeatTimer();
-				this.stopFlushTimer();
-				this.stopScanTimer();
-				this.stopTypingTimer();
-				this.stopLifecycleControl();
-				await this.cleanupAllAttachmentDirs();
-				await this.persistAliases();
-				await this.persistTopics();
-				await this.persistSeenUpdateIds();
-				await this.opts.control?.clear?.(this.opts.ownerId);
-				persisted = true;
-			});
-			const deadline = Promise.withResolvers<boolean>();
-			const deadlineTimer = setTimeout(() => deadline.resolve(false), BTW_SHUTDOWN_JOIN_MS);
-			const completed = await Promise.race([
-				shutdown.then(
-					() => true,
-					error => {
-						logger.warn(`notifications: shutdown persistence failed: ${sanitizeDiagnostic(String(error))}`);
-						return false;
-					},
-				),
-				deadline.promise,
-			]);
-			clearTimeout(deadlineTimer);
-			const quiesced = completed && (await this.effects.join(BTW_SHUTDOWN_JOIN_MS));
-			if (!quiesced || !persisted) {
-				logger.warn("notifications: shutdown was not durably quiesced; retaining daemon ownership");
-			} else {
-				await releaseDaemonOwnership({
-					settings: this.opts.settings,
-					ownerId: this.opts.ownerId,
-					acquisitionId: this.opts.ownerId,
-					tokenFingerprint: tokenFingerprint(this.opts.botToken),
-					chatId: this.opts.chatId,
-					pid: this.opts.pid ?? process.pid,
-					generation: DAEMON_GENERATION,
-					pidIncarnation: this.opts.pidIncarnation,
-					fs: this.fsImpl,
-					now: this.opts.now,
+			// A contender must not mutate durable owner state while unwinding startup.
+			if (ownershipProved) {
+				let toolShutdownError: unknown;
+				try {
+					await this.beginToolActivityShutdown();
+				} catch (error) {
+					toolShutdownError = error;
+				}
+				this.effects.beginShutdown();
+				this.#deliveryAbort.abort();
+				let persisted = false;
+				const shutdown = this.effects.allowTerminal(async () => {
+					if (toolShutdownError) throw toolShutdownError;
+					await this.#drainBtwTurns();
+					await this.toolTerminalizationChain;
+					this.runtime.stop();
+					this.stopOwnershipHeartbeatTimer();
+					this.stopFlushTimer();
+					this.stopScanTimer();
+					this.stopTypingTimer();
+					this.stopLifecycleControl();
+					await this.cleanupAllAttachmentDirs();
+					await this.persistAliases();
+					await this.persistTopics();
+					await this.persistSeenUpdateIds();
+					await this.opts.control?.clear?.(this.opts.ownerId);
+					persisted = true;
 				});
+				const deadline = Promise.withResolvers<boolean>();
+				const deadlineTimer = setTimeout(() => deadline.resolve(false), BTW_SHUTDOWN_JOIN_MS);
+				const completed = await Promise.race([
+					shutdown.then(
+						() => true,
+						error => {
+							logger.warn(`notifications: shutdown persistence failed: ${sanitizeDiagnostic(String(error))}`);
+							return false;
+						},
+					),
+					deadline.promise,
+				]);
+				clearTimeout(deadlineTimer);
+				const quiesced = completed && (await this.effects.join(BTW_SHUTDOWN_JOIN_MS));
+				if (!quiesced || !persisted) {
+					logger.warn("notifications: shutdown was not durably quiesced; retaining daemon ownership");
+				} else {
+					await releaseDaemonOwnership({
+						settings: this.opts.settings,
+						ownerId: this.opts.ownerId,
+						acquisitionId: this.opts.ownerId,
+						tokenFingerprint: tokenFingerprint(this.opts.botToken),
+						chatId: this.opts.chatId,
+						pid: this.opts.pid ?? process.pid,
+						generation: DAEMON_GENERATION,
+						pidIncarnation: this.opts.pidIncarnation,
+						fs: this.fsImpl,
+						now: this.opts.now,
+					});
+				}
 			}
 		}
 	}

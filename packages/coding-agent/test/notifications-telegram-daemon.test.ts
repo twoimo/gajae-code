@@ -2120,9 +2120,9 @@ describe("telegram daemon", () => {
 			}),
 		);
 	}
-	test("keeps wire protocol 3 while Windows ACL and stale startup recovery use generation 17", () => {
+	test("keeps wire protocol 3 while topic recovery, blank-token validation, and lifecycle stop fencing use generation 18", () => {
 		expect(NOTIFICATION_PROTOCOL_VERSION).toBe(3);
-		expect(DAEMON_GENERATION).toBe(17);
+		expect(DAEMON_GENERATION).toBe(18);
 	});
 
 	test("#2028 acquire flags a reload for a live pre-upgrade owner missing the generation field", async () => {
