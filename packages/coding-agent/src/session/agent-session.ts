@@ -252,6 +252,7 @@ import {
 	sessionStateDir,
 } from "../gjc-runtime/session-layout";
 import {
+	ownerTerminalContextFromEnvironment,
 	persistCoordinatorRuntimeStateFromEvent,
 	registerCoordinatorRuntimeStateFinalizer,
 } from "../gjc-runtime/session-state-sidecar";
@@ -5127,7 +5128,7 @@ export class AgentSession {
 		// No-op when this session opened no tabs. Failure is logged, not thrown.
 		this.#unregisterResourceGc?.();
 		this.#unregisterResourceGc = undefined;
-		this.#unregisterRuntimeStateFinalizer?.();
+		if (ownerTerminalContextFromEnvironment() === null) this.#unregisterRuntimeStateFinalizer?.();
 		this.#unregisterRuntimeStateFinalizer = undefined;
 		await releaseTabsForOwner(this.sessionManager.getSessionId()).catch((error: unknown) =>
 			logger.warn("session dispose: releaseTabsForOwner failed", { error }),

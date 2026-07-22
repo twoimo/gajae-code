@@ -27,7 +27,8 @@ export const NOTIFICATION_PROTOCOL_VERSION = 3;
  * ACL verification and repair in generation 15, identity-fenced stale endpoint
  * startup recovery in generation 16, Telegram topic recovery authority fencing
  * in generation 17, fail-closed blank-token validation plus lifecycle-startup
- * stop fencing in generation 18, and recommended ask metadata rendering in
- * generation 19.
+ * stop fencing in generation 18, recommended ask metadata rendering in
+ * generation 19, and authoritative terminal session-close delivery and cleanup
+ * fencing in generation 20.
  */
-export const DAEMON_GENERATION = 19;
+export const DAEMON_GENERATION = 20;

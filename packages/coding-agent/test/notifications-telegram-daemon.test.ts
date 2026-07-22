@@ -2120,9 +2120,9 @@ describe("telegram daemon", () => {
 			}),
 		);
 	}
-	test("keeps wire protocol 3 while recommended ask rendering uses generation 19", () => {
+	test("keeps wire protocol 3 while terminal session-close delivery uses generation 20", () => {
 		expect(NOTIFICATION_PROTOCOL_VERSION).toBe(3);
-		expect(DAEMON_GENERATION).toBe(19);
+		expect(DAEMON_GENERATION).toBe(20);
 	});
 
 	test("#2028 acquire flags a reload for a live pre-upgrade owner missing the generation field", async () => {

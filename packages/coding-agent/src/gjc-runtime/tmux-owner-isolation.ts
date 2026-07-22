@@ -1646,7 +1646,8 @@ export function isValidOwnerIntent(intent: unknown, request?: ObserveTerminalReq
 		intent.generation === request.owner_generation &&
 		intent.session_id === request.session_id &&
 		intent.server_key === request.socket_key &&
-		(request.operator_dispatch_id === undefined || intent.dispatch_id === request.operator_dispatch_id) &&
+		request.operator_dispatch_id !== undefined &&
+		intent.dispatch_id === request.operator_dispatch_id &&
 		request.signal === "SIGTERM"
 	);
 }

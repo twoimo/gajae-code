@@ -1031,6 +1031,14 @@ function pushSessionFrame(
 	runtime.server.pushFrame(JSON.stringify(frame));
 }
 
+async function pushTerminalSessionFrame(
+	runtime: Pick<SessionRuntime, "server" | "host">,
+	frame: { type: "session_closed"; sessionId: string },
+): Promise<boolean> {
+	runtime.host.emitEvent({ kind: frame.type, payload: frame });
+	return await runtime.server.pushFrameAndWait(JSON.stringify(frame), 1_000);
+}
+
 function pushFileAttachment(
 	runtime: Pick<SessionRuntime, "server" | "host">,
 	frame: { type: "file_attachment"; sessionId: string; name: string; mime?: string; caption?: string },
@@ -2852,7 +2860,6 @@ export function createNotificationsExtension(
 		"session.branch",
 	]);
 	const sessionId = (ctx: ExtensionContext): string => ctx.sessionManager.getSessionId();
-	const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 	async function stopSession(
 		id: string,
@@ -2927,6 +2934,12 @@ export function createNotificationsExtension(
 		try {
 			rt.workflowGate?.setRuntimeTurnProvider?.(null);
 		} catch {}
+		try {
+			const delivered = await pushTerminalSessionFrame(rt, { type: "session_closed", sessionId: id });
+			if (!delivered) logger.warn("notifications: session_closed socket delivery was not acknowledged");
+		} catch (e) {
+			logger.warn(`notifications: session_closed failed: ${String(e)}`);
+		}
 		await rt.waitForGateResolutionQuiescence();
 		try {
 			rt.disposeAckRecoveryParticipant();
@@ -2968,14 +2981,6 @@ export function createNotificationsExtension(
 			ownerReleaseFailures.push(e);
 			logger.warn(`sdk query snapshots: close failed: ${String(e)}`);
 		}
-		let closeFrameSent = false;
-		try {
-			pushSessionFrame(rt, { type: "session_closed", sessionId: id });
-			closeFrameSent = true;
-		} catch (e) {
-			logger.warn(`notifications: session_closed failed: ${String(e)}`);
-		}
-		if (closeFrameSent) await sleep(100);
 		let serverStopped = rt.serverStopped;
 		if (!serverStopped) {
 			try {

@@ -19,6 +19,7 @@
 - Resumed managed sessions now complete the verified legacy `local://` artifact migration before synchronous path resolution, preserving legacy scratch files instead of failing startup with a migration-order error.
 - Corrected Telegram's uncertain lifecycle guidance so create, close, and resume commands describe their own possible outcome; close and resume no longer display the create-only duplicate-start warning.
 - Telegram ask notifications now preserve the authoritative recommended choice from native asks and workflow gates, marking that option as `(Recommended)` in the message body without changing button indices or submitted answers.
+- Telegram `/session_close` now fails closed when tmux disappearance cannot be confirmed, and publishes the managed owner verdict before locked terminal-state preservation so normal close finalization is not delayed behind that state path.
 
 ## [0.11.6] - 2026-07-21
 ## [0.11.5] - 2026-07-20

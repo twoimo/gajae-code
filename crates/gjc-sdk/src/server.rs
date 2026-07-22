@@ -625,6 +625,51 @@ impl ServerHandle {
 		Ok(())
 	}
 
+	/// Deliver one frame through every currently authenticated connection writer
+	/// and wait until each socket write settles. Returns `false` when no client
+	/// is connected, a writer rejects delivery, or the bounded wait expires.
+	pub async fn push_frame_and_wait(
+		&self,
+		msg: ServerMessage,
+		wait: Duration,
+	) -> Result<bool, PushFrameError> {
+		if matches!(msg, ServerMessage::ActionNeeded(_)) {
+			return Err(PushFrameError::ActionNeededProhibited);
+		}
+		let senders = self
+			.state
+			.connections
+			.lock()
+			.values()
+			.map(|connection| connection.tx.clone())
+			.collect::<Vec<_>>();
+		if senders.is_empty() {
+			return Ok(false);
+		}
+		let mut receipts = Vec::with_capacity(senders.len());
+		for sender in senders {
+			let (delivered_tx, delivered_rx) = oneshot::channel();
+			if sender
+				.send(DirectCommand::Deliver(Box::new(msg.clone()), Some(delivered_tx)))
+				.is_err()
+			{
+				return Ok(false);
+			}
+			receipts.push(delivered_rx);
+		}
+		let delivered = timeout(wait, async move {
+			for receipt in receipts {
+				if !matches!(receipt.await, Ok(true)) {
+					return false;
+				}
+			}
+			true
+		})
+		.await
+		.unwrap_or(false);
+		Ok(delivered)
+	}
+
 	/// Publish a session-readiness signal: buffer it (so late-connecting clients
 	/// see it on connect) and broadcast it to currently-connected clients.
 	///
@@ -2493,6 +2538,39 @@ mod tests {
 		handle.stop();
 	}
 
+	#[tokio::test]
+	async fn push_frame_and_wait_acknowledges_socket_delivery() {
+		use crate::protocol::IdentityHeader;
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let frame = ServerMessage::IdentityHeader(IdentityHeader {
+			session_id: "s".into(),
+			repo:       "gajae-code".into(),
+			branch:     "test".into(),
+			machine:    "m1".into(),
+			title:      None,
+		});
+		assert!(
+			!handle
+				.push_frame_and_wait(frame.clone(), Duration::from_millis(100))
+				.await
+				.unwrap()
+		);
+
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		wait_for_clients(&handle, 1).await;
+		assert!(
+			handle
+				.push_frame_and_wait(frame, Duration::from_secs(1))
+				.await
+				.unwrap()
+		);
+		assert!(matches!(
+			next_server_msg(&mut ws).await,
+			ServerMessage::IdentityHeader(IdentityHeader { session_id, .. }) if session_id == "s"
+		));
+		handle.stop();
+	}
 	#[tokio::test]
 	async fn push_frame_rejects_asks_and_egress_filter_allows_only_idle_broadcasts() {
 		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();

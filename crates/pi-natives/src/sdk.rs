@@ -14,6 +14,7 @@
 use std::{
 	path::PathBuf,
 	sync::atomic::{AtomicU64, Ordering},
+	time::Duration,
 };
 
 use gjc_sdk::{
@@ -597,6 +598,22 @@ impl NotificationServer {
 		}
 		self
 			.with_handle(|h| h.push_frame(msg))?
+			.map_err(|error| Error::from_reason(error.to_string()))
+	}
+
+	/// Deliver a frame through every authenticated connection and wait for each
+	/// socket writer to settle within `timeout_ms`.
+	#[napi]
+	pub async fn push_frame_and_wait(&self, frame_json: String, timeout_ms: u32) -> Result<bool> {
+		let msg: ServerMessage = serde_json::from_str(&frame_json)
+			.map_err(|e| Error::from_reason(format!("invalid frame json: {e}")))?;
+		if matches!(msg, ServerMessage::TurnStream(_)) {
+			saturating_increment(&self.turn_stream_serde_validation_parses);
+		}
+		let handle = self.with_handle(Clone::clone)?;
+		handle
+			.push_frame_and_wait(msg, Duration::from_millis(u64::from(timeout_ms)))
+			.await
 			.map_err(|error| Error::from_reason(error.to_string()))
 	}
 

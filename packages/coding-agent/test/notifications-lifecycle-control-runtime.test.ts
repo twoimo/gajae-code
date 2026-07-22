@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseLaunchWorktreeMode } from "@gajae-code/coding-agent/gjc-runtime/launch-worktree";
-import type { SessionCreateFrame } from "@gajae-code/coding-agent/sdk/bus/index";
+import type { SessionCloseFrame, SessionCreateFrame } from "@gajae-code/coding-agent/sdk/bus/index";
 import {
 	attachLifecycleControl,
 	buildCreateArgv,
@@ -91,6 +91,19 @@ function createFrame(over: Partial<SessionCreateFrame> = {}): SessionCreateFrame
 		chatId: PAIRED,
 		token: "control-token",
 		target: { kind: "existing_path", path: "/repo" },
+		...over,
+	};
+}
+
+function closeFrame(over: Partial<SessionCloseFrame> = {}): SessionCloseFrame {
+	return {
+		type: "session_close",
+		requestId: "lc_close_1",
+		updateId: 100,
+		chatId: PAIRED,
+		token: "control-token",
+		target: { sessionId: "sess_1", tmuxSession: "gjc-sess_1" },
+		force: true,
 		...over,
 	};
 }
@@ -612,6 +625,27 @@ describe("lifecycle control runtime", () => {
 		});
 		expect(resp.type).toBe("session_lifecycle_error");
 		if (resp.type === "session_lifecycle_error") expect(resp.reason).toBe("rate_limited");
+	});
+	it("outcomeToResponse fails closed when a historical close success lacks process termination", () => {
+		const entry: LedgerEntry = {
+			requestHash: "h",
+			state: "success",
+			requestId: "lc_close_1",
+			verb: "session_close",
+			intendedSessionId: "sess_1",
+			sessionId: "sess_1",
+			createdAt: 0,
+			updatedAt: 0,
+			targetSummary: {},
+			processGone: false,
+		};
+		const response = outcomeToResponse(closeFrame(), { status: "ok", entry });
+		expect(response).toMatchObject({
+			type: "session_lifecycle_error",
+			requestId: "lc_close_1",
+			reason: "terminal_uncertain",
+		});
+		expect(response.type).not.toBe("session_close_response");
 	});
 
 	it("attachLifecycleControl wires a request through to a response", async () => {
