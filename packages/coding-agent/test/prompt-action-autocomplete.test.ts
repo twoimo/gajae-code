@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { SlashCommand } from "@gajae-code/tui";
-import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@gajae-code/tui";
+import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@gajae-code/tui";
 import { Editor } from "@gajae-code/tui/components/editor";
 import { defaultEditorTheme } from "../../tui/test/test-themes";
-import { KeybindingsManager as AppKeybindingsManager } from "../src/config/keybindings";
+import { KeybindingsManager as AppKeybindingsManager, formatKeyHints } from "../src/config/keybindings";
 import { createPromptActionAutocompleteProvider } from "../src/modes/prompt-action-autocomplete";
 
 describe("prompt action autocomplete", () => {
@@ -41,15 +41,16 @@ describe("prompt action autocomplete", () => {
 	}
 
 	it("shows prompt actions with configured shortcut hints", async () => {
+		const keybindings = AppKeybindingsManager.inMemory({
+			"app.clipboard.copyLine": "ctrl+shift+l",
+			"app.clipboard.copyPrompt": ["alt+shift+c", "ctrl+shift+c"],
+			"app.clipboard.pasteImage": "ctrl+i",
+			"app.session.new": "ctrl+n",
+		});
 		const provider = createPromptActionAutocompleteProvider({
 			commands: [],
 			basePath: "/tmp",
-			keybindings: AppKeybindingsManager.inMemory({
-				"app.clipboard.copyLine": "ctrl+shift+l",
-				"app.clipboard.copyPrompt": ["alt+shift+c", "ctrl+shift+c"],
-				"app.clipboard.pasteImage": "ctrl+i",
-				"app.session.new": "ctrl+n",
-			}),
+			keybindings,
 			copyCurrentLine: () => {},
 			copyPrompt: () => {},
 			pasteImage: () => {},
@@ -79,18 +80,50 @@ describe("prompt action autocomplete", () => {
 			"Move cursor to beginning of line",
 			"Move cursor to end of line",
 		]);
-		expect(suggestions?.items.find(item => item.label === "Copy current line")?.description).toBe("Ctrl+Shift+L");
+		expect(suggestions?.items.find(item => item.label === "Copy current line")?.description).toBe(
+			keybindings.getDisplayString("app.clipboard.copyLine"),
+		);
 		expect(suggestions?.items.find(item => item.label === "Copy whole prompt")?.description).toBe(
-			"Alt+Shift+C/Ctrl+Shift+C",
+			keybindings.getDisplayString("app.clipboard.copyPrompt"),
 		);
-		expect(suggestions?.items.find(item => item.label === "Paste image from clipboard")?.description).toBe("Ctrl+I");
+		expect(suggestions?.items.find(item => item.label === "Paste image from clipboard")?.description).toBe(
+			keybindings.getDisplayString("app.clipboard.pasteImage"),
+		);
 		expect(suggestions?.items.find(item => item.label === "Move cursor to beginning of line")?.description).toBe(
-			"Home/F6",
+			formatKeyHints(getKeybindings().getKeys("tui.editor.cursorLineStart")),
 		);
-		expect(suggestions?.items.find(item => item.label === "Move cursor to end of line")?.description).toBe("F7");
-		expect(suggestions?.items.find(item => item.label === "Undo")?.description).toBe("F8");
-		expect(suggestions?.items.find(item => item.label === "Start new session")?.description).toBe("Ctrl+N");
+		expect(suggestions?.items.find(item => item.label === "Move cursor to end of line")?.description).toBe(
+			formatKeyHints(getKeybindings().getKeys("tui.editor.cursorLineEnd")),
+		);
+		expect(suggestions?.items.find(item => item.label === "Undo")?.description).toBe(
+			formatKeyHints(getKeybindings().getKeys("tui.editor.undo")),
+		);
+		expect(suggestions?.items.find(item => item.label === "Start new session")?.description).toBe(
+			keybindings.getDisplayString("app.session.new"),
+		);
 		expect(suggestions?.items.find(item => item.label === "Open command help")?.description).toBe("/help");
+	});
+	it("leaves unbound app shortcut descriptions empty", async () => {
+		const provider = createPromptActionAutocompleteProvider({
+			commands: [],
+			basePath: "/tmp",
+			keybindings: AppKeybindingsManager.inMemory({ "app.session.new": [] }),
+			copyCurrentLine: () => {},
+			copyPrompt: () => {},
+			pasteImage: () => {},
+			newSession: () => {},
+			showHelp: () => {},
+			scrollTmuxToPreviousUserInput: () => {},
+			undo: () => {},
+			moveCursorToMessageEnd: () => {},
+			moveCursorToMessageStart: () => {},
+			moveCursorToLineStart: () => {},
+			moveCursorToLineEnd: () => {},
+		});
+
+		const suggestions = await provider.getSuggestions(["#"], 0, 1);
+
+		expect(suggestions?.items.find(item => item.label === "Start new session")?.description).toBe("");
 	});
 
 	it("orders top-level slash commands by beginner-first priorities and keeps provider internals low", async () => {

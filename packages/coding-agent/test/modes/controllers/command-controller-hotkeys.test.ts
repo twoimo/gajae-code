@@ -4,27 +4,39 @@ import { buildHotkeysMarkdown } from "../../../src/modes/utils/hotkeys-markdown"
 describe("buildHotkeysMarkdown", () => {
 	it("emits flush-left markdown and uses the configured temporary selector hint", () => {
 		const displayStrings: Record<string, string> = {
-			"app.clipboard.copyLine": "Alt+Shift+L",
-			"app.clipboard.copyPrompt": "Ctrl+Shift+P",
-			"app.message.queue": "Alt+Enter",
-			"app.plan.toggle": "Alt+M",
-			"app.tools.expand": "Ctrl+O",
-			"app.interrupt": "Esc",
-			"app.clear": "Ctrl+C",
-			"app.exit": "Ctrl+D",
-			"app.suspend": "Ctrl+Z",
-			"app.session.new": "Ctrl+N",
-			"app.thinking.cycle": "Shift+Tab",
-			"app.commandPalette.open": "Ctrl+P",
-			"app.model.cycleForward": "Alt+N",
-			"app.model.cycleBackward": "Alt+Shift+N",
-			"app.model.selectTemporary": "Ctrl+Shift+L",
-			"app.model.select": "Ctrl+L",
-			"app.history.search": "Ctrl+R",
-			"app.thinking.toggle": "Ctrl+T",
-			"app.editor.external": "Ctrl+G",
-			"app.clipboard.pasteImage": "Ctrl+V",
-			"app.stt.toggle": "Alt+H",
+			"app.clipboard.copyLine": "⌃⇧L",
+			"app.clipboard.copyPrompt": "⌃⇧P",
+			"app.message.queue": "⌥↩",
+			"app.plan.toggle": "⌥M",
+			"app.tools.expand": "⌃O",
+			"app.interrupt": "⎋",
+			"app.clear": "⌃C",
+			"app.exit": "⌃D",
+			"app.suspend": "⌃Z",
+			"app.session.new": "⌃N",
+			"app.thinking.cycle": "⇧⇥",
+			"app.commandPalette.open": "⌃P",
+			"app.model.cycleForward": "⌥N",
+			"app.model.cycleBackward": "⌥⇧N",
+			"app.model.selectTemporary": "⌃⇧L",
+			"app.model.select": "⌃L",
+			"app.history.search": "⌃R",
+			"app.thinking.toggle": "⌃T",
+			"app.editor.external": "⌃G",
+			"app.clipboard.pasteImage": "⌃V",
+			"app.stt.toggle": "⌥H",
+			"tui.editor.cursorUp": "↑",
+			"tui.editor.cursorDown": "↓",
+			"tui.editor.cursorWordLeft": "⌥←",
+			"tui.editor.cursorWordRight": "⌥→",
+			"tui.editor.cursorLineStart": "Home/⌃A",
+			"tui.editor.cursorLineEnd": "End/⌃E",
+			"tui.input.submit": "↩",
+			"tui.input.newLine": "⇧↩",
+			"tui.editor.deleteWordBackward": "⌃W/⌥⌫",
+			"tui.editor.deleteToLineStart": "⌃U",
+			"tui.editor.deleteToLineEnd": "⌃K",
+			"tui.input.tab": "⇥",
 		};
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
@@ -36,15 +48,15 @@ describe("buildHotkeysMarkdown", () => {
 
 		const lines = markdown.split("\n");
 		expect(lines[0]).toBe("**Navigation**");
-		expect(markdown).toContain("| `Ctrl+Shift+P` | Copy whole prompt |");
-		expect(markdown).toContain("| `Enter` | Send / queue while busy |");
-		expect(markdown).toContain("| `Alt+Enter` | Queue message for next turn |");
-		expect(markdown).toContain("| `Shift+Enter` / `Ctrl+J` | New line |");
-		expect(markdown).toContain("| `Ctrl+Shift+L` | Select model (temporary) |");
-		expect(markdown).toContain("| `Ctrl+L` | Select default model |");
-		expect(markdown).toContain("| `Alt+M` | Toggle plan mode |");
-		expect(markdown).toContain("| `Ctrl+N` | Start a fresh session |");
-		expect(markdown).toContain("| `Ctrl+P` | Open command palette |");
+		expect(markdown).toContain("| `⌃⇧P` | Copy whole prompt |");
+		expect(markdown).toContain("| `↩` | Send / queue while busy |");
+		expect(markdown).toContain("| `⌥↩` | Queue message for next turn |");
+		expect(markdown).toContain("| `⇧↩` | New line |");
+		expect(markdown).toContain("| `⌃⇧L` | Select model (temporary) |");
+		expect(markdown).toContain("| `⌃L` | Select default model |");
+		expect(markdown).toContain("| `⌥M` | Toggle plan mode |");
+		expect(markdown).toContain("| `⌃N` | Start a fresh session |");
+		expect(markdown).toContain("| `⌃P` | Open command palette |");
 		expect(markdown).toContain("| `#` | Prompt actions (command-palette style actions) |");
 		for (const line of lines) {
 			if (line.length === 0) continue;

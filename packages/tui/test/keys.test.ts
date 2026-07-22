@@ -1,5 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { extractPrintableText, matchesKey, parseKey, setKittyProtocolActive } from "@gajae-code/tui/keys";
+import {
+	extractPrintableText,
+	isKeyId,
+	matchesKey,
+	parseKey,
+	parseKeyId,
+	setKittyProtocolActive,
+} from "@gajae-code/tui/keys";
 
 describe("matchesKey", () => {
 	it("matches ctrl+letter sequences", () => {
@@ -168,5 +175,36 @@ describe("extractPrintableText", () => {
 
 	it("preserves Kitty CSI-u text-field decoding for supported modifiers", () => {
 		expect(extractPrintableText("\x1b[97;1;229u")).toBe("å");
+	});
+});
+describe("KeyId grammar", () => {
+	it("parses canonical keys case-insensitively", () => {
+		expect(parseKeyId("CTRL+Shift+C")?.keyId).toBe("ctrl+shift+c");
+		expect(isKeyId("super+p")).toBe(true);
+	});
+
+	it("accepts literal plus keys and rejects malformed plus chains", () => {
+		expect(parseKeyId("+")).toMatchObject({ keyId: "+", baseKey: "+" });
+		expect(parseKeyId("ctrl++")).toMatchObject({ keyId: "ctrl++", baseKey: "+" });
+		expect(parseKeyId("++")).toBeUndefined();
+		expect(parseKeyId("ctrl+")).toBeUndefined();
+		expect(parseKeyId("ctrl+++")).toBeUndefined();
+	});
+
+	it("rejects aliases, duplicates, malformed chains, unknown keys, and controls", () => {
+		for (const key of [
+			"cmd+p",
+			"command+p",
+			"meta+p",
+			"option+p",
+			"ctrl+ctrl+c",
+			"ctrl++x",
+			"ctrl+unknown",
+			"ctrl+\u001b",
+			"ctrl+c\n",
+		]) {
+			expect(parseKeyId(key)).toBeUndefined();
+			expect(isKeyId(key)).toBe(false);
+		}
 	});
 });

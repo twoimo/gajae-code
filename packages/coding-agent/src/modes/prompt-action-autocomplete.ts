@@ -7,8 +7,7 @@ import {
 	getSlashCommandMatchRank,
 	type SlashCommand,
 } from "@gajae-code/tui";
-import type { KeybindingsManager } from "../config/keybindings";
-import { formatKeyHints } from "../config/keybindings";
+import { formatKeyHints, type KeybindingsManager } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { applyEmojiCompletion, getEmojiSuggestions, isEmojiPrefix, tryEmojiInlineReplace } from "./emoji-autocomplete";
 
@@ -387,7 +386,7 @@ export function createPromptActionAutocompleteProvider(
 		{
 			id: "new-session",
 			label: "Start new session",
-			description: formatKeyHints(options.keybindings.getKeys("app.session.new")) || "/new",
+			description: options.keybindings.getDisplayString("app.session.new"),
 			keywords: ["new", "session", "fresh", "clear", "start", "conversation"],
 			execute: options.newSession,
 		},
@@ -401,21 +400,21 @@ export function createPromptActionAutocompleteProvider(
 		{
 			id: "copy-line",
 			label: "Copy current line",
-			description: formatKeyHints(options.keybindings.getKeys("app.clipboard.copyLine")),
+			description: options.keybindings.getDisplayString("app.clipboard.copyLine"),
 			keywords: ["copy", "line", "clipboard", "current"],
 			execute: options.copyCurrentLine,
 		},
 		{
 			id: "copy-prompt",
 			label: "Copy whole prompt",
-			description: formatKeyHints(options.keybindings.getKeys("app.clipboard.copyPrompt")),
+			description: options.keybindings.getDisplayString("app.clipboard.copyPrompt"),
 			keywords: ["copy", "prompt", "clipboard", "message"],
 			execute: options.copyPrompt,
 		},
 		{
 			id: "paste-image",
 			label: "Paste image from clipboard",
-			description: formatKeyHints(options.keybindings.getKeys("app.clipboard.pasteImage")),
+			description: options.keybindings.getDisplayString("app.clipboard.pasteImage"),
 			keywords: ["paste", "image", "clipboard", "screenshot", "attach", "vision"],
 			execute: options.pasteImage,
 		},

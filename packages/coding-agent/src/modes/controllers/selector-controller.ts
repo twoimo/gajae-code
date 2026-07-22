@@ -5,7 +5,7 @@ import type { OAuthProvider } from "@gajae-code/ai/utils/oauth/types";
 import type { Component, OverlayHandle, SlashCommand } from "@gajae-code/tui";
 import { Input, isPetMode, Loader, Spacer, Text } from "@gajae-code/tui";
 import { getAgentDbPath, getProjectDir, logger, VERSION } from "@gajae-code/utils";
-import { type AppKeybinding, formatKeyHints } from "../../config/keybindings";
+import type { AppKeybinding } from "../../config/keybindings";
 import {
 	activateModelProfile,
 	type MaterializeModelProfileForDeletionResult,
@@ -773,7 +773,7 @@ export class SelectorController {
 				id: `action:${action.id}`,
 				label: action.label,
 				description: action.id,
-				keybinding: formatKeyHints(this.ctx.keybindings.getKeys(action.id as AppKeybinding)) || undefined,
+				keybinding: this.ctx.keybindings.getDisplayString(action.id as AppKeybinding) || undefined,
 				searchText: action.id,
 				handler: action.handler,
 			})),

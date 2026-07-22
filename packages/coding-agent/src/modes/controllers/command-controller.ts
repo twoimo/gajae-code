@@ -577,7 +577,10 @@ export class CommandController {
 	}
 
 	handleHelpCommand(): void {
-		const sessionNewKey = this.ctx.keybindings.getDisplayString("app.session.new") || "/new";
+		const sessionNewKey = this.ctx.keybindings.getDisplayString("app.session.new") || "Disabled";
+		const selectModelKey = this.ctx.keybindings.getDisplayString("app.model.select") || "Disabled";
+		const autocompleteNavigationKeys = `\`${this.ctx.keybindings.getDisplayString("tui.select.up") || "Disabled"}/${this.ctx.keybindings.getDisplayString("tui.select.down") || "Disabled"}\``;
+		const autocompleteConfirmKeys = `\`${this.ctx.keybindings.getDisplayString("tui.select.confirm") || "Disabled"}/${this.ctx.keybindings.getDisplayString("tui.input.tab") || "Disabled"}\``;
 		const markdown = [
 			"**Beginner actions**",
 			"",
@@ -587,12 +590,12 @@ export class CommandController {
 			"| Resume another session | `/resume` |",
 			"| Show session details | `/session info` |",
 			"| Delete current session transcript/artifacts | `/session delete` |",
-			"| Select a model | `/model` or `Ctrl+L` |",
+			`| Select a model | \`/model\` or \`${selectModelKey}\` |`,
 			"| Show all shortcuts | `?` on an empty prompt or `/hotkeys` |",
 			"",
 			"**Finding commands**",
 			"",
-			"- Type `/` to browse slash commands, then use arrows and Enter/Tab.",
+			`- Type \`/\` to browse slash commands, then use ${autocompleteNavigationKeys} and ${autocompleteConfirmKeys}.`,
 			"- Type `#` to browse prompt actions like starting a session, pasting an image, or moving the cursor.",
 			"- Type `!` for shell commands and `$` for Python snippets.",
 		].join("\n");

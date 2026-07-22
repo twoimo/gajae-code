@@ -1,11 +1,16 @@
+import type { Keybinding } from "@gajae-code/tui";
 import type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 
 export interface HotkeysMarkdownBindings {
 	keybindings: Pick<KeybindingsManager, "getDisplayString">;
 }
 
-function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): string {
+function key(bindings: HotkeysMarkdownBindings, action: Keybinding): string {
 	return bindings.keybindings.getDisplayString(action) || "Disabled";
+}
+
+function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): string {
+	return key(bindings, action);
 }
 
 export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string {
@@ -13,28 +18,28 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		"**Navigation**",
 		"| Key | Action |",
 		"|-----|--------|",
-		"| `Arrow keys` | Move cursor / browse history (Up when empty) |",
-		"| `Option+Left/Right` | Move by word |",
-		"| `Ctrl+A` / `Home` / `Cmd+Left` | Start of line |",
-		"| `Ctrl+E` / `End` / `Cmd+Right` | End of line |",
+		`| \`${key(bindings, "tui.editor.cursorUp")}/${key(bindings, "tui.editor.cursorDown")}\` | Move cursor / browse history (Up when empty) |`,
+		`| \`${key(bindings, "tui.editor.cursorWordLeft")}/${key(bindings, "tui.editor.cursorWordRight")}\` | Move by word |`,
+		`| \`${key(bindings, "tui.editor.cursorLineStart")}\` | Start of line |`,
+		`| \`${key(bindings, "tui.editor.cursorLineEnd")}\` | End of line |`,
 		"",
 		"**Editing**",
 		"| Key | Action |",
 		"|-----|--------|",
-		"| `Enter` | Send / queue while busy |",
+		`| \`${key(bindings, "tui.input.submit")}\` | Send / queue while busy |`,
 		`| \`${appKey(bindings, "app.message.queue")}\` | Queue message for next turn |`,
 		`| \`${appKey(bindings, "app.message.dequeue")}\` | Select queued message to edit |`,
-		"| `Shift+Enter` / `Ctrl+J` | New line |",
-		"| `Ctrl+W` / `Option+Backspace` | Delete word backwards |",
-		"| `Ctrl+U` | Delete to start of line |",
-		"| `Ctrl+K` | Delete to end of line |",
+		`| \`${key(bindings, "tui.input.newLine")}\` | New line |`,
+		`| \`${key(bindings, "tui.editor.deleteWordBackward")}\` | Delete word backwards |`,
+		`| \`${key(bindings, "tui.editor.deleteToLineStart")}\` | Delete to start of line |`,
+		`| \`${key(bindings, "tui.editor.deleteToLineEnd")}\` | Delete to end of line |`,
 		`| \`${appKey(bindings, "app.clipboard.copyLine")}\` | Copy current line |`,
 		`| \`${appKey(bindings, "app.clipboard.copyPrompt")}\` | Copy whole prompt |`,
 		"",
 		"**Other**",
 		"| Key | Action |",
 		"|-----|--------|",
-		"| `Tab` | Path completion / accept autocomplete |",
+		`| \`${key(bindings, "tui.input.tab")}\` | Path completion / accept autocomplete |`,
 		`| \`${appKey(bindings, "app.interrupt")}\` | Cancel autocomplete / interrupt active work |`,
 		`| \`${appKey(bindings, "app.clear")}\` | Clear editor (first) / exit (second) |`,
 		`| \`${appKey(bindings, "app.exit")}\` | Exit (when editor is empty) |`,
