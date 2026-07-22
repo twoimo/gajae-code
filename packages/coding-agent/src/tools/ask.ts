@@ -522,6 +522,16 @@ function getDoneOptionLabel(): string {
 	return `${theme.status.success} Done selecting`;
 }
 
+function validRecommendedIndex(recommended: number | undefined, optionCount: number): number | undefined {
+	return typeof recommended === "number" &&
+		Number.isFinite(recommended) &&
+		Number.isInteger(recommended) &&
+		recommended >= 0 &&
+		recommended < optionCount
+		? recommended
+		: undefined;
+}
+
 /** Add "(Recommended)" suffix to the option at the given index if not already present */
 function addRecommendedSuffix(labels: string[], recommendedIndex?: number): string[] {
 	if (recommendedIndex === undefined || recommendedIndex < 0 || recommendedIndex >= labels.length) {
@@ -1428,10 +1438,12 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 								}),
 							}
 						: options?.previous;
+				const recommendedIndex = validRecommendedIndex(q.recommended, rawOptionLabels.length);
 				activeRemoteRequest = {
 					question: displayQuestion,
 					options: remoteSelectorOptions,
 					interaction: "selector",
+					...(recommendedIndex === undefined ? {} : { recommendedIndex }),
 					controls: askRemoteControls({
 						multi: q.multi === true,
 						questionIndex,
@@ -1463,6 +1475,9 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 							question: displayQuestion,
 							options: state.interaction === "selector" ? remoteSelectorOptions : [],
 							interaction: state.interaction,
+							...(state.interaction === "selector" && recommendedIndex !== undefined
+								? { recommendedIndex }
+								: {}),
 							controls:
 								state.interaction === "selector"
 									? askRemoteControls({

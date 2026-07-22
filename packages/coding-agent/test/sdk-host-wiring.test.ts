@@ -3082,6 +3082,94 @@ test("Q12 records the runtime-turn correlation before a workflow gate is exposed
 		detachTerminalController();
 	}
 });
+test("workflow gate recommendation projection marks only one exact hint without changing raw options", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-workflow-gate-recommendation-"));
+	dirs.push(cwd);
+	const sessionId = `workflow-gate-recommendation-${Date.now()}`;
+	let emitGate:
+		| ((gate: { gate_id: string; options: Array<Record<string, unknown>>; context: Record<string, unknown> }) => void)
+		| undefined;
+	let terminalController: { completeGateInteractions: (gateId: string) => unknown } | undefined;
+	const workflowGate = {
+		isUnattended: () => true,
+		onGateEmitted: (listener: typeof emitGate) => {
+			emitGate = listener;
+			return () => {};
+		},
+		registerGateTerminalController: (controller: typeof terminalController) => {
+			terminalController = controller;
+			return () => {};
+		},
+		resolveGate: async () => undefined,
+		recoverAcceptedGates: async () => [],
+		lookupCompletedResolution: () => undefined,
+		prepareTerminalization: () => undefined,
+		clearPreparedTerminalization: () => {},
+		resolveGateFromNotification: async (response: { gate_id: string }, interaction: { resolveClaim: () => void }) => {
+			interaction.resolveClaim();
+			terminalController?.completeGateInteractions(response.gate_id);
+			return { status: "accepted" };
+		},
+	} as unknown as WorkflowGateEmitter;
+	process.env.GJC_NOTIFICATIONS = "1";
+	const handlers = start(context(cwd, sessionId, "main", {}, workflowGate));
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	const frames: Record<string, unknown>[] = [];
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	const cases = [
+		{ name: "all undefined", descriptions: [undefined, undefined], recommendedIndex: undefined },
+		{ name: "one exact", descriptions: [undefined, "recommended"], recommendedIndex: 1 },
+		{ name: "duplicate exact", descriptions: ["recommended", "recommended"], recommendedIndex: undefined },
+		{ name: "nonexact variants", descriptions: ["Recommended", "recommended "], recommendedIndex: undefined },
+		{ name: "exact plus another defined", descriptions: ["recommended", "other"], recommendedIndex: undefined },
+	] as const;
+	try {
+		for (const [index, fixture] of cases.entries()) {
+			const options = fixture.descriptions.map((description, optionIndex) => ({
+				value: `value-${index}-${optionIndex}`,
+				label: `Option ${index}-${optionIndex}`,
+				...(description === undefined ? {} : { description }),
+			}));
+			const rawOptions = structuredClone(options);
+			const gateId = `recommendation-gate-${index}`;
+			emitGate?.({ gate_id: gateId, options, context: { prompt: fixture.name } });
+			await waitFor(
+				() => frames.some(frame => frame.type === "action_needed" && frame.workflowGateId === gateId),
+				`${fixture.name} workflow gate presentation`,
+			);
+			const action = frames.findLast(frame => frame.type === "action_needed" && frame.workflowGateId === gateId);
+			expect(action?.options).toEqual(options.map(option => option.label));
+			if (fixture.recommendedIndex === undefined) expect(action).not.toHaveProperty("recommendedIndex");
+			else expect(action).toMatchObject({ recommendedIndex: fixture.recommendedIndex });
+			expect(options).toEqual(rawOptions);
+			socket.send(
+				JSON.stringify({
+					type: "reply",
+					id: action?.id,
+					answer: 0,
+					token: endpoint.token,
+				}),
+			);
+			await waitFor(
+				() => frames.some(frame => frame.type === "action_resolved" && frame.id === action?.id),
+				`${fixture.name} workflow gate terminal`,
+			);
+		}
+	} finally {
+		await handlers.get("session_shutdown")!(
+			{ type: "session_shutdown" },
+			context(cwd, sessionId, "main", {}, workflowGate),
+		);
+	}
+}, 60_000);
 
 test("SDK host discovers, answers, and advances a durable workflow gate", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-workflow-gate-"));
@@ -3188,7 +3276,7 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 		stage: "ralplan",
 		kind: "approval",
 		schema: { type: "string", enum: ["approve"] },
-		options: [{ value: "approve", label: "Approve" }],
+		options: [{ value: "approve", label: "Approve", description: "recommended" }],
 	});
 	await waitFor(() => gateId !== failedDirectPriorGateId, "failed-direct workflow gate");
 	const failedDirectGateId = gateId;
@@ -3196,6 +3284,7 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 		frames.filter(frame => frame.type === "action_needed" && frame.workflowGateId === failedDirectGateId);
 	await waitFor(() => actionFramesForGate().length === 1, "initial failed-direct presentation");
 	const initialActionId = String(actionFramesForGate()[0]?.id);
+	expect(actionFramesForGate()[0]).toMatchObject({ options: ["Approve"], recommendedIndex: 0 });
 	expect(
 		await request("failed-direct", {
 			type: "control_request",
@@ -3208,6 +3297,7 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 	await waitFor(() => actionFramesForGate().length >= 2, "reissued failed-direct presentation");
 	const reissuedActionId = String(actionFramesForGate().at(-1)?.id);
 	expect(reissuedActionId).not.toBe(initialActionId);
+	expect(actionFramesForGate().at(-1)).toMatchObject({ options: ["Approve"], recommendedIndex: 0 });
 	expect(
 		await emitter.resolveGateFromNotification!(
 			{ gate_id: failedDirectGateId, answer: "approve", idempotency_key: "failed-direct-generic" },
@@ -3230,7 +3320,10 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 		stage: "ralplan",
 		kind: "approval",
 		schema: { type: "string", enum: ["approve"] },
-		options: [{ value: "approve", label: "Approve" }],
+		options: [
+			{ value: "approve", label: "Approve", description: "recommended" },
+			{ value: "cancel", label: "Cancel", description: "unexpected" },
+		],
 	});
 	await waitFor(() => gateId !== nextPriorGateId, "post-reissue workflow gate");
 	const nextGateId = gateId;
@@ -3239,6 +3332,8 @@ test("SDK host discovers, answers, and advances a durable workflow gate", async 
 		"post-reissue presentation",
 	);
 	const nextAction = frames.findLast(frame => frame.type === "action_needed" && frame.workflowGateId === nextGateId);
+	expect(nextAction).toMatchObject({ options: ["Approve", "Cancel"] });
+	expect(nextAction).not.toHaveProperty("recommendedIndex");
 	expect(
 		await emitter.resolveGateFromNotification!(
 			{ gate_id: nextGateId, answer: "approve", idempotency_key: "post-reissue-generic" },
@@ -3490,26 +3585,29 @@ test("PresentationArbiter serializes ordinary and workflow asks, fences queued c
 		},
 	} as never;
 	const arbiter = new PresentationArbiter(server, () => false, "test");
-	const gate = (gateId: string, multi = false) => ({
+	const gate = (gateId: string, multi = false, recommendedIndex?: number) => ({
 		gateId,
 		...(gateId.startsWith("workflow") ? { workflowGateId: gateId } : {}),
 		sessionId: "session",
 		question: gateId,
 		options: ["one", "two"],
+		...(recommendedIndex === undefined ? {} : { recommendedIndex }),
 		controls: [],
 		multi,
 		allowEmpty: false,
 		selectedOptions: [],
 	});
-	arbiter.retain(gate("ordinary"));
-	arbiter.retain(gate("workflow-first", true));
+	arbiter.retain(gate("ordinary", false, 1));
+	arbiter.retain(gate("workflow-first", true, 0));
 	await Bun.sleep(PresentationArbiter.retryBaseDelayMs + 10);
 	expect(publications.map(action => action.workflowGateId)).toEqual([undefined]);
+	expect(publications[0]).toMatchObject({ options: ["one", "two"], recommendedIndex: 1 });
 	arbiter.complete("ordinary");
 	expect(publications.map(action => action.workflowGateId)).toEqual([undefined, "workflow-first"]);
 	const firstActionId = publications[1]!.id as string;
 	expect(arbiter.toggle(firstActionId, "one")).toBe(true);
 	expect(publications).toHaveLength(3);
+	expect(publications[2]).toMatchObject({ options: ["one", "two"], recommendedIndex: 0 });
 	arbiter.retain(gate("workflow-second"));
 	const queued = arbiter.prepareDirectControl("workflow-second");
 	expect(queued).toEqual({ status: "queued", ordinal: 1 });

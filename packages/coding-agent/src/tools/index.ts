@@ -137,6 +137,8 @@ export interface AskAnswerRequest {
 	options: string[];
 	interaction: "selector" | "custom_editor" | "clarification_editor";
 	controls: readonly AskRemoteControl[];
+	/** Optional zero-based recommendation into the authoritative raw options. */
+	recommendedIndex?: number;
 }
 
 export type AskRemoteInteraction =

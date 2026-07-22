@@ -401,6 +401,7 @@ interface UnattendedGatePresentation {
 	question: string;
 	options: string[];
 	controls: readonly AskRemoteControl[];
+	recommendedIndex?: number;
 	multi: boolean;
 	allowEmpty: boolean;
 	navigationLabel?: "Next" | "Done";
@@ -408,6 +409,14 @@ interface UnattendedGatePresentation {
 	workflowGateId?: string;
 	onActivated?: (actionId: string, lease: { actionId: string; registrationEpoch: number }) => void;
 	onClosed?: () => void;
+}
+function recommendedIndexFromGateOptions(options: readonly unknown[]): number | undefined {
+	const descriptions = options.map(option => (option as { description?: unknown }).description);
+	const recommended = descriptions.filter(description => description === "recommended");
+	return recommended.length === 1 &&
+		descriptions.every(description => description === undefined || description === "recommended")
+		? descriptions.indexOf("recommended")
+		: undefined;
 }
 
 type RetireStatus = "retired" | "already_terminal" | "claimed" | "stale";
@@ -739,6 +748,9 @@ export class PresentationArbiter {
 									? `(${presentation.selectedOptions.length} selected) ${presentation.question}`
 									: presentation.question,
 							options: presentation.options,
+							...(presentation.recommendedIndex === undefined
+								? {}
+								: { recommendedIndex: presentation.recommendedIndex }),
 							controls: presentation.multi
 								? [
 										{
@@ -1593,6 +1605,7 @@ function registerInteractiveAnswerSource(
 					question: request.question,
 					options: request.options,
 					controls: request.controls,
+					recommendedIndex: request.recommendedIndex,
 					multi: false,
 					allowEmpty: false,
 					selectedOptions: [],
@@ -4201,7 +4214,9 @@ export function createNotificationsExtension(
 						? Gate
 						: never,
 				): void => {
-					const options = (g.options ?? []).map(o => String((o as { label?: unknown }).label ?? ""));
+					const rawGateOptions = g.options ?? [];
+					const options = rawGateOptions.map(o => String((o as { label?: unknown }).label ?? ""));
+					const recommendedIndex = recommendedIndexFromGateOptions(rawGateOptions);
 					gateOptions.set(g.gate_id, options);
 					const promptCtx = g.context as { prompt?: unknown; title?: unknown } | undefined;
 					const question =
@@ -4218,6 +4233,7 @@ export function createNotificationsExtension(
 						sessionId: id,
 						question,
 						options,
+						...(recommendedIndex === undefined ? {} : { recommendedIndex }),
 						controls: [],
 						multi: stageState.multi === true,
 						allowEmpty: stageState.allow_empty === true,

@@ -1936,6 +1936,7 @@ describe("notifications config", () => {
 			sessionId: "session-abcdef",
 			question: "Deploy production?",
 			options: ["Yes, deploy", "No, stop", "Custom"],
+			recommendedIndex: 1,
 			summary: "Sensitive summary",
 		};
 
@@ -1950,6 +1951,7 @@ describe("notifications config", () => {
 			sessionId: "session-abcdef",
 			question: "Deploy production?",
 			options: ["Yes", "No"],
+			recommendedIndex: 0,
 			summary: "Sensitive summary",
 		};
 
@@ -1963,6 +1965,7 @@ describe("notifications config", () => {
 			sessionId: "session-abcdef",
 			question: "Sensitive question?",
 			options: ["Sensitive option"],
+			recommendedIndex: 0,
 			summary: "Sensitive summary",
 		};
 

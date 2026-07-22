@@ -993,7 +993,13 @@ describe("AskTool remote semantic settlements", () => {
 			"remote-multi",
 			{
 				questions: [
-					{ id: "choices", question: "Choose", multi: true, options: [{ label: "alpha" }, { label: "beta" }] },
+					{
+						id: "choices",
+						question: "Choose",
+						multi: true,
+						recommended: 1,
+						options: [{ label: "alpha" }, { label: "beta" }],
+					},
 				],
 			},
 			undefined,
@@ -1006,8 +1012,47 @@ describe("AskTool remote semantic settlements", () => {
 		expect(requests[1]?.controls).toEqual([
 			{ id: "navigation_forward", kind: "navigation", label: "Done", enabled: true },
 		]);
+		expect(requests.map(request => request.recommendedIndex)).toEqual([1, 1]);
 		expect(settlements).toEqual([{ kind: "resolve_without_commit", reason: "toggle" }, { kind: "commit" }]);
 		expect(result.content[0]?.type === "text" ? result.content[0].text : "").toContain("alpha");
+	});
+	it("omits invalid source recommendations from remote selector requests", async () => {
+		for (const recommended of [-1, 0.5, 2]) {
+			const requests: AskAnswerRequest[] = [];
+			const source: AskAnswerSource = {
+				awaitAnswer: async () => undefined,
+				awaitAnswerRequest: request => {
+					requests.push(request);
+					return Promise.resolve({
+						source: "remote" as const,
+						interaction: { kind: "value" as const, value: "beta" },
+						settle: async () => ({
+							kind: "committed" as const,
+							ack: { status: "delivered" as const, messageId: 7 },
+						}),
+					});
+				},
+			};
+			const result = await new AskTool(createSession({ getAskAnswerSource: () => source })).execute(
+				`remote-invalid-recommendation-${recommended}`,
+				{
+					questions: [
+						{
+							id: "choice",
+							question: "Choose",
+							recommended,
+							options: [{ label: "alpha" }, { label: "beta" }],
+						},
+					],
+				},
+				undefined,
+				undefined,
+				abortableUi(),
+			);
+			expect(requests).toHaveLength(1);
+			expect(requests[0]).not.toHaveProperty("recommendedIndex");
+			expect(result.content[0]?.type === "text" ? result.content[0].text : "").toContain("beta");
+		}
 	});
 
 	it("uses fresh receipts for Other and clarification transitions without acknowledgement", async () => {
@@ -1048,6 +1093,7 @@ describe("AskTool remote semantic settlements", () => {
 							id: "q",
 							question: mode === "clarification" ? "Round 1 | Scope | Ambiguity: 50%" : "Choose",
 							options: [{ label: "alpha" }, { label: "beta" }],
+							recommended: 1,
 							deepInterview: mode === "clarification" ? deepInterviewMeta() : undefined,
 						},
 					],
@@ -1057,6 +1103,8 @@ describe("AskTool remote semantic settlements", () => {
 				abortableUi(),
 			);
 			expect(requests[1]?.interaction).toBe(mode === "other" ? "custom_editor" : "clarification_editor");
+			expect(requests[0]?.recommendedIndex).toBe(1);
+			expect(requests[1]).not.toHaveProperty("recommendedIndex");
 			expect(settlements).toEqual(
 				mode === "other"
 					? [{ kind: "resolve_without_commit", reason: "other_transition" }, { kind: "commit" }]

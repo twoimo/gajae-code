@@ -164,7 +164,7 @@ JSON text frames. Field names are `camelCase`; the `type` discriminator is
 ```json
 { "type": "action_needed", "id": "act_9e31", "kind": "ask",
   "sessionId": "sess-1", "workflowGateId": "wg_run_stage_1",
-  "question": "Proceed?", "options": ["Yes", "No"] }
+  "question": "Proceed?", "options": ["Yes", "No"], "recommendedIndex": 1 }
 ```
 
 ```json
@@ -180,6 +180,7 @@ JSON text frames. Field names are `camelCase`; the `type` discriminator is
 - `id` is an opaque, transient presentation/action ID. It is the **only** authority accepted by generic `reply.id`; use it only with the current authenticated endpoint. It is not a durable workflow ID.
 - `workflowGateId?: string` is optional, additive SDK v3 correlation metadata, present only for the active presentation of a durable workflow gate. When present, it equals that gate's Q12 `gate_id`. Its public correlation key is `(sessionId, workflowGateId)` at the current authenticated endpoint; it never authorizes generic `reply`.
 - `kind: "ask"` is answerable in interactive/TUI and SDK workflow-gate sessions. `kind: "idle"` is notify-only and ephemeral (not replayed to clients that connect later). Ordinary asks and idle frames omit `workflowGateId`.
+- `recommendedIndex?: number` is optional, zero-based display metadata for `options`. Clients must validate that it is an in-range integer and ignore malformed values. Raw option labels and reply indices remain authoritative; never decorate submitted answers or infer a recommendation from position. The additive field is wire-compatible, but Rust consumers constructing the public `ActionNeeded` struct by literal must provide `recommended_index: None` when no recommendation exists.
 - This corrects the pre-v3 documentation invariant that `action_needed.id == gate_id`: they are deliberately different values. Clients must not preserve that invariant, infer a relationship from question/options/order, or retain private route, claim, receipt, epoch, token, or endpoint-generation maps.
 
 `action_resolved` — a pending action is now terminal and **non-repliable**:

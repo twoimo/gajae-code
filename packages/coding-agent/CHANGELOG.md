@@ -16,6 +16,7 @@
 - `gjc setup credentials` now auto-imports only OAuth credentials with a finite expiry strictly in the future. Expired or malformed-expiry discoveries remain visible as non-importable records, and existing imported credentials remain recoverable through `/login`.
 - Resumed managed sessions now complete the verified legacy `local://` artifact migration before synchronous path resolution, preserving legacy scratch files instead of failing startup with a migration-order error.
 - Corrected Telegram's uncertain lifecycle guidance so create, close, and resume commands describe their own possible outcome; close and resume no longer display the create-only duplicate-start warning.
+- Telegram ask notifications now preserve the authoritative recommended choice from native asks and workflow gates, marking that option as `(Recommended)` in the message body without changing button indices or submitted answers.
 
 ## [0.11.6] - 2026-07-21
 ## [0.11.5] - 2026-07-20

@@ -6974,6 +6974,7 @@ export class TelegramNotificationDaemon {
 				id: msg.id,
 				question: msg.question,
 				options: msg.options,
+				recommendedIndex: msg.recommendedIndex,
 				controls,
 				summary: msg.summary,
 			});
@@ -7025,6 +7026,7 @@ export class TelegramNotificationDaemon {
 							kind,
 							question: msg.question,
 							options: msg.options,
+							recommendedIndex: msg.recommendedIndex,
 							summary: msg.summary,
 						}),
 						replyMarkup: kind === "ask" && inline_keyboard.length ? { inline_keyboard } : undefined,
