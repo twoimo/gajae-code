@@ -68,9 +68,11 @@ export function buildHelpMarkdown(keybindings: Pick<KeybindingsManager, "getDisp
 	const selectModelKey = formatHotkeyMarkdownCode(displayKey("app.model.select"));
 	const autocompleteNavigationKeys = formatHotkeyMarkdownCode(
 		`${displayKey("tui.select.up")}/${displayKey("tui.select.down")}`,
+		false,
 	);
 	const autocompleteConfirmKeys = formatHotkeyMarkdownCode(
 		`${displayKey("tui.input.submit")}/${displayKey("tui.input.tab")}`,
+		false,
 	);
 
 	return [

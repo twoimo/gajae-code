@@ -134,7 +134,7 @@ describe("buildHelpMarkdown", () => {
 			},
 		});
 
-		expect(markdown).toContain("then use `Ctrl+\\|/\\` and `Ctrl+Enter/Disabled`.");
+		expect(markdown).toContain("then use `Ctrl+|/\\` and `Ctrl+Enter/Disabled`.");
 		expect(markdown).toContain("| Start a fresh session | `` Alt+` `` or `/new` |");
 		expect(requestedActions).not.toContain("tui.select.confirm");
 	});

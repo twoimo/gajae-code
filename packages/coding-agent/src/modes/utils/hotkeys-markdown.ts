@@ -13,8 +13,8 @@ function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): strin
 	return key(bindings, action);
 }
 
-export function formatHotkeyMarkdownCode(label: string): string {
-	const escaped = label.replace(/\|/g, "\\|");
+export function formatHotkeyMarkdownCode(label: string, escapeTablePipes = true): string {
+	const escaped = escapeTablePipes ? label.replace(/\|/g, "\\|") : label;
 	let longestBacktickRun = 0;
 	for (const match of escaped.matchAll(/`+/g)) {
 		longestBacktickRun = Math.max(longestBacktickRun, match[0].length);
