@@ -301,7 +301,7 @@ export function parseKeyId(value: string): ParsedKeyId | undefined {
 
 /** Whether a value is a valid canonical key identifier. */
 export function isKeyId(value: string): value is KeyId {
-	return parseKeyId(value) !== undefined;
+	return parseKeyId(value)?.keyId === value;
 }
 
 /**

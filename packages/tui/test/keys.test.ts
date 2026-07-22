@@ -197,6 +197,10 @@ describe("KeyId grammar", () => {
 		expect(parseKeyId("CTRL+Shift+C")?.keyId).toBe("ctrl+shift+c");
 		expect(isKeyId("super+p")).toBe(true);
 		expect(parseKeyId(" Ctrl + C ")?.keyId).toBe("ctrl+c");
+		expect(isKeyId("ctrl+c")).toBe(true);
+		expect(isKeyId("CTRL+C")).toBe(false);
+		expect(isKeyId("ctrl+plus")).toBe(false);
+		expect(isKeyId(" Ctrl + C ")).toBe(false);
 	});
 
 	it("accepts literal plus keys and rejects malformed plus chains", () => {

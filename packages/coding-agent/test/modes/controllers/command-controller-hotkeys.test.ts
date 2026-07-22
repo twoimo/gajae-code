@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { formatKeyHint } from "../../../src/config/keybindings";
 import { buildHelpMarkdown } from "../../../src/modes/controllers/command-controller";
 import { buildHotkeysMarkdown, formatHotkeyMarkdownCode } from "../../../src/modes/utils/hotkeys-markdown";
 
@@ -52,7 +53,7 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `⌃⇧P` | Copy whole prompt |");
 		expect(markdown).toContain("| `↩` | Send / queue while busy |");
 		expect(markdown).toContain("| `⌥↩` | Queue message for next turn |");
-		expect(markdown).toContain("| `⇧↩/Ctrl+J` | New line |");
+		expect(markdown).toContain(`| \`⇧↩/${formatKeyHint("ctrl+j")}\` | New line |`);
 		expect(markdown).toContain("| `⌃⇧L` | Select model (temporary) |");
 		expect(markdown).toContain("| `⌃L` | Select default model |");
 		expect(markdown).toContain("| `⌥M` | Toggle plan mode |");
@@ -76,8 +77,8 @@ describe("buildHotkeysMarkdown", () => {
 				},
 			});
 
-		expect(render("Alt+Enter")).toContain("| `Alt+Enter/Ctrl+J` | New line |");
-		expect(render("")).toContain("| `Disabled/Ctrl+J` | New line |");
+		expect(render("Alt+Enter")).toContain(`| \`Alt+Enter/${formatKeyHint("ctrl+j")}\` | New line |`);
+		expect(render("")).toContain(`| \`Disabled/${formatKeyHint("ctrl+j")}\` | New line |`);
 	});
 
 	it("escapes Markdown metacharacters in dynamic table labels", () => {

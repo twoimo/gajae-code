@@ -1,5 +1,5 @@
 import type { Keybinding } from "@gajae-code/tui";
-import type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
+import { type AppKeybinding, formatKeyHint, type KeybindingsManager } from "../../config/keybindings";
 
 export interface HotkeysMarkdownBindings {
 	keybindings: Pick<KeybindingsManager, "getDisplayString">;
@@ -44,10 +44,10 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		`| ${displayKey("tui.input.submit")} | Send / queue while busy |`,
 		`| ${displayAppKey("app.message.queue")} | Queue message for next turn |`,
 		`| ${displayAppKey("app.message.dequeue")} | Select queued message to edit |`,
-		`| ${displayKeys(key(bindings, "tui.input.newLine"), "Ctrl+J")} | New line |`,
-		`| ${displayKeys("Ctrl+W", "Alt+Backspace")} | Delete word backwards |`,
-		`| ${displayKeys("Ctrl+U")} | Delete to start of line |`,
-		`| ${displayKeys("Ctrl+K")} | Delete to end of line |`,
+		`| ${displayKeys(key(bindings, "tui.input.newLine"), formatKeyHint("ctrl+j"))} | New line |`,
+		`| ${displayKeys(formatKeyHint("ctrl+w"), formatKeyHint("alt+backspace"))} | Delete word backwards |`,
+		`| ${displayKeys(formatKeyHint("ctrl+u"))} | Delete to start of line |`,
+		`| ${displayKeys(formatKeyHint("ctrl+k"))} | Delete to end of line |`,
 		`| ${displayAppKey("app.clipboard.copyLine")} | Copy current line |`,
 		`| ${displayAppKey("app.clipboard.copyPrompt")} | Copy whole prompt |`,
 		"",
