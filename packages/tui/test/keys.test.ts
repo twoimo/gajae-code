@@ -196,6 +196,7 @@ describe("KeyId grammar", () => {
 	it("parses canonical keys case-insensitively", () => {
 		expect(parseKeyId("CTRL+Shift+C")?.keyId).toBe("ctrl+shift+c");
 		expect(isKeyId("super+p")).toBe(true);
+		expect(parseKeyId(" Ctrl + C ")?.keyId).toBe("ctrl+c");
 	});
 
 	it("accepts literal plus keys and rejects malformed plus chains", () => {

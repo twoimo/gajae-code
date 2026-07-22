@@ -198,7 +198,7 @@ function ansiToHtml(value: string): string {
 	}
 	body += escapeHtml(visibleText.slice(offset));
 	close();
-	return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Platform shortcut labels showcase</title><style>body{margin:0;background:#110b0b;color:#ffe7dc}pre{margin:0;padding:1em;white-space:pre-wrap;font-family:ui-monospace,monospace;line-height:1.2}</style></head><body><pre>${body}</pre></body></html>\n`;
+	return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Platform shortcut labels showcase</title><style>body{margin:0;background:#110b0b;color:#ffe7dc;overflow:auto}pre{margin:0;padding:1em;white-space:pre;font-family:ui-monospace,monospace;line-height:1.2}</style></head><body><pre>${body}</pre></body></html>\n`;
 }
 function validateMatrix(entries: readonly PlatformShortcutLabelsShowcaseEntry[]): void {
 	if (PLATFORM_SHORTCUT_LABELS_SHOWCASE_EXPECTED_ENTRY_COUNT !== 34)

@@ -270,13 +270,22 @@ const KEY_MODIFIERS: readonly KeyModifier[] = ["ctrl", "alt", "shift", "super"];
 export function parseKeyId(value: string): ParsedKeyId | undefined {
 	if (hasControlChars(value) || value.length === 0) return undefined;
 
-	const lowerCaseValue = value.toLowerCase();
+	const lowerCaseValue = value
+		.trim()
+		.toLowerCase()
+		.replace(/\s*\+\s*/g, "+");
 	const normalized = lowerCaseValue === "plus" ? "+" : lowerCaseValue.replace(/\+plus$/, "++");
 	const baseKey = normalized.endsWith("+") ? "+" : normalized.split("+").pop();
 	if (!baseKey || !BASE_KEYS.has(baseKey)) return undefined;
 
 	const modifierSource = normalized.slice(0, normalized.length - baseKey.length);
-	const modifierParts = modifierSource.length === 0 ? [] : modifierSource.slice(0, -1).split("+");
+	const modifierParts =
+		modifierSource.length === 0
+			? []
+			: modifierSource
+					.slice(0, -1)
+					.split("+")
+					.map(part => part.trim());
 	if (modifierParts.some(part => !KEY_MODIFIERS.includes(part as KeyModifier))) return undefined;
 
 	const modifiers = modifierParts as KeyModifier[];

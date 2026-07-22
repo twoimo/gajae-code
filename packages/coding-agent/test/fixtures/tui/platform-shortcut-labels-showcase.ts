@@ -156,16 +156,18 @@ function renderComposer(entry: PlatformShortcutLabelsShowcaseEntry, context: Key
 	const keybindings = KeybindingsManager.inMemory({
 		"app.message.followUp": "alt+q",
 		"app.message.queue": "alt+q",
+		"tui.input.submit": "enter",
 	});
 	const preferredQueueAction = context.platform === "darwin" ? "app.message.followUp" : "app.message.queue";
 	const fallbackQueueAction = context.platform === "darwin" ? "app.message.queue" : "app.message.followUp";
 	const queue =
 		keybindings.getDisplayString(preferredQueueAction, context) ||
 		keybindings.getDisplayString(fallbackQueueAction, context);
+	const submit = keybindings.getDisplayString("tui.input.submit", context);
 	const placeholder =
 		entry.surface === "composer-idle"
 			? getDefaultComposerPlaceholder(context)
-			: `${getDefaultComposerPlaceholder(context)} · Enter: Queue${queue ? ` · ${queue}: Queue` : ""}`;
+			: `${getDefaultComposerPlaceholder(context)}${submit ? ` · ${submit}: Queue` : ""}${queue ? ` · ${queue}: Queue` : ""}`;
 	configureComposer(editor, placeholder);
 	return [
 		theme.fg(
