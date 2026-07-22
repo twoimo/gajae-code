@@ -295,6 +295,28 @@ const expectedProfiles: Array<{ name: string; requiredProviders: string[]; mappi
 		},
 	},
 	{
+		name: "alibaba-token-plan-balanced",
+		requiredProviders: ["alibaba-token-plan"],
+		mapping: {
+			default: "alibaba-token-plan/qwen3.8-max-preview:medium",
+			executor: "alibaba-token-plan/deepseek-v4-pro:xhigh",
+			planner: "alibaba-token-plan/glm-5.2:high",
+			critic: "alibaba-token-plan/glm-5.2:high",
+			architect: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+		},
+	},
+	{
+		name: "alibaba-token-plan-qwenmaxxing",
+		requiredProviders: ["alibaba-token-plan"],
+		mapping: {
+			default: "alibaba-token-plan/qwen3.8-max-preview:medium",
+			executor: "alibaba-token-plan/qwen3.8-max-preview:low",
+			planner: "alibaba-token-plan/qwen3.8-max-preview:medium",
+			critic: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+			architect: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+		},
+	},
+	{
 		name: "opus-codex",
 		requiredProviders: ["anthropic", "openai-codex"],
 		mapping: {
@@ -384,7 +406,7 @@ const fixedNonCodexComboMappings: Record<string, Partial<Record<Role, string>>> 
 };
 
 describe("built-in model profile catalog", () => {
-	test("contains exact 28-profile matrix cell-for-cell", () => {
+	test("contains exact 30-profile matrix cell-for-cell", () => {
 		expect(BUILTIN_MODEL_PROFILES.map(profile => profile.name)).toEqual(
 			expectedProfiles.map(profile => profile.name),
 		);
@@ -458,6 +480,13 @@ describe("built-in model profile catalog", () => {
 		expect(missing).toEqual([]);
 		expect((modelsJson as Record<string, Record<string, unknown>>)["kimi-code"]?.k3).toBeDefined();
 		expect((modelsJson as Record<string, Record<string, unknown>>)["minimax-code"]?.["minimax-m3"]).toBeDefined();
+		expect(
+			(modelsJson as Record<string, Record<string, unknown>>)["alibaba-token-plan"]?.["deepseek-v4-pro"],
+		).toBeDefined();
+		expect((modelsJson as Record<string, Record<string, unknown>>)["alibaba-token-plan"]?.["glm-5.2"]).toBeDefined();
+		expect(
+			(modelsJson as Record<string, Record<string, unknown>>)["alibaba-token-plan"]?.["qwen3.8-max-preview"],
+		).toBeDefined();
 	});
 
 	test("plain minimax provider does not appear in catalog or recommendations", () => {
@@ -482,6 +511,7 @@ describe("built-in model profile catalog", () => {
 			"GROK",
 			"CURSOR",
 			"MINIMAX",
+			"ALIBABA TOKEN PLAN",
 			"COMBOS",
 		]);
 		expect(recommendModelProfileForProvider("openai-codex", profiles)?.name).toBe("codex-medium");
@@ -496,6 +526,17 @@ describe("built-in model profile catalog", () => {
 		expect(recommendModelProfileForProvider("xai", profiles)?.name).toBe("grok-medium");
 		expect(recommendModelProfileForProvider("grok-build", profiles)?.name).toBe("grok-build-pro");
 		expect(recommendModelProfileForProvider("cursor", profiles)?.name).toBe("cursor-medium");
+		expect(recommendModelProfileForProvider("alibaba-token-plan", profiles)?.name).toBe(
+			"alibaba-token-plan-balanced",
+		);
+		expect(getModelProfilePresentation("alibaba-token-plan-balanced")).toEqual({
+			displayName: "Balanced",
+			providerGroup: "ALIBABA TOKEN PLAN",
+		});
+		expect(getModelProfilePresentation("alibaba-token-plan-qwenmaxxing")).toEqual({
+			displayName: "QwenMaxxing",
+			providerGroup: "ALIBABA TOKEN PLAN",
+		});
 	});
 
 	test("grok-build-pro maps Composer 2.5 Fast and Grok Build roles", () => {
@@ -526,6 +567,23 @@ describe("built-in model profile catalog", () => {
 			}
 		}
 		expect(JSON.stringify(BUILTIN_MODEL_PROFILES)).not.toContain("minimax-v3");
+	});
+
+	test("Alibaba Token Plan profiles route their intended roles", () => {
+		expect(builtinMapping("alibaba-token-plan-balanced")).toEqual({
+			default: "alibaba-token-plan/qwen3.8-max-preview:medium",
+			executor: "alibaba-token-plan/deepseek-v4-pro:xhigh",
+			planner: "alibaba-token-plan/glm-5.2:high",
+			critic: "alibaba-token-plan/glm-5.2:high",
+			architect: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+		});
+		expect(builtinMapping("alibaba-token-plan-qwenmaxxing")).toEqual({
+			default: "alibaba-token-plan/qwen3.8-max-preview:medium",
+			executor: "alibaba-token-plan/qwen3.8-max-preview:low",
+			planner: "alibaba-token-plan/qwen3.8-max-preview:medium",
+			critic: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+			architect: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+		});
 	});
 
 	test("user same-name profile overrides builtin via mergeModelProfiles", () => {

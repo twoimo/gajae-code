@@ -35,6 +35,7 @@ import type { Settings } from "../../config/settings";
 import { type ThemeColor, theme } from "../../modes/theme/theme";
 import { formatModelOnboardingInlineHint } from "../../setup/model-onboarding-guidance";
 import { formatClampedModelSelector, getThinkingLevelMetadata, parseThinkingLevel } from "../../thinking";
+import { getConfiguredImageModel } from "../../tools/image-gen";
 import { getTabBarTheme } from "../shared";
 import { DynamicBorder } from "./dynamic-border";
 
@@ -118,6 +119,9 @@ export type ModelSelectorSelection =
 	| {
 			kind: "deleteProfile";
 			profileName: string;
+	  }
+	| {
+			kind: "imageGeneration";
 	  };
 
 interface PendingThinkingChoice {
@@ -183,13 +187,18 @@ interface PresetBrowseRow {
 	kind: "browse";
 }
 
+interface PresetImageGenerationRow {
+	kind: "imageGeneration";
+}
+
 type PresetLandingRow =
 	| PresetGroupRow
 	| PresetProfileRow
 	| PresetCreateRow
 	| PresetCreateUnavailableRow
 	| PresetAlreadySavedRow
-	| PresetBrowseRow;
+	| PresetBrowseRow
+	| PresetImageGenerationRow;
 
 // Stable logical identity for a preset landing row, independent of its current
 // list position. Used to relocate the cursor after the expanded group changes so
@@ -208,6 +217,8 @@ function presetRowIdentity(row: PresetLandingRow): string {
 			return "createUnavailable";
 		case "alreadySaved":
 			return `alreadySaved:${row.profile.name}`;
+		case "imageGeneration":
+			return "imageGeneration";
 	}
 }
 
@@ -334,6 +345,8 @@ export class ModelSelectorComponent extends Container {
 	#selectedActionIndex: number = 0;
 	#pendingThinkingChoice?: PendingThinkingChoice;
 	#selectedThinkingIndex: number = 0;
+	#assignmentState: "idle" | "assigning" = "idle";
+	#closeAfterAssignment = false;
 
 	// Preset landing state
 	#viewMode: ModelSelectorViewMode = "presets";
@@ -962,6 +975,7 @@ export class ModelSelectorComponent extends Container {
 		} else {
 			rows.push({ kind: "createUnavailable", label: "Select a model before creating a custom preset" });
 		}
+		rows.push({ kind: "imageGeneration" });
 		rows.push({ kind: "browse" });
 		return rows;
 	}
@@ -1047,7 +1061,8 @@ export class ModelSelectorComponent extends Container {
 			selected.kind === "browse" ||
 			selected.kind === "create" ||
 			selected.kind === "createUnavailable" ||
-			selected.kind === "alreadySaved"
+			selected.kind === "alreadySaved" ||
+			selected.kind === "imageGeneration"
 		)
 			return;
 		if (this.#expandedPresetProviderId === selected.groupId) return;
@@ -1063,7 +1078,8 @@ export class ModelSelectorComponent extends Container {
 			selected.kind === "browse" ||
 			selected.kind === "create" ||
 			selected.kind === "createUnavailable" ||
-			selected.kind === "alreadySaved"
+			selected.kind === "alreadySaved" ||
+			selected.kind === "imageGeneration"
 		)
 			return;
 		if (this.#expandedPresetProviderId !== selected.groupId) return;
@@ -1159,6 +1175,16 @@ export class ModelSelectorComponent extends Container {
 			}
 			if (row.kind === "browse") {
 				const label = "Browse all models";
+				this.#listContainer.addChild(new Text(`${prefix}${selected ? theme.fg("accent", label) : label}`, 0, 0));
+				continue;
+			}
+			if (row.kind === "imageGeneration") {
+				const config = getConfiguredImageModel();
+				const current =
+					config && config.provider !== "auto"
+						? `${config.provider}${config.model ? ` (${config.model})` : ""}`
+						: "Auto";
+				const label = `Image Generation: ${current}`;
 				this.#listContainer.addChild(new Text(`${prefix}${selected ? theme.fg("accent", label) : label}`, 0, 0));
 				continue;
 			}
@@ -1469,6 +1495,12 @@ export class ModelSelectorComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
+		if (this.#assignmentState === "assigning") {
+			if (getKeybindings().matches(keyData, "tui.select.cancel")) {
+				this.#closeAfterAssignment = true;
+			}
+			return;
+		}
 		if (this.#pendingThinkingChoice) {
 			this.#handleThinkingMenuInput(keyData);
 			return;
@@ -1644,6 +1676,10 @@ export class ModelSelectorComponent extends Container {
 		}
 		if (row.kind === "browse") {
 			this.#switchToModelMode();
+			return;
+		}
+		if (row.kind === "imageGeneration") {
+			this.#onSelectCallback({ kind: "imageGeneration" });
 			return;
 		}
 		if (row.kind === "group") {
@@ -1833,23 +1869,49 @@ export class ModelSelectorComponent extends Container {
 				? item.selector
 				: formatModelSelectorValue(item.selector, selectedThinkingLevel);
 
-		// Update local state for UI
-		for (const targetRole of roles ?? [role]) {
-			this.#roles[targetRole] = { model: item.model, thinkingLevel: selectedThinkingLevel };
-		}
-
-		// Notify caller (for updating agent state if needed)
-		this.#onSelectCallback({
+		const selection: Extract<ModelSelectorSelection, { kind: "assignment" }> = {
 			kind: "assignment",
 			model: item.model,
 			role,
 			roles,
 			thinkingLevel: selectedThinkingLevel,
 			selector: selectorValue,
-		});
+		};
+		if (this.#isTrackedSingleAssignment(selection)) {
+			void this.#handleTrackedAssignment(selection);
+			return;
+		}
+
+		// Update local state for UI
+		for (const targetRole of roles ?? [role]) {
+			this.#roles[targetRole] = { model: item.model, thinkingLevel: selectedThinkingLevel };
+		}
+
+		// Notify caller (for updating agent state if needed)
+		this.#onSelectCallback(selection);
 
 		// Update list to show new badges
 		this.#updateList();
+	}
+	#isTrackedSingleAssignment(selection: Extract<ModelSelectorSelection, { kind: "assignment" }>): boolean {
+		return selection.role !== null && selection.roles === undefined;
+	}
+
+	async #handleTrackedAssignment(selection: Extract<ModelSelectorSelection, { kind: "assignment" }>): Promise<void> {
+		if (this.#assignmentState !== "idle") return;
+		this.#assignmentState = "assigning";
+		this.#tui.requestRender();
+		try {
+			await Promise.resolve(this.#onSelectCallback(selection));
+		} catch {
+			// The controller reports tracked assignment failures before rethrowing.
+		} finally {
+			this.#assignmentState = "idle";
+			const shouldClose = this.#closeAfterAssignment;
+			this.#closeAfterAssignment = false;
+			if (shouldClose) this.#onCancelCallback();
+			else this.#tui.requestRender();
+		}
 	}
 
 	getSearchInput(): Input {

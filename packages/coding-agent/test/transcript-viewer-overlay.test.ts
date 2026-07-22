@@ -5,6 +5,7 @@ import type { AssistantMessage } from "@gajae-code/ai";
 import { resetSettingsForTest, Settings } from "@gajae-code/coding-agent/config/settings";
 import { TempDir } from "@gajae-code/utils";
 import { ModelRegistry } from "../src/config/model-registry";
+import { createToolTranscriptRenderDescriptor } from "../src/modes/components/tool-transcript-format";
 import {
 	type TranscriptViewerEntry,
 	TranscriptViewerOverlay,
@@ -411,6 +412,30 @@ test("sanitizes tool results and leaves expanded assistant text uncapped", () =>
 	for (let index = 0; index < 20; index++) viewer.handleInput("\x1b[6~");
 	rendered = viewer.render(100).join("\n");
 	expect(rendered).toContain("assistant-149");
+});
+
+test("uses final rendered lines without Markdown processing and keeps raw ANSI-free", () => {
+	const canonical = "raw\x1b]52;c;copy\x07\x1b[31mstyled";
+	const viewer = new TranscriptViewerOverlay({
+		getEntries: () => [
+			entryForOverlay("rich", canonical, {
+				kind: "tool",
+				renderDescriptor: createToolTranscriptRenderDescriptor({
+					name: "bash",
+					args: {},
+					resultContent: "done",
+					hasResult: true,
+				}),
+				getDisplayText: () => "display",
+				richRenderEligible: true,
+			}),
+		],
+		onClose: () => {},
+	});
+	viewer.handleInput(" ");
+	expect(viewer.render(100).join("\n")).toContain("✓ done");
+	viewer.handleInput("r");
+	expect(viewer.render(100).join("\n")).not.toContain("\x1b[31mstyled");
 });
 
 function entryForOverlay(

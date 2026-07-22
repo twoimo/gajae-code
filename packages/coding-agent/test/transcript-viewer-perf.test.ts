@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
-import { TOOL_RESULT_MAX_EXPANDED_LINES, toolDisplayText } from "../src/modes/components/tool-transcript-format";
+import {
+	createToolTranscriptRenderDescriptor,
+	renderToolDisplayLines,
+	TOOL_RESULT_MAX_EXPANDED_LINES,
+	toolDisplayText,
+} from "../src/modes/components/tool-transcript-format";
 import { TranscriptViewerOverlay, transcriptViewerEntries } from "../src/modes/components/transcript-viewer-overlay";
-import { initTheme } from "../src/modes/theme/theme";
+import { initTheme, theme } from "../src/modes/theme/theme";
 import { TranscriptItemRegistry } from "../src/modes/transcript-item-registry";
 
 initTheme();
@@ -23,6 +28,7 @@ test("bounds expanded tool rendering independently of raw result size", () => {
 	const oneHundredThousand = toolDisplayText(fields(result(100_000)), true);
 	const callBlockLines = toolDisplayText(fields(""), false).split("\n").length;
 	const bound = callBlockLines + TOOL_RESULT_MAX_EXPANDED_LINES + 1;
+	const richRenderedBound = bound + 2;
 	expect(oneThousand.split("\n").length).toBeLessThanOrEqual(bound);
 	expect(oneHundredThousand.split("\n").length).toBe(oneThousand.split("\n").length);
 
@@ -62,7 +68,7 @@ test("bounds expanded tool rendering independently of raw result size", () => {
 	Object.defineProperty(process.stdout, "rows", { configurable: true, value: 1_000 });
 	try {
 		const renderedOneThousand = renderedToolContentLineCount(result(1_000));
-		expect(renderedOneThousand).toBeLessThanOrEqual(bound);
+		expect(renderedOneThousand).toBeLessThanOrEqual(richRenderedBound);
 
 		const maxLineWidth = 150;
 		const overWidthResult = (lines: number) =>
@@ -87,4 +93,33 @@ test("bounds expanded tool rendering independently of raw result size", () => {
 	const assistant = transcriptViewerEntries(assistantRegistry).find(entry => entry.id === "assistant");
 	expect(assistant?.getDisplayText).toBeUndefined();
 	expect(assistant?.payload.text.split("\n")).toHaveLength(150);
+});
+
+test("caps a valid 50,000-line result before wrapping while preserving source omission accounting", () => {
+	const descriptor = createToolTranscriptRenderDescriptor({
+		name: "bash",
+		args: {},
+		resultContent: Array.from({ length: 50_000 }, () => "x".repeat(19)).join("\n"),
+		hasResult: true,
+	});
+	const lines = renderToolDisplayLines(descriptor, 1, theme);
+	expect(lines).toHaveLength(TOOL_RESULT_MAX_EXPANDED_LINES + 11);
+	expect(lines.at(-1)).toBe("... 49900 more lines");
+});
+
+test("keeps rich expanded-tool recompute below the frame budget without a cache", () => {
+	const descriptor = createToolTranscriptRenderDescriptor({
+		name: "edit",
+		args: { path: "src/example.ts" },
+		resultContent: "done",
+		detailsData: { diff: Array.from({ length: 200 }, (_, index) => `+line ${index}`).join("\n") },
+		hasResult: true,
+	});
+	const timings = Array.from({ length: 50 }, () => {
+		const started = performance.now();
+		renderToolDisplayLines(descriptor, 80, theme);
+		return performance.now() - started;
+	}).sort((left, right) => left - right);
+	const p95 = timings[Math.ceil(timings.length * 0.95) - 1] ?? Infinity;
+	expect(p95).toBeLessThan(16);
 });

@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+	buildToolTranscriptEntry,
 	composeToolCall,
 	composeToolResult,
 	composeToolText,
+	createToolTranscriptRenderDescriptor,
 	formatToolArgs,
 	MAX_TOOL_ARGS_CHARS,
 	TOOL_RESULT_MAX_EXPANDED_LINES,
@@ -97,5 +99,38 @@ describe("tool transcript format", () => {
 		expect(toolDisplayText({ ...base, resultText: "one\ntwo\n", isError: false, hasResult: true }, true)).toBe(
 			"one\ntwo",
 		);
+	});
+
+	test("preserves canonical hostile bytes while freezing the sanitized display descriptor", () => {
+		const hostile = "result\x1b]52;c;copy\x07\x1bPpayload\x1b\\\x1b[2J\x01\x80";
+		const descriptor = createToolTranscriptRenderDescriptor({
+			name: "ba\x1b[31msh",
+			args: { command: "echo\x1b]52;c;copy\x07", nested: ["\x1b[H", "safe"] },
+			intent: "run\x01",
+			resultContent: hostile,
+			detailsData: {
+				diff: "--- a/file\n+++ b/file\n\x1b]52;c;copy\x07",
+				perFileResults: [{ path: "src/\x1b[31mfile.ts", diff: "\x1bPpayload\x1b\\" }],
+			},
+			hasResult: true,
+		});
+		const entry = buildToolTranscriptEntry({
+			canonicalPayload: { text: hostile, metadata: {}, source: hostile },
+			renderDescriptor: descriptor,
+			capabilities: { copyable: true, foldable: true, rawViewable: true },
+			identity: { id: "tool:hostile", label: "bash" },
+		});
+
+		expect(entry.payload.text).toBe(hostile);
+		expect(Object.isFrozen(descriptor)).toBe(true);
+		expect(Object.isFrozen(descriptor.args)).toBe(true);
+		expect(() => {
+			(descriptor.args as { command: string }).command = "mutated";
+		}).toThrow();
+		expect(JSON.stringify(descriptor)).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+		expect(entry.getDisplayText?.(true)).not.toMatch(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/);
+		expect(Object.isFrozen(descriptor.detailsData as object)).toBe(true);
+		expect(Object.isFrozen((descriptor.detailsData as { perFileResults: unknown[] }).perFileResults)).toBe(true);
+		expect(JSON.stringify(descriptor.detailsData)).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
 	});
 });

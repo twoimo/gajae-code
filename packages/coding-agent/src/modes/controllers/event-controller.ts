@@ -242,6 +242,7 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		this.ctx.promptSuggestion?.onAgentStart();
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
@@ -836,6 +837,7 @@ export class EventController {
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
 		this.sendCompletionNotification();
+		this.ctx.promptSuggestion?.onAgentEnd();
 	}
 
 	async #handleAutoCompactionStart(
@@ -847,6 +849,10 @@ export class EventController {
 		this.ctx.editor.onEscape = () => {
 			this.ctx.session.abortCompaction();
 		};
+		if (this.ctx.loadingAnimation) {
+			this.ctx.loadingAnimation.stop();
+			this.ctx.loadingAnimation = undefined;
+		}
 		this.ctx.statusContainer.clear();
 		const reasonText =
 			event.reason === "overflow" ? "Context overflow detected, " : event.reason === "idle" ? "Idle " : "";
@@ -939,6 +945,10 @@ export class EventController {
 				this.ctx.session.abortRetry();
 			}
 		};
+		if (this.ctx.loadingAnimation) {
+			this.ctx.loadingAnimation.stop();
+			this.ctx.loadingAnimation = undefined;
+		}
 		this.ctx.statusContainer.clear();
 		// Stop any prior retry loader/timer before installing a new one.
 		this.ctx.retryLoader?.stop();

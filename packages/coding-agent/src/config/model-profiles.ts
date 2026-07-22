@@ -257,6 +257,20 @@ export const BUILTIN_MODEL_PROFILES: readonly ModelProfileDefinition[] = [
 		critic: "minimax-code/minimax-m3:xhigh",
 		architect: "minimax-code/minimax-m3:xhigh",
 	}),
+	profile("alibaba-token-plan-balanced", ["alibaba-token-plan"], {
+		default: "alibaba-token-plan/qwen3.8-max-preview:medium",
+		executor: "alibaba-token-plan/deepseek-v4-pro:xhigh",
+		planner: "alibaba-token-plan/glm-5.2:high",
+		architect: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+		critic: "alibaba-token-plan/glm-5.2:high",
+	}),
+	profile("alibaba-token-plan-qwenmaxxing", ["alibaba-token-plan"], {
+		default: "alibaba-token-plan/qwen3.8-max-preview:medium",
+		executor: "alibaba-token-plan/qwen3.8-max-preview:low",
+		planner: "alibaba-token-plan/qwen3.8-max-preview:medium",
+		architect: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+		critic: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+	}),
 	profile("opus-codex", ["anthropic", "openai-codex"], {
 		default: "anthropic/claude-opus-4-8:xhigh",
 		executor: "openai-codex/gpt-5.6-terra:low",
@@ -315,6 +329,8 @@ const PROFILE_PRESENTATION: Record<string, ModelProfilePresentation> = {
 	"minimax-eco": { displayName: "MiniMax Eco", providerGroup: "MINIMAX" },
 	"minimax-medium": { displayName: "MiniMax Medium", providerGroup: "MINIMAX" },
 	"minimax-pro": { displayName: "MiniMax Pro", providerGroup: "MINIMAX" },
+	"alibaba-token-plan-balanced": { displayName: "Balanced", providerGroup: "ALIBABA TOKEN PLAN" },
+	"alibaba-token-plan-qwenmaxxing": { displayName: "QwenMaxxing", providerGroup: "ALIBABA TOKEN PLAN" },
 	"opus-codex": { displayName: "Opus + Codex", providerGroup: "COMBOS" },
 	"codex-opencodego": { displayName: "Codex + OpenCodeGo", providerGroup: "COMBOS" },
 	"fable-opus-codex": { displayName: "Fable + Opus + Codex", providerGroup: "COMBOS" },
@@ -330,6 +346,7 @@ const PROFILE_GROUP_ORDER = [
 	"GROK",
 	"CURSOR",
 	"MINIMAX",
+	"ALIBABA TOKEN PLAN",
 	"COMBOS",
 ];
 
@@ -347,6 +364,7 @@ const PROFILE_RECOMMENDATIONS: Record<string, string> = {
 	"grok-build": "grok-build-pro",
 	cursor: "cursor-medium",
 	"minimax-code": "minimax-medium",
+	"alibaba-token-plan": "alibaba-token-plan-balanced",
 };
 
 export function getModelProfilePresentation(

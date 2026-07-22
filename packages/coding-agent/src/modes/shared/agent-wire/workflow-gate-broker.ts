@@ -76,6 +76,13 @@ export interface NotificationGateResolutionOptions {
 	closeClaimInvalid(reason: string): void;
 }
 
+export class NotificationGatePolicyChangedError extends Error {
+	constructor() {
+		super("Notification policy changed while resolving the workflow gate");
+		this.name = "NotificationGatePolicyChangedError";
+	}
+}
+
 export interface AskSelectedAckRecoveryParticipant {
 	requestRecoveredAskSelectedAck(input: {
 		sessionId: string;
@@ -88,7 +95,7 @@ export interface AskSelectedAckRecoveryParticipant {
 
 /** SDK-native surface for emitting a workflow gate and awaiting its answer. */
 export interface WorkflowGateEmitter {
-	isUnattended(): boolean;
+	supportsRemoteGateAnswers(): boolean;
 	emitGate(input: OpenGateInput): Promise<unknown>;
 	onGateEmitted?(listener: (gate: WorkflowGate) => void): () => void;
 	resolveGate?(response: WorkflowGateResponse): Promise<WorkflowGateResolution>;
@@ -160,7 +167,7 @@ export class BrokerWorkflowGateEmitter implements WorkflowGateEmitter {
 		});
 	}
 
-	isUnattended(): boolean {
+	supportsRemoteGateAnswers(): boolean {
 		return true;
 	}
 	setRuntimeTurnProvider(provider: (() => string | undefined) | null): void {
@@ -361,7 +368,8 @@ export class BrokerWorkflowGateEmitter implements WorkflowGateEmitter {
 								daemonDeadlineAt: Date.now() + 8_000,
 								hostTimeoutMs: 10_000,
 							});
-						} catch {
+						} catch (error) {
+							if (error instanceof NotificationGatePolicyChangedError) throw error;
 							outcome = { status: "unknown", reason: "host_timeout" };
 						}
 						this.#broker.updateAckPolicy(response.gate_id, {
@@ -378,6 +386,14 @@ export class BrokerWorkflowGateEmitter implements WorkflowGateEmitter {
 			else closeClaimInvalid(resolution.error?.code ?? "invalid_answer");
 			return resolution;
 		} catch (error) {
+			if (error instanceof NotificationGatePolicyChangedError) {
+				try {
+					closeClaimInvalid(error.message);
+				} finally {
+					this.quarantineGate(response.gate_id);
+				}
+				throw error;
+			}
 			closeClaimInvalid(error instanceof Error ? error.message : "invalid_answer");
 			this.#scheduleRecovery();
 			throw error;

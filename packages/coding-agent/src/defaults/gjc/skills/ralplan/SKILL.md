@@ -24,12 +24,6 @@ Ralplan is the consensus planning workflow. It triggers iterative planning with 
 - `--architect openai-code` / `--critic openai-code`: Use OpenAI code for that review pass when available; otherwise note the fallback and use default GJC review.
 - `--write --stage <type> --stage_n <N> --artifact <markdown file path or markdown string>`: Native writer for Planner/Architect/Critic/revision/ADR/final pending-approval markdown under `.gjc/_session-{sessionid}/plans/ralplan/<run-id>/`; do not edit `.gjc/` directly.
 
-## Usage with interactive mode
-
-```
-/skill:ralplan --interactive "task description"
-```
-
 ## Corrupt current-session state recovery
 
 For corrupt, tampered, unreadable, or stale current-session ralplan state, run `gjc state clear --force --mode ralplan` scoped by `--session-id`, command payload, or `GJC_SESSION_ID`; it clears only ralplan state for that session.
@@ -39,6 +33,8 @@ For corrupt, tampered, unreadable, or stale current-session ralplan state, run `
 ## Planning/Execution Boundary
 
 Ralplan is planning only. It may inspect context and draft plan/spec/proposal artifacts, but those remain `pending approval` until explicit current-turn or structured-UI execution approval. Before that approval, do not mutate product source, run mutation-oriented shell, commit, push, open PRs, invoke execution skills, or delegate implementation.
+
+Explicitly naming `ultragoal` or `team` (including `/skill:` and `gjc` forms) counts as opting into execution for that skill — do not re-ask for the same consent.
 
 Persist planning artifacts and handoffs through the ralplan CLI writer, never direct `.gjc/` edits:
 Direct `write`, `edit`, or `ast_edit` calls against `.gjc/_session-{sessionid}/specs`, `.gjc/_session-{sessionid}/plans`, `.gjc/_session-{sessionid}/state`, or any other `.gjc/` path are forbidden unless an explicit force override is active.
@@ -88,7 +84,7 @@ The consensus workflow:
       - For every confirmed open item, embed the resolved outcome into the final plan under an **## Intent Reconciliation** section so the `pending approval` artifact records each decision; record any item the user explicitly defers as an open confirmation under that same section.
    d. Persist the reconciliation with `gjc ralplan --write --stage post-interview --stage_n <N> --artifact-env GJC_RALPLAN_ARTIFACT --json`, then return the receipt/path plus a compact status (reconciled-clean / reconciled-with-revision / open-confirmations-pending) instead of pasting the full body.
 7. On reconciliation completion, re-check the review join gate (Critic `OKAY` plus Architect `CLEAR`/`APPROVE` for the same Planner artifact/pass), mark the plan `pending approval` unless explicit execution approval has already been captured, persist the ADR/final plan via `gjc ralplan --write --stage final --stage_n <N> --artifact-env GJC_RALPLAN_ARTIFACT`, and do not directly edit `.gjc/_session-{sessionid}/plans`. Final plan must include ADR (Decision, Drivers, Alternatives considered, Why chosen, Consequences, Follow-ups) and, when present, the **## Intent Reconciliation** section.
-8. **Always** present the finalized plan via the `ask` tool (regardless of `--interactive`) with `workflowGate: { stage: "ralplan", kind: "approval" }` on the final question so RPC/headless clients receive a `ralplan`/`approval` workflow gate, not a deep-interview question gate. Use these options:
+8. **Final approval gate (with explicit-execution exception):** If the user already explicitly named an execution skill in the current turn or via the structured approval UI (`ultragoal`, `/skill:ultragoal`, `gjc ultragoal`, `team`, `/skill:team`, `gjc team`, or "Approve execution via ultragoal/team"), that is execution approval — skip the re-ask and proceed to step 9 with that skill. Otherwise, **always** present the finalized plan via the `ask` tool (regardless of `--interactive`) with `workflowGate: { stage: "ralplan", kind: "approval" }` on the final question so RPC/headless clients receive a `ralplan`/`approval` workflow gate, not a deep-interview question gate. Use these options:
    - **Refine further** — re-run the consensus loop / request changes, then return here
    - **Approve execution via ultragoal (Recommended)** — goal-tracked autonomous execution
    - **Approve execution via team** — only when tmux-based interactive worker parallelization is required

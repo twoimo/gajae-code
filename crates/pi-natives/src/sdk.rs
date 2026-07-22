@@ -14,6 +14,7 @@
 use std::{
 	path::PathBuf,
 	sync::atomic::{AtomicU64, Ordering},
+	time::Duration,
 };
 
 use gjc_sdk::{
@@ -600,6 +601,22 @@ impl NotificationServer {
 			.map_err(|error| Error::from_reason(error.to_string()))
 	}
 
+	/// Deliver a frame through every authenticated connection and wait for each
+	/// socket writer to settle within `timeout_ms`.
+	#[napi]
+	pub async fn push_frame_and_wait(&self, frame_json: String, timeout_ms: u32) -> Result<bool> {
+		let msg: ServerMessage = serde_json::from_str(&frame_json)
+			.map_err(|e| Error::from_reason(format!("invalid frame json: {e}")))?;
+		if matches!(msg, ServerMessage::TurnStream(_)) {
+			saturating_increment(&self.turn_stream_serde_validation_parses);
+		}
+		let handle = self.with_handle(Clone::clone)?;
+		handle
+			.push_frame_and_wait(msg, Duration::from_millis(u64::from(timeout_ms)))
+			.await
+			.map_err(|error| Error::from_reason(error.to_string()))
+	}
+
 	/// Broadcast a TypeScript-constructed turn frame without re-parsing JSON.
 	/// External frames must continue through [`Self::push_frame`] for serde
 	/// validation.
@@ -1142,7 +1159,9 @@ fn ensure_not_current_arbitrated_presentation(
 
 #[cfg(test)]
 mod tests {
-	use super::{ActionIdentity, PresentationLease, ensure_not_current_arbitrated_presentation};
+	use super::{
+		ActionIdentity, PresentationLease, ensure_not_current_arbitrated_presentation, parse_needed,
+	};
 
 	#[test]
 	fn ephemeral_turn_mapping_preserves_question_and_tuple_without_token() {
@@ -1205,6 +1224,38 @@ mod tests {
 			.expect_err("exact arbitrated presentation must reject id-only resolution");
 			assert!(error.reason.contains(method));
 		}
+	}
+	#[test]
+	fn register_ask_input_preserves_recommended_index_and_legacy_omission() {
+		let needed = parse_needed(
+			r#"{"id":"a1","kind":"ask","sessionId":"session","options":["Yes","No"],"recommendedIndex":4294967295}"#,
+		)
+		.expect("valid N-API registerAsk input");
+		assert_eq!(needed.recommended_index, Some(u32::MAX));
+		let roundtrip = serde_json::to_string(&needed).unwrap();
+		assert!(roundtrip.contains(r#""recommendedIndex":4294967295"#));
+		assert_eq!(parse_needed(&roundtrip).unwrap().recommended_index, Some(u32::MAX));
+
+		let legacy =
+			parse_needed(r#"{"id":"legacy","kind":"ask","sessionId":"session","options":["Yes"]}"#)
+				.expect("legacy N-API registerAsk input");
+		assert_eq!(legacy.recommended_index, None);
+		assert!(
+			!serde_json::to_string(&legacy)
+				.unwrap()
+				.contains("recommendedIndex")
+		);
+	}
+
+	#[test]
+	fn register_ask_input_drops_malformed_recommended_index_but_rejects_required_field_failure() {
+		for malformed in ["null", "1.5", "-1", r#""1""#, "true", "[]", "{}", "4294967296"] {
+			let input = format!(
+				r#"{{"id":"a1","kind":"ask","sessionId":"session","options":["Yes"],"recommendedIndex":{malformed}}}"#
+			);
+			assert_eq!(parse_needed(&input).unwrap().recommended_index, None, "{malformed}");
+		}
+		assert!(parse_needed(r#"{"kind":"ask","sessionId":"session"}"#).is_err());
 	}
 
 	#[test]

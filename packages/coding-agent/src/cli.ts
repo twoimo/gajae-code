@@ -8,6 +8,12 @@ import "@gajae-code/utils/postmortem";
 import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
 import { runFixtureReport } from "./cli/fixture-report";
+import { admitManagedOwnerBeforeCli, completeManagedOwnerRecovery } from "./gjc-runtime/managed-owner-admission";
+import {
+	isManagedOwnerSupervisorArgv,
+	MANAGED_OWNER_CHILD_TOKEN_ENV,
+	runManagedOwnerSupervisor,
+} from "./gjc-runtime/managed-owner-supervisor";
 import { isTmuxOwnerIsolationCliArgv, runTmuxOwnerIsolationCliFromStdin } from "./gjc-runtime/tmux-owner-isolation-cli";
 import { smokeTestTabWorker } from "./tools/browser/tab-worker-smoke";
 
@@ -287,9 +293,34 @@ export function normalizeResumeAlias(argv: readonly string[]): string[] {
 	return argv.length === 1 && argv[0] === "resume" ? ["--resume"] : [...argv];
 }
 
+function routeLegacyRootArgv(argv: readonly string[]): string[] | undefined {
+	if (argv[0] === "coordinator-mcp") return ["mcp-serve", "coordinator", ...argv.slice(1)];
+	if (argv[0] !== "--team") return undefined;
+	const sizeValues: string[] = [];
+	const remaining: string[] = [];
+	for (let index = 1; index < argv.length; index++) {
+		const arg = argv[index] ?? "";
+		if (arg === "--team-size") {
+			sizeValues.push(argv[index + 1] ?? "");
+			index++;
+		} else if (arg.startsWith("--team-size=")) {
+			sizeValues.push(arg.slice("--team-size=".length));
+		} else {
+			remaining.push(arg);
+		}
+	}
+	const size = sizeValues[0];
+	if (sizeValues.length !== 1 || !size || !/^[1-9]\d*$/.test(size)) {
+		return ["team", "0", "invalid legacy --team-size"];
+	}
+	return ["team", size, ...remaining];
+}
+
 /** Apply the same default-launch routing used by runCli after root fast paths. */
 export function routeRootArgv(argv: readonly string[]): string[] {
 	const normalizedArgv = normalizeResumeAlias(argv);
+	const legacyArgv = routeLegacyRootArgv(normalizedArgv);
+	if (legacyArgv) return legacyArgv;
 	const first = normalizedArgv[0];
 	return first === "--help" || first === "-h" || first === "--version" || first === "-v" || first === "help"
 		? normalizedArgv
@@ -325,6 +356,18 @@ export async function runCli(argv: string[]): Promise<void> {
 		await runTmuxOwnerIsolationCliFromStdin();
 		return;
 	}
+	if (isManagedOwnerSupervisorArgv(argv)) {
+		await runManagedOwnerSupervisor();
+		return;
+	}
+	if (process.env[MANAGED_OWNER_CHILD_TOKEN_ENV] !== undefined) {
+		const admission = await admitManagedOwnerBeforeCli();
+		if (admission.kind === "blocked") return;
+		if (admission.kind === "recovery") {
+			await completeManagedOwnerRecovery(admission.context);
+			return;
+		}
+	}
 	if (isNotifyDaemonInternalFastPath(argv)) {
 		await runNotifyDaemonInternalFastPath(argv);
 		return;
@@ -348,11 +391,9 @@ export async function runCli(argv: string[]): Promise<void> {
 		process.exitCode = await runFixtureReport(id);
 		return;
 	}
-	if (isStatsHelpFastPath(argv)) {
-		showStatsFastHelp();
-		return;
-	}
-	if (hasRootHelpFlag(argv)) {
+	const normalizedArgv = normalizeResumeAlias(argv);
+	const legacyArgv = routeLegacyRootArgv(normalizedArgv);
+	if (!legacyArgv && hasRootHelpFlag(normalizedArgv)) {
 		const { renderRootHelp } = await import("@gajae-code/utils/cli");
 		const { getExtraHelpText } = await import("./cli/fast-help");
 		renderRootHelp({ bin: APP_NAME, version: VERSION, commands: new Map([["launch", RootHelpCommand]]) });
@@ -362,14 +403,16 @@ export async function runCli(argv: string[]): Promise<void> {
 		}
 		return;
 	}
-	if (hasRootVersionFlag(argv)) {
+	if (!legacyArgv && hasRootVersionFlag(normalizedArgv)) {
 		process.stdout.write(`${APP_NAME}/${VERSION}\n`);
 		return;
 	}
+	const runArgv = legacyArgv ?? routeRootArgv(normalizedArgv);
+	if (isStatsHelpFastPath(runArgv)) {
+		showStatsFastHelp();
+		return;
+	}
 	await installRuntimeGlobals();
-	// --help and --version are handled by run() directly, don't rewrite those.
-	// Everything else that isn't a known subcommand routes to "launch".
-	const runArgv = routeRootArgv(argv);
 	return run({ bin: APP_NAME, version: VERSION, argv: runArgv, commands, help: showHelp });
 }
 

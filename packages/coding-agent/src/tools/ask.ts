@@ -38,10 +38,17 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { appendOrMergeDeepInterviewRound, syncDeepInterviewRecorderHud } from "../gjc-runtime/deep-interview-recorder";
 import { deepInterviewStatePath } from "../gjc-runtime/deep-interview-runtime";
 import {
+	assertDeepInterviewInputWithinLimit,
+	assertDeepInterviewStructuredResponseWithinLimit,
+	deepInterviewCharacterCount,
+	MAX_USER_RESPONSE_LENGTH,
+} from "../gjc-runtime/deep-interview-state";
+import {
 	type AskGateQuestion,
 	gateAnswerToResult,
 	questionToGate,
 } from "../modes/shared/agent-wire/deep-interview-gate";
+
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { renderStatusLine } from "../tui";
@@ -63,15 +70,35 @@ import { assertUltragoalAskAllowed } from "./ultragoal-ask-guard";
 // Types
 // =============================================================================
 
+function deepInterviewBoundedString(maximum: number) {
+	return z.string().superRefine((value, context) => {
+		if (deepInterviewCharacterCount(value) > maximum)
+			context.addIssue({
+				code: "too_big",
+				maximum,
+				inclusive: true,
+				origin: "string",
+				message: `Too big: expected string to have <=${maximum} characters`,
+			});
+	});
+}
+
 const OptionItem = z.object({
 	label: z.string().describe("display label"),
 });
 
+const DEEP_INTERVIEW_INTENT_ID_PATTERN = /^(artifact|surface|integration|constraint):[a-z0-9][a-z0-9._/-]{0,127}$/;
+
+const DeepInterviewReferenceId = z.string().superRefine((value, context) => {
+	if (!DEEP_INTERVIEW_INTENT_ID_PATTERN.test(value))
+		context.addIssue({ code: "custom", message: "invalid deep-interview intent ID" });
+});
+
 const DeepInterviewIntentItem = z
 	.object({
-		id: z.string().regex(/^(artifact|surface|integration|constraint):[a-z0-9][a-z0-9._/-]{0,127}$/),
+		id: z.string().regex(DEEP_INTERVIEW_INTENT_ID_PATTERN),
 		category: z.enum(["artifact", "surface", "integration", "constraint"]),
-		statement: z.string().min(1).max(1_000),
+		statement: deepInterviewBoundedString(1_000).min(1),
 	})
 	.strict()
 	.superRefine((value, context) => {
@@ -82,7 +109,7 @@ const DeepInterviewIntentItem = z
 const DeepInterviewIntentContract = z
 	.object({
 		items: z.array(DeepInterviewIntentItem).min(1).max(64),
-		confirmation_options: z.array(z.string().min(1).max(200)).min(1).max(5),
+		confirmation_options: z.array(deepInterviewBoundedString(200).min(1)).min(1).max(5),
 	})
 	.strict();
 
@@ -93,43 +120,57 @@ const DeepInterviewIntentReview = z
 			.array(
 				z
 					.object({
-						removed_id: z
-							.string()
-							.regex(/^(artifact|surface|integration|constraint):[a-z0-9][a-z0-9._/-]{0,127}$/),
-						replacement_ids: z
-							.array(z.string().regex(/^(artifact|surface|integration|constraint):[a-z0-9][a-z0-9._/-]{0,127}$/))
-							.min(1)
-							.max(64),
-						rationale: z.string().min(1).max(500),
+						removed_id: DeepInterviewReferenceId,
+						replacement_ids: z.array(DeepInterviewReferenceId).min(1).max(64),
+						rationale: deepInterviewBoundedString(500).min(1),
 					})
 					.strict(),
 			)
 			.max(64),
-		approval_options: z.array(z.string().min(1).max(200)).min(1).max(5),
+		approval_options: z.array(deepInterviewBoundedString(200).min(1)).min(1).max(5),
 	})
 	.strict();
 
 /** Optional structured deep-interview round metadata; when present the round is recorded automatically. */
 const DeepInterviewMetadata = z.object({
-	round_id: z.string().max(128).describe("stable optional round identity").optional(),
+	round_id: deepInterviewBoundedString(128).describe("stable optional round identity").optional(),
 	round: z.number().int().nonnegative().describe("round number"),
-	component: z.string().min(1).max(128).describe("targeted topology component"),
-	dimension: z.string().min(1).max(128).describe("targeted clarity dimension"),
+	component: deepInterviewBoundedString(128).min(1).describe("targeted topology component"),
+	dimension: deepInterviewBoundedString(128).min(1).describe("targeted clarity dimension"),
 	ambiguity: z.number().min(0).max(1).describe("ambiguity at ask time (0..1)"),
+	confused_terms: z
+		.array(deepInterviewBoundedString(256).min(1))
+		.max(32)
+		.describe("explicit terms the user does not understand; glossary help only, never inferred")
+		.optional(),
+	references: z
+		.array(
+			z
+				.object({
+					reference_id: deepInterviewBoundedString(256).min(1),
+					label: deepInterviewBoundedString(256).min(1),
+					origin: deepInterviewBoundedString(256).min(1),
+					url: deepInterviewBoundedString(2048).min(1).optional(),
+					excerpt: deepInterviewBoundedString(2048).min(1).optional(),
+				})
+				.strict(),
+		)
+		.max(32)
+		.describe("inert reference context for contrast questions only; url/excerpt are never auto-fetched")
+		.optional(),
 });
 
-/** Provider-visible branches keep ordinary, contract, and review metadata mutually exclusive. */
 const DeepInterviewMeta = z.union([
 	DeepInterviewMetadata.strict(),
 	DeepInterviewMetadata.extend({
-		round: z.literal(0).describe("round number"),
-		component: z.literal("review-topology").describe("targeted topology component"),
-		dimension: z.literal("topology").describe("targeted clarity dimension"),
-		intent_contract: DeepInterviewIntentContract.describe("Round-0 locked intent contract"),
+		round: z.literal(0),
+		component: z.literal("review-topology"),
+		dimension: z.literal("topology"),
+		intent_contract: DeepInterviewIntentContract,
 	}).strict(),
 	DeepInterviewMetadata.extend({
-		round: z.number().int().positive().describe("round number"),
-		intent_review: DeepInterviewIntentReview.describe("Locked-intent reduction review"),
+		round: z.number().int().positive(),
+		intent_review: DeepInterviewIntentReview,
 	}).strict(),
 ]);
 
@@ -164,6 +205,29 @@ const QuestionItem = z
 		const labels = new Set(value.options.map(option => option.label));
 		const contract = intentContract(value.deepInterview);
 		const review = intentReview(value.deepInterview);
+		if (contract && review)
+			context.addIssue({
+				code: "custom",
+				message: "intent contract and review are mutually exclusive",
+				path: ["deepInterview"],
+			});
+		if (
+			contract &&
+			(value.deepInterview?.round !== 0 ||
+				value.deepInterview.component !== "review-topology" ||
+				value.deepInterview.dimension !== "topology")
+		)
+			context.addIssue({
+				code: "custom",
+				message: "intent contract requires round-0 review topology metadata",
+				path: ["deepInterview"],
+			});
+		if (review && (value.deepInterview?.round ?? 0) <= 0)
+			context.addIssue({
+				code: "custom",
+				message: "intent review requires a positive round",
+				path: ["deepInterview", "round"],
+			});
 		if ((contract || review) && value.multi === true)
 			context.addIssue({ code: "custom", message: "intent gates must be single-select", path: ["multi"] });
 		const confirmationOptions = contract?.confirmation_options ?? [];
@@ -211,7 +275,11 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isOnlyPlainData(value: unknown): boolean {
-	if (Array.isArray(value)) return value.every(isOnlyPlainData);
+	if (Array.isArray(value))
+		return (
+			Reflect.ownKeys(value).length === value.length + 1 &&
+			value.every((item, index) => Object.hasOwn(value, index) && isOnlyPlainData(item))
+		);
 	if (typeof value !== "object" || value === null) return true;
 	return isPlainRecord(value) && Object.values(value).every(isOnlyPlainData);
 }
@@ -249,7 +317,7 @@ function isRoundZeroRecoveryCandidate(value: unknown): boolean {
 		const question = parseEncodedContainer(rawQuestion);
 		if (typeof question !== "object" || question === null || !Object.hasOwn(question, "deepInterview")) return false;
 		const deepInterview = parseEncodedContainer((question as Record<string, unknown>).deepInterview);
-		if (typeof deepInterview !== "object" || deepInterview === null) return deepInterview === null;
+		if (typeof deepInterview !== "object" || deepInterview === null) return false;
 		const metadata = deepInterview as Record<string, unknown>;
 		return Object.hasOwn(metadata, "intent_contract") || Object.hasOwn(metadata, "intent_review");
 	});
@@ -270,11 +338,27 @@ function normalizeRoundZeroOptionalNulls(arguments_: Record<string, unknown>): R
 		}
 	}
 	const normalizedDeepInterview = { ...question.deepInterview };
-	if (Object.hasOwn(normalizedDeepInterview, "round_id") && normalizedDeepInterview.round_id === null) {
-		delete normalizedDeepInterview.round_id;
-		normalizedQuestion.deepInterview = normalizedDeepInterview;
-		changed = true;
+	for (const key of ["round_id", "confused_terms", "references"] as const) {
+		if (Object.hasOwn(normalizedDeepInterview, key) && normalizedDeepInterview[key] === null) {
+			delete normalizedDeepInterview[key];
+			changed = true;
+		}
 	}
+	if (Array.isArray(normalizedDeepInterview.references)) {
+		const references = normalizedDeepInterview.references.map(reference => {
+			if (!isPlainRecord(reference)) return reference;
+			const normalizedReference = { ...reference };
+			for (const key of ["url", "excerpt"] as const) {
+				if (Object.hasOwn(normalizedReference, key) && normalizedReference[key] === null) {
+					delete normalizedReference[key];
+					changed = true;
+				}
+			}
+			return normalizedReference;
+		});
+		normalizedDeepInterview.references = references;
+	}
+	if (changed) normalizedQuestion.deepInterview = normalizedDeepInterview;
 	return changed ? { ...arguments_, questions: [normalizedQuestion] } : arguments_;
 }
 function recoverRoundZeroIntentContract(arguments_: Record<string, unknown>): RawArgumentValidationResult {
@@ -332,6 +416,8 @@ function recoverRoundZeroIntentContract(arguments_: Record<string, unknown>): Ra
 		"component",
 		"dimension",
 		"ambiguity",
+		"confused_terms",
+		"references",
 		"intent_contract",
 		"intent_review",
 	];
@@ -434,6 +520,16 @@ async function awaitDeepInterviewRecorderPersistence(persistence: Promise<void>,
 
 function getDoneOptionLabel(): string {
 	return `${theme.status.success} Done selecting`;
+}
+
+function validRecommendedIndex(recommended: number | undefined, optionCount: number): number | undefined {
+	return typeof recommended === "number" &&
+		Number.isFinite(recommended) &&
+		Number.isInteger(recommended) &&
+		recommended >= 0 &&
+		recommended < optionCount
+		? recommended
+		: undefined;
 }
 
 /** Add "(Recommended)" suffix to the option at the given index if not already present */
@@ -986,7 +1082,9 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	}
 
 	static createIf(session: ToolSession): AskTool | null {
-		return session.hasUI || session.getWorkflowGateEmitter?.() ? new AskTool(session) : null;
+		return session.hasUI || session.workflowGateEligible || session.getWorkflowGateEmitter?.()
+			? new AskTool(session)
+			: null;
 	}
 
 	/** Send terminal notification when ask tool is waiting for input */
@@ -1007,6 +1105,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		customInput: string | undefined,
 	): Promise<void> {
 		const meta = q.deepInterview;
+		if (customInput !== undefined && (meta || isDeepInterviewAskQuestion(q.question)))
+			assertDeepInterviewInputWithinLimit(customInput, MAX_USER_RESPONSE_LENGTH, "user_response");
 		if (!meta) return;
 		const cwd = this.session.cwd;
 		const sessionId = this.session.getSessionId?.() ?? undefined;
@@ -1047,6 +1147,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			activeSkillState: this.session.getActiveSkillState?.(),
 			sessionId: this.session.getSessionId?.() ?? null,
 		});
+		assertDeepInterviewStructuredResponseWithinLimit(params);
 		let activeRemoteReceipt: AskRemoteReceipt | undefined;
 		let activeRemoteRequest: AskAnswerRequest | undefined;
 		let remoteGeneration = 0;
@@ -1063,12 +1164,13 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		};
 		const gateEmitter = this.session.getWorkflowGateEmitter?.();
 		// A durable workflow-gate emitter now exists for every session, and its
-		// isUnattended() is always true, so it can no longer signal "no local UI".
-		// The workflow gate is only the headless (non-TUI) answer path: when a real
-		// interactive UI is present, prefer it — otherwise attended TUI asks would
-		// route to emitGate() and hang forever waiting on a remote responder.
+		// supportsRemoteGateAnswers() is always true, so it can no longer signal
+		// "no local UI". The workflow gate is only the headless (non-TUI) answer
+		// path: when a real interactive UI is present, prefer it — otherwise
+		// attended TUI asks would route to emitGate() and hang forever waiting on
+		// a remote responder.
 		const hasInteractiveUi = context?.hasUI === true && !!context.ui;
-		const canUseWorkflowGate = !hasInteractiveUi && gateEmitter?.isUnattended() === true;
+		const canUseWorkflowGate = !hasInteractiveUi && gateEmitter?.supportsRemoteGateAnswers() === true;
 		// Headless fallback: SDK workflow gates are the non-TUI answer path.
 		if (!canUseWorkflowGate && (!context?.hasUI || !context.ui)) {
 			context?.abort();
@@ -1337,10 +1439,12 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 								}),
 							}
 						: options?.previous;
+				const recommendedIndex = validRecommendedIndex(q.recommended, rawOptionLabels.length);
 				activeRemoteRequest = {
 					question: displayQuestion,
 					options: remoteSelectorOptions,
 					interaction: "selector",
+					...(recommendedIndex === undefined ? {} : { recommendedIndex }),
 					controls: askRemoteControls({
 						multi: q.multi === true,
 						questionIndex,
@@ -1372,6 +1476,9 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 							question: displayQuestion,
 							options: state.interaction === "selector" ? remoteSelectorOptions : [],
 							interaction: state.interaction,
+							...(state.interaction === "selector" && recommendedIndex !== undefined
+								? { recommendedIndex }
+								: {}),
 							controls:
 								state.interaction === "selector"
 									? askRemoteControls({
@@ -1391,6 +1498,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 							return displayIndex >= 0 ? (rawOptionLabels[displayIndex] ?? selected) : selected;
 						})
 					: displaySelectedOptions;
+				if ((isDeepInterviewQuestion || isDeepInterviewAskQuestion(q.question)) && customInput !== undefined)
+					assertDeepInterviewInputWithinLimit(customInput, MAX_USER_RESPONSE_LENGTH, "user_response");
 				if (activeRemoteReceipt) {
 					const settlement: AskSettlement =
 						clarificationQuestion !== undefined
@@ -1425,10 +1534,14 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 					timedOut,
 				};
 			} catch (error) {
-				await settleActiveRemote({
-					kind: "resolve_without_commit",
-					reason: error instanceof Error && error.name === "AbortError" ? "aborted" : "exception",
-				});
+				await settleActiveRemote(
+					error instanceof Error && error.message.includes("exceeds max length")
+						? { kind: "invalid", reason: "invalid_structured_answer" }
+						: {
+								kind: "resolve_without_commit",
+								reason: error instanceof Error && error.name === "AbortError" ? "aborted" : "exception",
+							},
+				);
 				activeRemoteRequest = undefined;
 				if (error instanceof Error && error.name === "AbortError") {
 					throw new ToolAbortError("Ask input was cancelled");

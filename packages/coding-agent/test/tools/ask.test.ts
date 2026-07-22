@@ -4,6 +4,7 @@ import { validateToolArguments } from "@gajae-code/ai/utils/validation";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
 import type { AppendOrMergeResult } from "@gajae-code/coding-agent/gjc-runtime/deep-interview-recorder";
 import * as deepInterviewRecorder from "@gajae-code/coding-agent/gjc-runtime/deep-interview-recorder";
+import { deepInterviewCharacterCount } from "@gajae-code/coding-agent/gjc-runtime/deep-interview-state";
 import { getThemeByName, initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
 import type { AskAnswerRequest, AskAnswerSource, AskRemoteReceipt, ToolSession } from "@gajae-code/coding-agent/tools";
 import { AskTool, askSchema, askToolRenderer } from "@gajae-code/coding-agent/tools/ask";
@@ -459,6 +460,149 @@ describe("AskTool cancellation", () => {
 		expect(abort).not.toHaveBeenCalled();
 	});
 
+	it("rejects oversized deep-interview custom input before recorder persistence", async () => {
+		const appendSpy = spyOn(deepInterviewRecorder, "appendOrMergeDeepInterviewRound");
+		const tool = new AskTool(createSession());
+		const oversized = "😀".repeat(10_001);
+		const context = createContext({
+			select: async (_prompt, options, dialogOptions) => {
+				dialogOptions?.customInput?.onSubmit(oversized);
+				return options[2];
+			},
+		});
+
+		await expect(
+			tool.execute(
+				"call-oversized-deep-input",
+				{ questions: [singleDeepInterviewQuestion()] },
+				undefined,
+				undefined,
+				context,
+			),
+		).rejects.toThrow("user_response exceeds max length 10000");
+		expect(appendSpy).not.toHaveBeenCalled();
+	});
+
+	it("accepts exactly 10000 emoji custom-input characters and invalidates a 10001-character remote reply", async () => {
+		const appendSpy = spyOn(deepInterviewRecorder, "appendOrMergeDeepInterviewRound").mockResolvedValue({
+			action: "created",
+			record: {} as AppendOrMergeResult["record"],
+		});
+		const exact = "😀".repeat(10_000);
+		const local = new AskTool(createSession({ getSessionId: () => "test-session" }));
+		const localContext = createContext({
+			select: async (_prompt, options, dialogOptions) => {
+				dialogOptions?.customInput?.onSubmit(exact);
+				return options[2];
+			},
+		});
+		await expect(
+			local.execute(
+				"call-exact-emoji-deep-input",
+				{ questions: [singleDeepInterviewQuestion()] },
+				undefined,
+				undefined,
+				localContext,
+			),
+		).resolves.toBeDefined();
+		appendSpy.mockClear();
+
+		const settlements: unknown[] = [];
+		const remote = new AskTool(
+			createSession({
+				getAskAnswerSource: () => ({
+					awaitAnswer: async () => undefined,
+					awaitAnswerRequest: async () => ({
+						source: "remote" as const,
+						interaction: { kind: "value" as const, value: "😀".repeat(10_001) },
+						settle: async settlement => {
+							settlements.push(settlement);
+							return { kind: "resolved_without_commit" as const };
+						},
+					}),
+				}),
+			}),
+		);
+		await expect(
+			remote.execute(
+				"call-remote-oversized-emoji-deep-input",
+				{ questions: [singleDeepInterviewQuestion()] },
+				undefined,
+				undefined,
+				createContext({ select: () => new Promise<string | undefined>(() => {}) }),
+			),
+		).rejects.toThrow("user_response exceeds max length 10000");
+		expect(settlements).toEqual([{ kind: "invalid", reason: "invalid_structured_answer" }]);
+		expect(appendSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects oversized legacy formatted deep-interview input before tool output", async () => {
+		const appendSpy = spyOn(deepInterviewRecorder, "appendOrMergeDeepInterviewRound");
+		const oversized = "한".repeat(10_001);
+		const tool = new AskTool(createSession());
+		const context = createContext({
+			select: async (_prompt, options, dialogOptions) => {
+				dialogOptions?.customInput?.onSubmit(oversized);
+				return options.find(option => option === dialogOptions?.customInput?.optionLabel);
+			},
+		});
+
+		await expect(
+			tool.execute(
+				"call-oversized-legacy-deep-input",
+				{
+					questions: [
+						{
+							id: "legacy-deep",
+							question:
+								"Round 1 | Component: Scope | Targeting: Constraints | Why now: unresolved boundary | Ambiguity: 42%\n\nWhat is the boundary?",
+							options: [{ label: "Known" }],
+						},
+					],
+				},
+				undefined,
+				undefined,
+				context,
+			),
+		).rejects.toThrow("user_response exceeds max length 10000");
+		const settlements: unknown[] = [];
+		const remote = new AskTool(
+			createSession({
+				getAskAnswerSource: () => ({
+					awaitAnswer: async () => undefined,
+					awaitAnswerRequest: async () => ({
+						source: "remote" as const,
+						interaction: { kind: "value" as const, value: oversized },
+						settle: async settlement => {
+							settlements.push(settlement);
+							return { kind: "resolved_without_commit" as const };
+						},
+					}),
+				}),
+			}),
+		);
+		await expect(
+			remote.execute(
+				"call-remote-oversized-legacy-deep-input",
+				{
+					questions: [
+						{
+							id: "legacy-deep",
+							question:
+								"Round 1 | Component: Scope | Targeting: Constraints | Why now: unresolved boundary | Ambiguity: 42%\n\nWhat is the boundary?",
+							options: [{ label: "Known" }],
+						},
+					],
+				},
+				undefined,
+				undefined,
+				createContext({ select: () => new Promise<string | undefined>(() => {}) }),
+			),
+		).rejects.toThrow("user_response exceeds max length 10000");
+		expect(settlements).toEqual([{ kind: "invalid", reason: "invalid_structured_answer" }]);
+		expect(appendSpy).not.toHaveBeenCalled();
+	});
+
 	it("does not enter custom input when timeout resolves to Other in multi-select", async () => {
 		const tool = new AskTool(
 			createSession({
@@ -849,7 +993,13 @@ describe("AskTool remote semantic settlements", () => {
 			"remote-multi",
 			{
 				questions: [
-					{ id: "choices", question: "Choose", multi: true, options: [{ label: "alpha" }, { label: "beta" }] },
+					{
+						id: "choices",
+						question: "Choose",
+						multi: true,
+						recommended: 1,
+						options: [{ label: "alpha" }, { label: "beta" }],
+					},
 				],
 			},
 			undefined,
@@ -862,8 +1012,47 @@ describe("AskTool remote semantic settlements", () => {
 		expect(requests[1]?.controls).toEqual([
 			{ id: "navigation_forward", kind: "navigation", label: "Done", enabled: true },
 		]);
+		expect(requests.map(request => request.recommendedIndex)).toEqual([1, 1]);
 		expect(settlements).toEqual([{ kind: "resolve_without_commit", reason: "toggle" }, { kind: "commit" }]);
 		expect(result.content[0]?.type === "text" ? result.content[0].text : "").toContain("alpha");
+	});
+	it("omits invalid source recommendations from remote selector requests", async () => {
+		for (const recommended of [-1, 0.5, 2]) {
+			const requests: AskAnswerRequest[] = [];
+			const source: AskAnswerSource = {
+				awaitAnswer: async () => undefined,
+				awaitAnswerRequest: request => {
+					requests.push(request);
+					return Promise.resolve({
+						source: "remote" as const,
+						interaction: { kind: "value" as const, value: "beta" },
+						settle: async () => ({
+							kind: "committed" as const,
+							ack: { status: "delivered" as const, messageId: 7 },
+						}),
+					});
+				},
+			};
+			const result = await new AskTool(createSession({ getAskAnswerSource: () => source })).execute(
+				`remote-invalid-recommendation-${recommended}`,
+				{
+					questions: [
+						{
+							id: "choice",
+							question: "Choose",
+							recommended,
+							options: [{ label: "alpha" }, { label: "beta" }],
+						},
+					],
+				},
+				undefined,
+				undefined,
+				abortableUi(),
+			);
+			expect(requests).toHaveLength(1);
+			expect(requests[0]).not.toHaveProperty("recommendedIndex");
+			expect(result.content[0]?.type === "text" ? result.content[0].text : "").toContain("beta");
+		}
 	});
 
 	it("uses fresh receipts for Other and clarification transitions without acknowledgement", async () => {
@@ -904,6 +1093,7 @@ describe("AskTool remote semantic settlements", () => {
 							id: "q",
 							question: mode === "clarification" ? "Round 1 | Scope | Ambiguity: 50%" : "Choose",
 							options: [{ label: "alpha" }, { label: "beta" }],
+							recommended: 1,
 							deepInterview: mode === "clarification" ? deepInterviewMeta() : undefined,
 						},
 					],
@@ -913,6 +1103,8 @@ describe("AskTool remote semantic settlements", () => {
 				abortableUi(),
 			);
 			expect(requests[1]?.interaction).toBe(mode === "other" ? "custom_editor" : "clarification_editor");
+			expect(requests[0]?.recommendedIndex).toBe(1);
+			expect(requests[1]).not.toHaveProperty("recommendedIndex");
 			expect(settlements).toEqual(
 				mode === "other"
 					? [{ kind: "resolve_without_commit", reason: "other_transition" }, { kind: "commit" }]
@@ -2509,7 +2701,7 @@ describe("AskTool deep-interview recorder persistence", () => {
 		);
 
 		const gateEmitter = {
-			isUnattended: () => true,
+			supportsRemoteGateAnswers: () => true,
 			emitGate: vi.fn(async () => ({ selected: ["Timeline"] })),
 		};
 		await new AskTool(
@@ -2527,7 +2719,7 @@ describe("AskTool deep-interview recorder persistence", () => {
 
 	it("emits deep-interview question gates by default and honors ralplan approval overrides", async () => {
 		const defaultGateEmitter = {
-			isUnattended: () => true,
+			supportsRemoteGateAnswers: () => true,
 			emitGate: vi.fn(async () => ({ selected: ["Budget"] })),
 		};
 		await new AskTool(
@@ -2547,7 +2739,7 @@ describe("AskTool deep-interview recorder persistence", () => {
 		);
 
 		const ralplanGateEmitter = {
-			isUnattended: () => true,
+			supportsRemoteGateAnswers: () => true,
 			emitGate: vi.fn(async () => ({ selected: ["Approve execution via ultragoal"] })),
 		};
 		await new AskTool(
@@ -2576,10 +2768,10 @@ describe("AskTool deep-interview recorder persistence", () => {
 
 	it("prefers the local interactive UI over the workflow gate when a UI context is present", async () => {
 		// Regression: a durable workflow-gate emitter now exists for every session and
-		// its isUnattended() is always true. Attended TUI asks must still use the local
+		// its supportsRemoteGateAnswers() is always true. Attended TUI asks must still use the local
 		// selector instead of stranding on emitGate() waiting for a remote responder.
 		const gateEmitter = {
-			isUnattended: () => true,
+			supportsRemoteGateAnswers: () => true,
 			emitGate: vi.fn(async () => ({ selected: ["no"] })),
 		};
 		const select = vi.fn(async () => "yes");
@@ -2598,6 +2790,159 @@ describe("AskTool deep-interview recorder persistence", () => {
 		expect(result.details?.selectedOptions).toEqual(["yes"]);
 	});
 
+	function deepInterviewQuestionAtPayloadLength(length: number) {
+		const question = singleDeepInterviewQuestion();
+		question.question = "";
+		const paddingLength = length - deepInterviewCharacterCount(JSON.stringify({ questions: [question] }));
+		if (paddingLength < 0) throw new Error("deep-interview question base exceeds structured-response limit");
+		question.question = "😀".repeat(paddingLength);
+		if (deepInterviewCharacterCount(JSON.stringify({ questions: [question] })) !== length)
+			throw new Error("unable to construct structured question boundary");
+		return question;
+	}
+
+	it("accepts exactly 100000 structured question characters and rejects 100001 before gate or recorder advancement", async () => {
+		const appendSpy = spyOn(deepInterviewRecorder, "appendOrMergeDeepInterviewRound").mockResolvedValue({
+			action: "created",
+			record: {} as AppendOrMergeResult["record"],
+		});
+		spyOn(deepInterviewRecorder, "syncDeepInterviewRecorderHud").mockResolvedValue(undefined);
+		const gateEmitter = {
+			supportsRemoteGateAnswers: () => true,
+			emitGate: vi.fn(async () => ({ selected: ["Budget"] })),
+		};
+		const tool = new AskTool(
+			createSession({
+				hasUI: false,
+				getSessionId: () => "test-session",
+				getWorkflowGateEmitter: () => gateEmitter,
+			} as Partial<ToolSession>),
+		);
+		const exact = deepInterviewQuestionAtPayloadLength(100_000);
+		const oversized = deepInterviewQuestionAtPayloadLength(100_001);
+
+		expect(deepInterviewCharacterCount(JSON.stringify({ questions: [exact] }))).toBe(100_000);
+		await tool.execute("call-structured-limit-exact", { questions: [exact] }, undefined, undefined, undefined);
+		expect(gateEmitter.emitGate).toHaveBeenCalledTimes(1);
+		expect(appendSpy).toHaveBeenCalledTimes(1);
+
+		expect(deepInterviewCharacterCount(JSON.stringify({ questions: [oversized] }))).toBe(100_001);
+		await expect(
+			tool.execute("call-structured-limit-oversized", { questions: [oversized] }, undefined, undefined, undefined),
+		).rejects.toThrow("structured deep-interview response exceeds max length 100000");
+		expect(gateEmitter.emitGate).toHaveBeenCalledTimes(1);
+		expect(appendSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("bounds the complete legacy and multi-question ask payload before any gate emission", async () => {
+		const gateEmitter = { supportsRemoteGateAnswers: () => true, emitGate: vi.fn(async () => ({ selected: ["A"] })) };
+		const tool = new AskTool(
+			createSession({ hasUI: false, getWorkflowGateEmitter: () => gateEmitter } as Partial<ToolSession>),
+		);
+		const payloadAtLength = (length: number) => {
+			const questions = [
+				{ id: "legacy", question: "", options: [{ label: "A" }] },
+				{ id: "second", question: "Continue?", options: [{ label: "A" }] },
+			];
+			const overhead = deepInterviewCharacterCount(JSON.stringify({ questions }));
+			questions[0]!.question = "한".repeat(length - overhead);
+			return { questions };
+		};
+		const exact = payloadAtLength(100_000);
+		const oversized = payloadAtLength(100_001);
+		expect(deepInterviewCharacterCount(JSON.stringify(exact))).toBe(100_000);
+		await tool.execute("call-legacy-aggregate-exact", exact, undefined, undefined, undefined);
+		expect(gateEmitter.emitGate).toHaveBeenCalledTimes(2);
+		expect(deepInterviewCharacterCount(JSON.stringify(oversized))).toBe(100_001);
+		await expect(
+			tool.execute("call-legacy-aggregate-oversized", oversized, undefined, undefined, undefined),
+		).rejects.toThrow("structured deep-interview response exceeds max length 100000");
+		expect(gateEmitter.emitGate).toHaveBeenCalledTimes(2);
+	});
+
+	it("forwards bounded inert adapter context through the canonical gate", async () => {
+		const gateEmitter = {
+			supportsRemoteGateAnswers: () => true,
+			emitGate: vi.fn(async () => ({ selected: ["Continue"] })),
+		};
+		const adapterContext = {
+			confused_terms: ["eventual consistency"],
+			references: [
+				{
+					reference_id: "architecture-note",
+					label: "Architecture note",
+					origin: "user-provided",
+					url: "https://example.test/architecture",
+					excerpt: "Compare this design against the proposal.",
+				},
+			],
+		};
+		const tool = new AskTool(
+			createSession({
+				hasUI: false,
+				getSessionId: () => "test-session",
+				getWorkflowGateEmitter: () => gateEmitter,
+			} as Partial<ToolSession>),
+		);
+
+		await tool.execute(
+			"call-adapter-context",
+			{
+				questions: [
+					{
+						id: "adapter-context",
+						question: "Which contrast should we explore?",
+						options: [{ label: "Continue" }],
+						deepInterview: { ...deepInterviewMeta(), ...adapterContext },
+					},
+				],
+			},
+			undefined,
+			undefined,
+			undefined,
+		);
+
+		const gate = (
+			gateEmitter.emitGate.mock.calls as unknown as Array<[{ context: { stage_state: unknown } }]>
+		)[0]?.[0];
+		expect(gate?.context.stage_state).toMatchObject(adapterContext);
+		expect(
+			askSchema.safeParse({
+				questions: [
+					{
+						id: "invalid-adapter-context",
+						question: "Which contrast should we explore?",
+						options: [{ label: "Continue" }],
+						deepInterview: { ...deepInterviewMeta(), confused_terms: ["x".repeat(257)] },
+					},
+				],
+			}).success,
+		).toBe(false);
+	});
+
+	it("uses code-point limits for deep-interview metadata strings", () => {
+		const metadata = { ...deepInterviewMeta(), component: "😀".repeat(128), dimension: "😀".repeat(128) };
+		expect(
+			askSchema.safeParse({
+				questions: [
+					{ id: "emoji-metadata", question: "Pick?", options: [{ label: "A" }], deepInterview: metadata },
+				],
+			}).success,
+		).toBe(true);
+		expect(
+			askSchema.safeParse({
+				questions: [
+					{
+						id: "oversized-emoji-metadata",
+						question: "Pick?",
+						options: [{ label: "A" }],
+						deepInterview: { ...metadata, component: "😀".repeat(129) },
+					},
+				],
+			}).success,
+		).toBe(false);
+	});
+
 	it("keeps deepInterview optional and rejects malformed metadata", () => {
 		expect(
 			askSchema.safeParse({ questions: [{ id: "q", question: "Pick?", options: [{ label: "A" }] }] }).success,
@@ -2613,6 +2958,52 @@ describe("AskTool deep-interview recorder persistence", () => {
 					},
 				],
 			}).success,
+		).toBe(false);
+	});
+
+	it("preserves deep-interview intent branch and strict metadata validation", () => {
+		const contract = {
+			items: [{ id: "artifact:report", category: "artifact" as const, statement: "Produce report" }],
+			confirmation_options: ["Confirm"],
+		};
+		const review = {
+			observed_items: [{ id: "artifact:report", category: "artifact" as const, statement: "Produce report" }],
+			supporting_substitutions: [],
+			approval_options: ["Approve"],
+		};
+		const question = (deepInterview: Record<string, unknown>) => ({
+			questions: [
+				{ id: "q", question: "Pick?", options: [{ label: "Confirm" }, { label: "Approve" }], deepInterview },
+			],
+		});
+
+		expect(
+			askSchema.safeParse(
+				question({
+					round: 1,
+					component: "review-topology",
+					dimension: "topology",
+					ambiguity: 0.5,
+					intent_contract: contract,
+				}),
+			).success,
+		).toBe(false);
+		expect(
+			askSchema.safeParse(
+				question({
+					round: 0,
+					component: "review-topology",
+					dimension: "topology",
+					ambiguity: 0.5,
+					intent_contract: contract,
+					intent_review: review,
+				}),
+			).success,
+		).toBe(false);
+		expect(
+			askSchema.safeParse(
+				question({ round: 1, component: "Scope", dimension: "Constraints", ambiguity: 0.5, unexpected: true }),
+			).success,
 		).toBe(false);
 	});
 });
@@ -2670,12 +3061,24 @@ describe("AskTool Round-0 intent recovery", () => {
 		});
 	});
 
-	it("normalizes strict-provider null placeholders before exact Round-0 recovery", () => {
+	it("normalizes strict-provider null placeholders and preserves bounded adapter context before exact Round-0 recovery", () => {
 		const pair = roundZeroPair();
 		Object.assign(pair.questions[0], { multi: null, recommended: null, workflowGate: null });
-		Object.assign(pair.questions[0].deepInterview, { round_id: null });
+		Object.assign(pair.questions[0].deepInterview, {
+			round_id: null,
+			confused_terms: ["eventual consistency"],
+			references: [{ reference_id: "note", label: "Note", origin: "user", url: null, excerpt: null }],
+		});
 		const question = validateAsk(pair).questions[0];
-		expect(question).toMatchObject({ deepInterview: { intent_contract: expect.any(Object) } });
+		expect(question).toMatchObject({
+			deepInterview: {
+				intent_contract: expect.any(Object),
+				confused_terms: ["eventual consistency"],
+				references: [{ reference_id: "note" }],
+			},
+		});
+		expect(question.deepInterview.references?.[0]).not.toHaveProperty("url");
+		expect(question.deepInterview.references?.[0]).not.toHaveProperty("excerpt");
 		expect(question.deepInterview).not.toHaveProperty("intent_review");
 		expect(question.deepInterview).not.toHaveProperty("round_id");
 		expect(question).not.toHaveProperty("multi");
@@ -2683,9 +3086,24 @@ describe("AskTool Round-0 intent recovery", () => {
 		expect(question).not.toHaveProperty("workflowGate");
 	});
 
+	it("normalizes a null optional deepInterview field on an ordinary ask", () => {
+		const result = validateAsk({
+			questions: [
+				{
+					id: "ordinary",
+					question: "Choose one",
+					options: [{ label: "First" }, { label: "Second" }],
+					deepInterview: null,
+				},
+			],
+		});
+
+		expect(result.questions[0]).not.toHaveProperty("deepInterview");
+	});
+
 	it("terminally rejects every recovery-shaped near-miss before coercion", () => {
 		const recorder = spyOn(deepInterviewRecorder, "appendOrMergeDeepInterviewRound");
-		const gateEmitter = { isUnattended: () => true, emitGate: vi.fn() };
+		const gateEmitter = { supportsRemoteGateAnswers: () => true, emitGate: vi.fn() };
 		const tool = new AskTool(
 			createSession({ hasUI: false, getWorkflowGateEmitter: () => gateEmitter } as Partial<ToolSession>),
 		);
@@ -2733,8 +3151,6 @@ describe("AskTool Round-0 intent recovery", () => {
 			encodedDeepInterview.questions[0].deepInterview,
 		) as never;
 		const nullQuestions = { questions: null } as unknown as Record<string, unknown>;
-		const nullDeepInterview = roundZeroPair();
-		nullDeepInterview.questions[0].deepInterview = null as never;
 		const malformedContractOnly = roundZeroPair();
 		Reflect.deleteProperty(malformedContractOnly.questions[0].deepInterview, "intent_review");
 		malformedContractOnly.questions[0].deepInterview.round = 1;
@@ -2744,6 +3160,8 @@ describe("AskTool Round-0 intent recovery", () => {
 		malformedReviewOnly.questions[0].deepInterview.component = "locked-intent";
 		malformedReviewOnly.questions[0].deepInterview.dimension = "constraints";
 		malformedReviewOnly.questions[0].deepInterview.intent_review.approval_options = ["Not displayed"];
+		const sparseAdapterContext = roundZeroPair();
+		Object.assign(sparseAdapterContext.questions[0].deepInterview, { confused_terms: new Array(1) });
 
 		const invalidGates: unknown[] = [
 			"deep-interview/question",
@@ -2777,9 +3195,9 @@ describe("AskTool Round-0 intent recovery", () => {
 			encodedQuestion,
 			encodedDeepInterview,
 			nullQuestions,
-			nullDeepInterview,
 			malformedContractOnly,
 			malformedReviewOnly,
+			sparseAdapterContext,
 		]) {
 			expect(() => validateCandidate(arguments_)).toThrow("raw arguments rejected before coercion");
 		}
@@ -2810,7 +3228,7 @@ describe("AskTool Round-0 intent recovery", () => {
 		});
 		spyOn(deepInterviewRecorder, "syncDeepInterviewRecorderHud").mockResolvedValue(undefined);
 		const gateEmitter = {
-			isUnattended: () => true,
+			supportsRemoteGateAnswers: () => true,
 			emitGate: vi.fn(async () => ({ selected: ["Looks right"] })),
 		};
 		const tool = new AskTool(

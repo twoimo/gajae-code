@@ -8,7 +8,11 @@ import type { SessionMessageEntry } from "../../session/session-manager";
 import { parseSessionEntries } from "../../session/session-manager";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
-import { composeToolText } from "./tool-transcript-format";
+import {
+	buildToolTranscriptEntry,
+	composeToolText,
+	createToolTranscriptRenderDescriptor,
+} from "./tool-transcript-format";
 import { type TranscriptViewerEntry, TranscriptViewerOverlay } from "./transcript-viewer-overlay";
 
 /** Session-observer adapter. The shared viewer owns navigation and fold state. */
@@ -148,7 +152,7 @@ export class SessionObserverOverlayComponent extends TranscriptViewerOverlay {
 	}
 }
 
-function entriesFromMessages(entries: readonly SessionMessageEntry[]): TranscriptViewerEntry[] {
+export function entriesFromMessages(entries: readonly SessionMessageEntry[]): TranscriptViewerEntry[] {
 	const results = new Map<string, ToolResultMessage>();
 	for (const entry of entries)
 		if (entry.message.role === "toolResult") results.set(entry.message.toolCallId, entry.message);
@@ -190,30 +194,42 @@ function entriesFromMessages(entries: readonly SessionMessageEntry[]): Transcrip
 							.map(part => part.text)
 							.join("\n")
 							.trim() ?? "";
-					const text = composeToolText({
-						name: content.name,
-						args: content.arguments,
-						intent: content.intent,
-						resultText,
-						isError: result?.isError ?? false,
-						hasResult: results.has(content.id),
-					});
-					output.push({
-						id: `tool:${content.id}`,
-						kind: "tool",
-						label: content.name,
-						payload: {
-							text,
-							metadata: {
-								name: content.name,
-								arguments: content.arguments,
-								intent: content.intent,
-								isError: result?.isError ?? false,
-							},
-							source: { call: content, result },
+					const canonicalPayload = {
+						text: composeToolText({
+							name: content.name,
+							args: content.arguments,
+							intent: content.intent,
+							resultText,
+							isError: result?.isError ?? false,
+							hasResult: results.has(content.id),
+						}),
+						metadata: {
+							name: content.name,
+							arguments: content.arguments,
+							intent: content.intent,
+							resultText,
+							isError: result?.isError ?? false,
+							hasResult: results.has(content.id),
+							detailsData: result?.details,
 						},
-						foldable: true,
-					});
+						source: { call: content, result },
+					};
+					output.push(
+						buildToolTranscriptEntry({
+							canonicalPayload,
+							renderDescriptor: createToolTranscriptRenderDescriptor({
+								name: content.name,
+								args: content.arguments,
+								intent: content.intent,
+								resultContent: resultText,
+								isError: result?.isError,
+								hasResult: results.has(content.id),
+								detailsData: result?.details,
+							}),
+							capabilities: { copyable: true, foldable: true, rawViewable: true },
+							identity: { id: `tool:${content.id}`, label: content.name, display: "full" },
+						}),
+					);
 				}
 			});
 		}

@@ -90,14 +90,20 @@
 ## [0.11.3] - 2026-07-19
 
 ### Changed
-- Updated the Kimi Coding Plan Eco, Medium, and Pro presets to Kimi K3 with its supported `low`, `high`, and `max` reasoning efforts.
 - The `read` tool is now receipt-by-default: bare and unparseable reads return a bounded receipt (≤50 lines / 10 KiB) with a re-read-with-selector footer only when truncated, `:raw` stays pure verbatim up to a max(2 MiB, spill threshold) ceiling, structural summaries cap unit-granularly at 20 KiB while preserving elision and source-recovery footers, and directories are byte/line capped and never spill. Only an explicit full-content selector (`:raw` or an explicit range) with real content is spill-eligible. Subagent previews now enforce a real byte/code-point cap via per-shape render budgets plus a shape-aware artifact-eligibility tag enforced centrally in output-meta.
+
+
+### Fixed
+- Ultragoal objective ownership no longer treats arbitrary strings that merely mention `goals.json`/`ledger.jsonl` as Ultragoal-owned; only the exact default aggregate objective qualifies for the known-objective path.
 
 ### Fixed
 - Workflow-state handoff no longer self-locks the active-state cache, so a same-turn skill handoff (e.g. ultragoal → ralplan) completes instead of stalling behind a lock the handoff itself still holds (#2638).
-- Malformed spurious Round-0 review metadata no longer blocks an otherwise valid locked-intent question/gate, while durable intent safety remains fail-closed (#2643).
 - SDK host shutdown now retries a failed broker unregister instead of short-circuiting with a stale broker-index entry, while retained startup-cleanup owner-release failures remain isolated from the red extension-error path (#2625).
 - Non-TTY launches now fail fast when stdin is empty and automatically use print mode for positional prompts and `@file` inputs, preventing orphaned interactive TUI processes (#2507).
+
+### Fixed
+
+- The command palette now labels `app.session.fork` as “Branch from message,” matching its user-message selector and `AgentSession.branch()` behavior while preserving the existing action ID for keybinding compatibility.
 
 ## [0.11.2] - 2026-07-19
 
@@ -110,7 +116,6 @@
 ### Fixed
 - Team worker launches now receive the validated owning `GJC_SESSION_ID` for sanctioned session-scoped writes while preserving absent identity, fail-closed resolution, and separate spawn provenance (#2597).
 - Managed and explicit session directories now canonicalize benign ancestor symlinks (e.g. macOS `/var -> /private/var`, a symlinked `$HOME` or project directory) to a symlink-free trusted root before the strict owner-only and reparse guards run, so session creation, moves, resume, and writes no longer fail with `reparse_point` / `Unsafe reparse storage path` under a symlinked temp root or home. The native primitive stays strict and continues to reject symlinked components at or below the trusted root.
-- Browser tab workers now bootstrap through their actual isolated entry without accidentally loading native bindings through broad imports, and startup fails closed instead of falling back to unguarded inline execution; compiled/package smoke now exercises the tab worker, with a PR-head darwin-arm64 CI gate (#2598).
 - Skill invocation failures now list available skill names so agents can recover from typos without a blind retry loop.
 - Workflow state receipts now use canonical session-layout paths, require resolved session identity, and report a `state_path` that matches native write/clear output (#2393).
 - Coordinator MCP operational calls now canonically bootstrap or reuse the agent-global SDK broker when discovery is absent or stale, while coordinator/hermes JSON checks report catalog and broker-discovery readiness separately without mutating broker state (#2552).
@@ -124,6 +129,7 @@
 ### Fixed
 - Repository LSP configuration can no longer define process-affecting server behavior: project files may control declarative matching, activation, and capabilities, but cannot set launch fields, initialization options, or opaque server settings. Trusted canonical user configuration outside the project retains those overrides; project-controlled plugin roots and the quarantined `--plugin-dir` surface cannot inject them. Automatic discovery uses trusted external executables and rejects repository-owned lexical paths as well as symlink-resolved project binaries; status uses the session cwd as its lspmux trust root. `GJC_DISABLE_LSPMUX=1` is the canonical opt-out and `PI_DISABLE_LSPMUX=1` is a supported compatibility alias; either truthy value disables lspmux probing and wrapping.
 - Palette slash commands now run only from an empty composer; drafts are never touched.
+- Individual default and named-role model assignments now keep the model selector open for consecutive choices, while batch assignments retain their existing close-on-success behavior.
 - Aborting a session without an enabled active goal no longer suppresses the first reminder when a goal is activated later; active-goal abort suppression is one-shot, goal-owned, and clears across inactive or replacement-goal transitions (#2436).
 - Palette slash submissions no longer clear or rewrite composer text, cursor state, history, or pending images created while an asynchronous input hook is awaiting; canonical keyboard submission cleanup remains unchanged (#2441).
 - Dead browser-tab recovery now expires descriptors without releasing replacement, revived, or differently owned tabs, while exactly-once teardown closes stale targets and releases browser holds without refcount underflow (#2437).
@@ -149,6 +155,9 @@
 ### Fixed
 - Connected MCP server instructions now remain untrusted user-role data instead of entering the cached system prompt; hostile file paths, working directories, and workspace-tree metadata are structurally encoded, and volatile project context is removed from durable session history between requests.
 - Restored the strict G002 public-surface quarantine by removing the default README advertisement for the private coordinator MCP runtime.
+### Added
+
+- Added opt-in prompt suggestions (Claude Code-style ghost-text autocomplete): with the `promptSuggestions` setting enabled, a smol-model prediction of your likely next prompt renders as dim ghost text in the empty composer after each agent turn; Tab accepts it, typing dismisses it, and a new turn clears it. Predictions are heuristically gated (silence on evaluative/meta/agent-voice/overlong output) and never generated while the composer has text or a turn is streaming.
 
 ## [0.11.1] - 2026-07-16
 
