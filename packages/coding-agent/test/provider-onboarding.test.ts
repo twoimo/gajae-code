@@ -5,10 +5,10 @@ import * as path from "node:path";
 import { clampThinkingLevelForModel, Effort, getSupportedEfforts } from "@gajae-code/ai";
 import { getAgentDbPath, getAgentDir, setAgentDir } from "@gajae-code/utils";
 import { YAML } from "bun";
+import { parseSetupArgs } from "../src/cli/setup-cli";
 import { prepareModelProfileActivation } from "../src/config/model-profile-activation";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
-import { parseSetupArgs } from "../src/cli/setup-cli";
 import { AuthStorage, SqliteAuthCredentialStore } from "../src/session/auth-storage";
 import {
 	addApiCompatibleProvider,
@@ -259,9 +259,9 @@ describe("provider onboarding setup core", () => {
 					settings: Settings.isolated(),
 					profileName,
 				});
-				expect(`${prepared.defaultModel?.provider}/${prepared.defaultModel?.id}:${prepared.defaultThinkingLevel}`).toBe(
-					"alibaba-token-plan/qwen-3.8-max-preview:medium",
-				);
+				expect(
+					`${prepared.defaultModel?.provider}/${prepared.defaultModel?.id}:${prepared.defaultThinkingLevel}`,
+				).toBe("alibaba-token-plan/qwen-3.8-max-preview:medium");
 				expect(prepared.agentModelOverrides).toEqual(agentModelOverrides);
 			}
 		} finally {
