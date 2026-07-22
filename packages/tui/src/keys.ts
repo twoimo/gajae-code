@@ -261,13 +261,15 @@ const BASE_KEYS = new Set<string>([
 const KEY_MODIFIERS: readonly KeyModifier[] = ["ctrl", "alt", "shift", "super"];
 
 /**
- * Parse a case-insensitive canonical key identifier into normalized dispatch
- * parts. The trailing `+` in values such as `ctrl++` is the literal plus base.
+ * Parse a case-insensitive key identifier into normalized dispatch parts.
+ * The legacy `plus` base-key alias normalizes to `+`; the trailing `+` in
+ * values such as `ctrl++` is the literal plus base.
  */
 export function parseKeyId(value: string): ParsedKeyId | undefined {
 	if (hasControlChars(value) || value.length === 0) return undefined;
 
-	const normalized = value.toLowerCase();
+	const lowerCaseValue = value.toLowerCase();
+	const normalized = lowerCaseValue === "plus" ? "+" : lowerCaseValue.replace(/\+plus$/, "++");
 	const baseKey = normalized.endsWith("+") ? "+" : normalized.split("+").pop();
 	if (!baseKey || !BASE_KEYS.has(baseKey)) return undefined;
 

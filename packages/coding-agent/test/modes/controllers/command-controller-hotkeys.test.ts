@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { buildHotkeysMarkdown } from "../../../src/modes/utils/hotkeys-markdown";
+import { buildHelpMarkdown } from "../../../src/modes/controllers/command-controller";
+import { buildHotkeysMarkdown, formatHotkeyMarkdownCode } from "../../../src/modes/utils/hotkeys-markdown";
 
 describe("buildHotkeysMarkdown", () => {
 	it("emits flush-left markdown and uses the configured temporary selector hint", () => {
@@ -51,7 +52,7 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `⌃⇧P` | Copy whole prompt |");
 		expect(markdown).toContain("| `↩` | Send / queue while busy |");
 		expect(markdown).toContain("| `⌥↩` | Queue message for next turn |");
-		expect(markdown).toContain("| `⇧↩` | New line |");
+		expect(markdown).toContain("| `⇧↩/Ctrl+J` | New line |");
 		expect(markdown).toContain("| `⌃⇧L` | Select model (temporary) |");
 		expect(markdown).toContain("| `⌃L` | Select default model |");
 		expect(markdown).toContain("| `⌥M` | Toggle plan mode |");
@@ -63,6 +64,38 @@ describe("buildHotkeysMarkdown", () => {
 			expect(line.startsWith(" ")).toBe(false);
 			expect(line.startsWith("\t")).toBe(false);
 		}
+	});
+
+	it("keeps the editor Ctrl+J newline path visible after remapping or unbinding the configured action", () => {
+		const render = (newLine: string): string =>
+			buildHotkeysMarkdown({
+				keybindings: {
+					getDisplayString(action) {
+						return action === "tui.input.newLine" ? newLine : "Ctrl+K";
+					},
+				},
+			});
+
+		expect(render("Alt+Enter")).toContain("| `Alt+Enter/Ctrl+J` | New line |");
+		expect(render("")).toContain("| `Disabled/Ctrl+J` | New line |");
+	});
+
+	it("escapes Markdown metacharacters in dynamic table labels", () => {
+		const markdown = buildHotkeysMarkdown({
+			keybindings: {
+				getDisplayString(action) {
+					if (action === "tui.input.submit") return "Ctrl+|";
+					if (action === "app.message.queue") return "`";
+					if (action === "app.message.dequeue") return "\\";
+					return "Ctrl+K";
+				},
+			},
+		});
+
+		expect(markdown).toContain("| `Ctrl+\\|` | Send / queue while busy |");
+		expect(markdown).toContain("| `` ` `` | Queue message for next turn |");
+		expect(markdown).toContain("| `\\\\` | Select queued message to edit |");
+		expect(formatHotkeyMarkdownCode("``")).toBe("``` `` ```");
 	});
 
 	it("renders the temporary selector row as disabled when no display string is configured", () => {
@@ -82,5 +115,26 @@ describe("buildHotkeysMarkdown", () => {
 
 		expect(markdown).toContain("| `Disabled` | Select model (temporary) |");
 		expect(markdown).toContain("| `Ctrl+L` | Select default model |");
+	});
+});
+
+describe("buildHelpMarkdown", () => {
+	it("advertises effective submit and tab bindings for autocomplete confirmation", () => {
+		const requestedActions: string[] = [];
+		const markdown = buildHelpMarkdown({
+			getDisplayString(action) {
+				requestedActions.push(action);
+				if (action === "tui.input.submit") return "Ctrl+Enter";
+				if (action === "tui.input.tab") return "";
+				if (action === "tui.select.up") return "Ctrl+|";
+				if (action === "tui.select.down") return "\\";
+				if (action === "app.session.new") return "Alt+`";
+				return "Ctrl+M";
+			},
+		});
+
+		expect(markdown).toContain("then use `Ctrl+\\|/\\\\` and `Ctrl+Enter/Disabled`.");
+		expect(markdown).toContain("| Start a fresh session | `` Alt+` `` or `/new` |");
+		expect(requestedActions).not.toContain("tui.select.confirm");
 	});
 });

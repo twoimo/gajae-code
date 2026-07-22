@@ -87,6 +87,15 @@ describe("matchesKey", () => {
 		expect(matchesKey("\x1b[57400;133u", "1")).toBe(false);
 		setKittyProtocolActive(false);
 	});
+
+	it("keeps Super chords distinct from their plain keys", () => {
+		setKittyProtocolActive(true);
+		const superP = "\x1b[112;9u";
+		expect(matchesKey(superP, "super+p")).toBe(true);
+		expect(matchesKey(superP, "p")).toBe(false);
+		expect(matchesKey("p", "super+p")).toBe(false);
+		setKittyProtocolActive(false);
+	});
 });
 
 describe("parseKey", () => {
@@ -147,9 +156,15 @@ describe("parseKey", () => {
 		setKittyProtocolActive(false);
 	});
 
+	it("parses Kitty Super chords", () => {
+		setKittyProtocolActive(true);
+		expect(parseKey("\x1b[112;9u")).toBe("super+p");
+		setKittyProtocolActive(false);
+	});
+
 	it("ignores Kitty sequences with unsupported modifiers", () => {
 		setKittyProtocolActive(true);
-		expect(parseKey("\x1b[99;9u")).toBeUndefined();
+		expect(parseKey("\x1b[99;17u")).toBeUndefined();
 		setKittyProtocolActive(false);
 	});
 });
@@ -169,8 +184,8 @@ describe("extractPrintableText", () => {
 	});
 
 	it("ignores unsupported modifiers on Kitty CSI-u text", () => {
-		expect(extractPrintableText("\x1b[99;9u")).toBeUndefined();
-		expect(extractPrintableText("\x1b[97;9;229u")).toBeUndefined();
+		expect(extractPrintableText("\x1b[99;17u")).toBeUndefined();
+		expect(extractPrintableText("\x1b[97;17;229u")).toBeUndefined();
 	});
 
 	it("preserves Kitty CSI-u text-field decoding for supported modifiers", () => {
@@ -186,6 +201,8 @@ describe("KeyId grammar", () => {
 	it("accepts literal plus keys and rejects malformed plus chains", () => {
 		expect(parseKeyId("+")).toMatchObject({ keyId: "+", baseKey: "+" });
 		expect(parseKeyId("ctrl++")).toMatchObject({ keyId: "ctrl++", baseKey: "+" });
+		expect(parseKeyId("plus")).toMatchObject({ keyId: "+", baseKey: "+" });
+		expect(parseKeyId("ctrl+plus")).toMatchObject({ keyId: "ctrl++", baseKey: "+" });
 		expect(parseKeyId("++")).toBeUndefined();
 		expect(parseKeyId("ctrl+")).toBeUndefined();
 		expect(parseKeyId("ctrl+++")).toBeUndefined();

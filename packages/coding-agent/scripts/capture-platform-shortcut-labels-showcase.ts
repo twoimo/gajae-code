@@ -75,8 +75,130 @@ function sha256(value: string): string {
 function escapeHtml(value: string): string {
 	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
+
+type AnsiStyle = {
+	foreground?: string;
+	background?: string;
+	bold?: boolean;
+	dim?: boolean;
+	italic?: boolean;
+	underline?: boolean;
+	inverse?: boolean;
+};
+
+const ANSI_COLORS: Record<number, string> = {
+	30: "#000000",
+	31: "#cc0000",
+	32: "#4e9a06",
+	33: "#c4a000",
+	34: "#3465a4",
+	35: "#75507b",
+	36: "#06989a",
+	37: "#d3d7cf",
+	90: "#555753",
+	91: "#ef2929",
+	92: "#8ae234",
+	93: "#fce94f",
+	94: "#729fcf",
+	95: "#ad7fa8",
+	96: "#34e2e2",
+	97: "#eeeeec",
+};
+
+function ansi256Color(index: number): string {
+	if (index < 16) return ANSI_COLORS[index < 8 ? index + 30 : index + 82] ?? "#ffffff";
+	if (index >= 232) {
+		const value = (index - 232) * 10 + 8;
+		return `rgb(${value},${value},${value})`;
+	}
+	const value = index - 16;
+	const red = Math.floor(value / 36);
+	const green = Math.floor((value % 36) / 6);
+	const blue = value % 6;
+	const channel = (component: number) => (component === 0 ? 0 : component * 40 + 55);
+	return `rgb(${channel(red)},${channel(green)},${channel(blue)})`;
+}
+
+function styleAttribute(style: AnsiStyle): string {
+	const declarations: string[] = [];
+	if (style.foreground) declarations.push(`color:${style.foreground}`);
+	if (style.background) declarations.push(`background-color:${style.background}`);
+	if (style.bold) declarations.push("font-weight:700");
+	if (style.dim) declarations.push("opacity:.65");
+	if (style.italic) declarations.push("font-style:italic");
+	if (style.underline) declarations.push("text-decoration:underline");
+	if (style.inverse) declarations.push("filter:invert(1)");
+	return declarations.join(";");
+}
+
+const NON_VISUAL_TERMINAL_CONTROL = /\x1b_[^\x1b\x07]*(?:\x07|\x1b\\)/g;
+
+/** Render emitted SGR styles as safe inline CSS without retaining terminal control codes. */
 function ansiToHtml(value: string): string {
-	const body = escapeHtml(value).replace(/\x1b\[[0-9;]*m/g, "");
+	const visibleText = value.replace(NON_VISUAL_TERMINAL_CONTROL, "");
+	const sgr = /\x1b\[([0-9;]*)m/g;
+	let body = "";
+	let offset = 0;
+	let spanOpen = false;
+	let style: AnsiStyle = {};
+	const close = () => {
+		if (!spanOpen) return;
+		body += "</span>";
+		spanOpen = false;
+	};
+	const open = () => {
+		const attribute = styleAttribute(style);
+		if (!attribute) return;
+		body += `<span style="${attribute}">`;
+		spanOpen = true;
+	};
+
+	for (const match of visibleText.matchAll(sgr)) {
+		body += escapeHtml(visibleText.slice(offset, match.index));
+		offset = (match.index ?? 0) + match[0].length;
+		close();
+		const codes = (match[1] || "0").split(";").map(Number);
+		for (let index = 0; index < codes.length; index += 1) {
+			const code = codes[index];
+			if (code === 0) style = {};
+			else if (code === 1) style.bold = true;
+			else if (code === 2) style.dim = true;
+			else if (code === 3) style.italic = true;
+			else if (code === 4) style.underline = true;
+			else if (code === 7) style.inverse = true;
+			else if (code === 22) {
+				style.bold = false;
+				style.dim = false;
+			} else if (code === 23) style.italic = false;
+			else if (code === 24) style.underline = false;
+			else if (code === 27) style.inverse = false;
+			else if (code === 39) style.foreground = undefined;
+			else if (code === 49) style.background = undefined;
+			else if (code in ANSI_COLORS) style.foreground = ANSI_COLORS[code];
+			else if (code >= 40 && code <= 47) style.background = ANSI_COLORS[code - 10];
+			else if (code >= 100 && code <= 107) style.background = ANSI_COLORS[code - 10];
+			else if (code === 38 || code === 48) {
+				const colorMode = codes[index + 1];
+				if (colorMode === 2) {
+					const red = codes[index + 2];
+					const green = codes[index + 3];
+					const blue = codes[index + 4];
+					if ([red, green, blue].every(Number.isInteger)) {
+						if (code === 38) style.foreground = `rgb(${red},${green},${blue})`;
+						else style.background = `rgb(${red},${green},${blue})`;
+					}
+					index += 4;
+				} else if (colorMode === 5 && Number.isInteger(codes[index + 2])) {
+					if (code === 38) style.foreground = ansi256Color(codes[index + 2]!);
+					else style.background = ansi256Color(codes[index + 2]!);
+					index += 2;
+				}
+			}
+		}
+		open();
+	}
+	body += escapeHtml(visibleText.slice(offset));
+	close();
 	return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Platform shortcut labels showcase</title><style>body{margin:0;background:#110b0b;color:#ffe7dc}pre{margin:0;padding:1em;white-space:pre-wrap;font-family:ui-monospace,monospace;line-height:1.2}</style></head><body><pre>${body}</pre></body></html>\n`;
 }
 function validateMatrix(entries: readonly PlatformShortcutLabelsShowcaseEntry[]): void {
