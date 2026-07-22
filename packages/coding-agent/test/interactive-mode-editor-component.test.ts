@@ -459,6 +459,11 @@ describe("InteractiveMode.setEditorComponent", () => {
 		if (!shortcut) throw new Error("Expected a queue message keybinding");
 		return `${formatKeyHint(shortcut, injectedKeyDisplayContext)}: Queue`;
 	}
+	function expectedSubmitShortcutHint(action = "Steer"): string {
+		const shortcut = mode.keybindings.getDisplayString("tui.input.submit", injectedKeyDisplayContext);
+		if (!shortcut) throw new Error("Expected a submit keybinding");
+		return `${shortcut}: ${action}`;
+	}
 
 	it("shows busy steering and queueing hints only while work is active", () => {
 		let rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
@@ -467,7 +472,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(rendered).toContain(`${formatKeyHint("ctrl+c", injectedKeyDisplayContext)}: Clear`);
 		expect(rendered).toContain(`${formatKeyHint("ctrl+r", injectedKeyDisplayContext)}: Search history`);
 		expect(rendered).toContain(`${formatKeyHint("shift+tab", injectedKeyDisplayContext)}: Reasoning`);
-		expect(rendered).not.toContain("Enter: Steer");
+		expect(rendered).not.toContain(expectedSubmitShortcutHint());
 		expect(rendered).not.toContain(expectedQueueShortcutHint());
 
 		(session.agent as unknown as { state: { isStreaming: boolean } }).state.isStreaming = true;
@@ -475,7 +480,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 
 		rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
 		expect(rendered).toContain("Type your message...");
-		expect(rendered).toContain("Enter: Steer");
+		expect(rendered).toContain(expectedSubmitShortcutHint());
 		expect(rendered).toContain(expectedQueueShortcutHint());
 
 		(session.agent as unknown as { state: { isStreaming: boolean } }).state.isStreaming = false;
@@ -483,8 +488,30 @@ describe("InteractiveMode.setEditorComponent", () => {
 
 		rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
 		expect(rendered).toContain("Type your message...");
-		expect(rendered).not.toContain("Enter: Steer");
+		expect(rendered).not.toContain(expectedSubmitShortcutHint());
 		expect(rendered).not.toContain(expectedQueueShortcutHint());
+	});
+	it("uses the effective submit binding in busy hints and omits it when unbound", () => {
+		(session.agent as unknown as { state: { isStreaming: boolean } }).state.isStreaming = true;
+		mode.keybindings.setUserBindings({ "tui.input.submit": "ctrl+enter" });
+		mode.updateEditorChrome();
+
+		let rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
+		const remappedSubmit = mode.keybindings.getDisplayString("tui.input.submit", injectedKeyDisplayContext);
+		expect(rendered).toContain(`${remappedSubmit}: Steer`);
+		expect(rendered).toContain(expectedQueueShortcutHint());
+
+		mode.keybindings.setUserBindings({
+			"tui.input.submit": [],
+			"app.message.queue": [],
+			"app.message.followUp": [],
+		});
+		mode.updateEditorChrome();
+
+		rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
+		expect(rendered).not.toContain(": Steer");
+		expect(rendered).not.toContain(`${formatKeyHint("shift+tab", injectedKeyDisplayContext)}: Reasoning ·`);
+		expect(rendered).toContain("Type your message...");
 	});
 	it("propagates the injected non-host key display context to the composed TUI surfaces", async () => {
 		vi.spyOn(mode.ui, "start").mockImplementation(() => {});

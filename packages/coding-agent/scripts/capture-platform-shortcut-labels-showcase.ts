@@ -9,7 +9,6 @@ import {
 
 const CANONICAL_COMMAND =
 	"bun packages/coding-agent/scripts/capture-platform-shortcut-labels-showcase.ts --output .gjc/qa/platform-shortcut-labels";
-const CAPTURE_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 const CAPTURE_TOOL_VERSION = "platform-shortcut-labels-fixture-injected-platform-v1";
 const EXPECTED_KEYS = [
 	"darwin/composer-idle/80x24/unicode-color",
@@ -224,7 +223,11 @@ async function writeArtifact(filePath: string, content: string, outputRoot: stri
 		byte_length: Buffer.byteLength(content, "utf8"),
 	};
 }
-async function captureEntry(entry: PlatformShortcutLabelsShowcaseEntry, outputRoot: string): Promise<ManifestEntry> {
+async function captureEntry(
+	entry: PlatformShortcutLabelsShowcaseEntry,
+	outputRoot: string,
+	capturedAt: string,
+): Promise<ManifestEntry> {
 	const rendered = await renderPlatformShortcutLabelsShowcase(entry);
 	const directory = path.join(outputRoot, entry.platform, entry.surface, entry.viewport.id, entry.renderMode);
 	await fs.mkdir(directory, { recursive: true });
@@ -239,7 +242,7 @@ async function captureEntry(entry: PlatformShortcutLabelsShowcaseEntry, outputRo
 		platform_provenance: rendered.platformProvenance,
 		key_display_context: rendered.keyDisplayContext,
 		components: rendered.components,
-		capture_timestamp: CAPTURE_TIMESTAMP,
+		capture_timestamp: capturedAt,
 		command_or_replay_source: CANONICAL_COMMAND,
 		fixture_source: "packages/coding-agent/test/fixtures/tui/platform-shortcut-labels-showcase.ts",
 		tool_version: CAPTURE_TOOL_VERSION,
@@ -278,15 +281,18 @@ async function captureEntry(entry: PlatformShortcutLabelsShowcaseEntry, outputRo
 }
 async function main(): Promise<void> {
 	const root = path.resolve(outputPath(process.argv.slice(2)));
+	const capturedAt = new Date().toISOString();
 	validateMatrix(PLATFORM_SHORTCUT_LABELS_SHOWCASE_ENTRIES);
 	await fs.mkdir(root, { recursive: true });
 	const entries: ManifestEntry[] = [];
-	for (const entry of PLATFORM_SHORTCUT_LABELS_SHOWCASE_ENTRIES) entries.push(await captureEntry(entry, root));
+	for (const entry of PLATFORM_SHORTCUT_LABELS_SHOWCASE_ENTRIES)
+		entries.push(await captureEntry(entry, root, capturedAt));
 	const manifest = json({
 		schema_version: 1,
 		capture_tool: CAPTURE_TOOL_VERSION,
 		capture_mode: "fixture-injected-platform",
 		command: CANONICAL_COMMAND,
+		capture_timestamp: capturedAt,
 		expected_entry_count: 34,
 		entry_count: entries.length,
 		ordered_keys: EXPECTED_KEYS,

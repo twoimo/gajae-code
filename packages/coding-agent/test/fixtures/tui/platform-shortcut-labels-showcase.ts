@@ -193,7 +193,7 @@ function renderStatus(entry: PlatformShortcutLabelsShowcaseEntry, context: KeyDi
 	});
 	status.updateSettings({
 		preset: "custom",
-		leftSegments: [],
+		leftSegments: ["session_name"],
 		rightSegments: [],
 		separator: "pipe",
 		showSkillHud: false,

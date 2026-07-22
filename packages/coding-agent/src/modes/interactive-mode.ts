@@ -1049,11 +1049,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	#getComposerPlaceholder(): string {
 		const defaultPlaceholder = getDefaultComposerPlaceholder(this.#keyDisplayContext);
 		if (!this.#isPromptDeliveryBusy()) return defaultPlaceholder;
-		const enterAction = this.settings.get("busyPromptMode") === "steer" ? "Steer" : "Queue";
-		const parts = [`Enter: ${enterAction}`];
+		const submitAction = this.settings.get("busyPromptMode") === "steer" ? "Steer" : "Queue";
+		const submitKey = this.keybindings.getDisplayString("tui.input.submit", this.#keyDisplayContext);
+		const parts = submitKey ? [`${submitKey}: ${submitAction}`] : [];
 		const queueKey = this.#getMessageQueueShortcut();
 		if (queueKey) parts.push(`${formatKeyHint(queueKey, this.#keyDisplayContext)}: Queue`);
-		return `${defaultPlaceholder} · ${parts.join(" · ")}`;
+		return parts.length > 0 ? `${defaultPlaceholder} · ${parts.join(" · ")}` : defaultPlaceholder;
 	}
 
 	#getWelcomeReservedRows(width: number): number {
