@@ -14,7 +14,7 @@ function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): strin
 }
 
 export function formatHotkeyMarkdownCode(label: string): string {
-	const escaped = label.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+	const escaped = label.replace(/\|/g, "\\|");
 	let longestBacktickRun = 0;
 	for (const match of escaped.matchAll(/`+/g)) {
 		longestBacktickRun = Math.max(longestBacktickRun, match[0].length);
@@ -45,9 +45,9 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		`| ${displayAppKey("app.message.queue")} | Queue message for next turn |`,
 		`| ${displayAppKey("app.message.dequeue")} | Select queued message to edit |`,
 		`| ${displayKeys(key(bindings, "tui.input.newLine"), "Ctrl+J")} | New line |`,
-		`| ${displayKey("tui.editor.deleteWordBackward")} | Delete word backwards |`,
-		`| ${displayKey("tui.editor.deleteToLineStart")} | Delete to start of line |`,
-		`| ${displayKey("tui.editor.deleteToLineEnd")} | Delete to end of line |`,
+		`| ${displayKeys("Ctrl+W", "Alt+Backspace")} | Delete word backwards |`,
+		`| ${displayKeys("Ctrl+U")} | Delete to start of line |`,
+		`| ${displayKeys("Ctrl+K")} | Delete to end of line |`,
 		`| ${displayAppKey("app.clipboard.copyLine")} | Copy current line |`,
 		`| ${displayAppKey("app.clipboard.copyPrompt")} | Copy whole prompt |`,
 		"",

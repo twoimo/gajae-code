@@ -630,10 +630,10 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 
 	// Named keys (case-insensitive)
 	if key.eq_ignore_ascii_case("escape") || key.eq_ignore_ascii_case("esc") {
-		if modifier != 0 {
-			return false;
+		if modifier == 0 {
+			return bytes == b"\x1b" || kitty_matches(CP_ESCAPE, 0);
 		}
-		return bytes == b"\x1b" || kitty_matches(CP_ESCAPE, 0);
+		return kitty_matches(CP_ESCAPE, modifier);
 	}
 
 	if key.eq_ignore_ascii_case("space") {

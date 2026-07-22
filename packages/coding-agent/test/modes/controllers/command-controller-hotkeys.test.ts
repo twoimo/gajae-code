@@ -94,7 +94,7 @@ describe("buildHotkeysMarkdown", () => {
 
 		expect(markdown).toContain("| `Ctrl+\\|` | Send / queue while busy |");
 		expect(markdown).toContain("| `` ` `` | Queue message for next turn |");
-		expect(markdown).toContain("| `\\\\` | Select queued message to edit |");
+		expect(markdown).toContain("| `\\` | Select queued message to edit |");
 		expect(formatHotkeyMarkdownCode("``")).toBe("``` `` ```");
 	});
 
@@ -133,7 +133,7 @@ describe("buildHelpMarkdown", () => {
 			},
 		});
 
-		expect(markdown).toContain("then use `Ctrl+\\|/\\\\` and `Ctrl+Enter/Disabled`.");
+		expect(markdown).toContain("then use `Ctrl+\\|/\\` and `Ctrl+Enter/Disabled`.");
 		expect(markdown).toContain("| Start a fresh session | `` Alt+` `` or `/new` |");
 		expect(requestedActions).not.toContain("tui.select.confirm");
 	});
