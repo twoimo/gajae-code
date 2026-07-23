@@ -74,6 +74,19 @@ const spawnPlanSchema = z
 	})
 	.describe("justification required before spawning more than four tasks");
 
+const repositoryBindingSchema = z
+	.object({
+		schema: z.literal("gjc.repository_binding.v1"),
+		worktreeRoot: z.string().min(1).describe("canonical git worktree root"),
+		commonDir: z.string().min(1).nullable().describe("git common dir, or null outside a git checkout"),
+		relativeSubdir: z.string().min(1).optional().describe("optional repo-relative subdirectory; not an absolute cwd"),
+		displayPath: z.string().min(1).optional().describe("human-facing path; never used for authority"),
+		head: z.string().min(1).optional(),
+		branch: z.string().min(1).optional(),
+	})
+	.strict()
+	.describe("authoritative repository identity for multi-repo fail-closed spawn");
+
 const createTaskItemSchema = (_contextEnabled: boolean) =>
 	z.object({
 		id: z.string().max(48).refine(isValidTaskId, TASK_ID_DESCRIPTION).describe("filesystem-safe task identifier"),
@@ -84,6 +97,11 @@ const createTaskItemSchema = (_contextEnabled: boolean) =>
 			.optional()
 			.describe(
 				"fork-context mode: none/omitted copies no parent context; receipt copies a minimal receipt-sized snapshot; last-turn copies only the latest exchange; bounded copies the bounded default snapshot; full copies a larger sanitized snapshot up to the configured/model token cap",
+			),
+		repositoryBinding: repositoryBindingSchema
+			.optional()
+			.describe(
+				"authoritative repository identity; omitted items are stamped from session cwd before discovery/spawn and still fail closed on sibling drift",
 			),
 	});
 
@@ -353,6 +371,19 @@ export interface SingleResult {
 	 * never changes the actual mode selection).
 	 */
 	forkContextAdvisory?: { recommendedMode: ForkContextMode; reasons: string[] };
+	/**
+	 * Resolved repository identity used for this task after pre-discovery stamping
+	 * and fail-closed validation (#2901).
+	 */
+	repositoryBinding?: {
+		schema: "gjc.repository_binding.v1";
+		worktreeRoot: string;
+		commonDir: string | null;
+		relativeSubdir?: string;
+		displayPath?: string;
+		head?: string;
+		branch?: string;
+	};
 }
 
 /** True only for complete, factual five-bucket cost accounting. */
