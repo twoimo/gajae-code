@@ -12,7 +12,6 @@ import {
 } from "@gajae-code/ai";
 import { type Keybinding, Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@gajae-code/tui";
 import { formatDuration, Snowflake, setProjectDir } from "@gajae-code/utils";
-import { $ } from "bun";
 import { resolveAppendOnlyMode } from "../../append-only-mode";
 import { jobElapsedMs } from "../../async";
 import { reset as resetCapabilities } from "../../capability";
@@ -154,21 +153,34 @@ export class CommandController {
 	}
 
 	async handleShareCommand(): Promise<void> {
-		const tmpFile = path.join(os.tmpdir(), `${Snowflake.next()}.html`);
-		const cleanupTempFile = async () => {
-			try {
-				await fs.rm(tmpFile, { force: true });
-			} catch {
-				// Ignore cleanup errors
-			}
-		};
+		let tempDir: string | undefined;
 		try {
-			await this.ctx.session.exportToHtml(tmpFile);
-		} catch (error: unknown) {
-			this.ctx.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
-			return;
+			let tmpFile: string;
+			try {
+				tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-share-"));
+				if (process.platform !== "win32") await fs.chmod(tempDir, 0o700);
+				tmpFile = path.join(tempDir, "session.html");
+				const file = await fs.open(tmpFile, "wx", 0o600);
+				await file.close();
+				await this.ctx.session.exportToHtml(tmpFile);
+				if (process.platform !== "win32") await fs.chmod(tmpFile, 0o600);
+			} catch (error: unknown) {
+				this.ctx.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
+				return;
+			}
+			await this.#shareExport(tmpFile);
+		} finally {
+			if (tempDir) {
+				try {
+					await fs.rm(tempDir, { recursive: true, force: true });
+				} catch {
+					// Ignore cleanup errors
+				}
+			}
 		}
+	}
 
+	async #shareExport(tmpFile: string): Promise<void> {
 		try {
 			const customShare = await loadCustomShare();
 			if (customShare) {
@@ -183,7 +195,6 @@ export class CommandController {
 					this.ctx.editorContainer.clear();
 					this.ctx.editorContainer.addChild(this.ctx.editor);
 					this.ctx.ui.setFocus(this.ctx.editor);
-					await cleanupTempFile();
 				};
 
 				try {
@@ -210,20 +221,22 @@ export class CommandController {
 				}
 			}
 		} catch (err) {
-			await cleanupTempFile();
 			this.ctx.showError(err instanceof Error ? err.message : String(err));
 			return;
 		}
 
 		try {
-			const authResult = await $`gh auth status`.quiet().nothrow();
-			if (authResult.exitCode !== 0) {
-				await cleanupTempFile();
+			const authProcess = Bun.spawn(["gh", "auth", "status"], {
+				env: process.env,
+				stdin: "ignore",
+				stdout: "ignore",
+				stderr: "ignore",
+			});
+			if ((await authProcess.exited) !== 0) {
 				this.ctx.showError("GitHub CLI is not logged in. Run 'gh auth login' first.");
 				return;
 			}
 		} catch {
-			await cleanupTempFile();
 			this.ctx.showError("GitHub CLI (gh) is not installed. Install it from https://cli.github.com/");
 			return;
 		}
@@ -239,27 +252,40 @@ export class CommandController {
 			this.ctx.editorContainer.clear();
 			this.ctx.editorContainer.addChild(this.ctx.editor);
 			this.ctx.ui.setFocus(this.ctx.editor);
-			await cleanupTempFile();
 		};
 
-		loader.onAbort = () => {
-			void restoreEditor();
-			this.ctx.showStatus("Share cancelled");
-		};
-
+		let cancellationRequested = false;
 		try {
-			const result = await $`gh gist create --public=false ${tmpFile}`.quiet().nothrow();
-			if (loader.signal.aborted) return;
+			const gistProcess = Bun.spawn(["gh", "gist", "create", "--public=false", tmpFile], {
+				env: process.env,
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+				signal: loader.signal,
+			});
+			loader.onAbort = () => {
+				cancellationRequested = gistProcess.exitCode === null;
+			};
+			const stdoutPromise = new Response(gistProcess.stdout).text();
+			const stderrPromise = new Response(gistProcess.stderr).text();
+			const exitCode = await gistProcess.exited;
+			const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+
+			if (cancellationRequested) {
+				await restoreEditor();
+				this.ctx.showStatus("Share cancelled");
+				return;
+			}
 
 			await restoreEditor();
 
-			if (result.exitCode !== 0) {
-				const errorMsg = result.stderr.toString("utf-8").trim() || "Unknown error";
+			if (exitCode !== 0) {
+				const errorMsg = stderr.trim() || "Unknown error";
 				this.ctx.showError(`Failed to create gist: ${errorMsg}`);
 				return;
 			}
 
-			const gistUrl = result.stdout.toString("utf-8").trim();
+			const gistUrl = stdout.trim();
 			const gistId = gistUrl.split("/").pop();
 			if (!gistId) {
 				this.ctx.showError("Failed to parse gist ID from gh output");
@@ -270,10 +296,12 @@ export class CommandController {
 			this.ctx.showStatus(`Share URL: ${previewUrl}\nGist: ${gistUrl}`);
 			this.openInBrowser(previewUrl);
 		} catch (error: unknown) {
-			if (!loader.signal.aborted) {
-				await restoreEditor();
-				this.ctx.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
+			await restoreEditor();
+			if (cancellationRequested) {
+				this.ctx.showStatus("Share cancelled");
+				return;
 			}
+			this.ctx.showError(`Failed to create gist: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 	}
 

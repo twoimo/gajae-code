@@ -231,6 +231,37 @@ const BOT_API_RETRY_ATTEMPTS = 3;
 // Backoff after a failed getUpdates long-poll so a persistent outage does not
 // busy-loop the daemon.
 const POLL_BACKOFF_MS = 1_000;
+const AUTOMATIC_RELOAD_COOLDOWN_MS = 10 * 60 * 1_000;
+// Default freshness-poll window a cooldown contender waits for a sibling's
+// replacement daemon to publish a fresh ready owner before reloading itself.
+const RELOAD_FRESHNESS_WAIT_MS = 15_000;
+// Cooperative-then-forced termination + replacement-readiness bounds the reload
+// controller can spend while holding the reservation lock (mirrors the control
+// plane's graceful/kill defaults plus a readiness wait).
+const RELOAD_CONTROLLER_GRACEFUL_MS = 8_000;
+const RELOAD_CONTROLLER_KILL_MS = 3_000;
+const RELOAD_RESERVATION_HEADROOM_MS = 10_000;
+
+/**
+ * File-lock options whose acquisition budget covers the full reload-reservation
+ * critical section: the in-lock freshness poll plus the controller's
+ * graceful+kill+readiness sequence, with headroom. A contender must be able to
+ * wait out a legitimate slow reload and then attach, never fail startup.
+ */
+export function reloadReservationLockOptions(input: {
+	freshnessWaitMs: number;
+	readinessTimeoutMs: number;
+	retryDelayMs?: number;
+}): { staleMs: number; retries: number; retryDelayMs: number } {
+	const retryDelayMs = Math.max(input.retryDelayMs ?? 100, 1);
+	const criticalMs =
+		Math.max(input.freshnessWaitMs, 0) +
+		RELOAD_CONTROLLER_GRACEFUL_MS +
+		RELOAD_CONTROLLER_KILL_MS +
+		Math.max(input.readinessTimeoutMs, 0) +
+		RELOAD_RESERVATION_HEADROOM_MS;
+	return { staleMs: 10_000, retries: Math.max(1, Math.ceil(criticalMs / retryDelayMs)), retryDelayMs };
+}
 // Telegram clears a chat action after ~5s; refresh slightly sooner to keep the
 // typing indicator alive while the agent is busy.
 const TYPING_REFRESH_INTERVAL_MS = 4_000;
@@ -2889,9 +2920,78 @@ export async function ensureTelegramDaemonRunningDetailed(
 	if (spawned.result === "attached" && spawned.reloadRequired) {
 		const previous = await readNotificationRootRegistration({ ...input, fs: deps.fs });
 		await registerNotificationRoot({ ...input, fs: deps.fs });
-		const controller = new TelegramDaemonController(input.settings, telegramControllerDeps(deps));
-		const upgrade = await controller.reloadForGenerationUpgrade({}, spawned.legacyReloadRequired === true);
-		if (upgrade.outcome !== "ready") {
+		const fsImpl = deps.fs ?? nodeFs;
+		const now = deps.now ?? Date.now;
+		const pidAlive = deps.pidAlive ?? defaultPidAlive;
+		const pidIncarnation = deps.pidIncarnation ?? defaultPidIncarnation;
+		const reloadAttemptPath = path.join(
+			daemonPaths(input.settings.getAgentDir()).dir,
+			"telegram-daemon.reload-attempt.json",
+		);
+		await ensureDir(fsImpl, daemonPaths(input.settings.getAgentDir()).dir);
+		const reloadWaitStepMs = Math.max(deps.waitStepMs ?? 100, 1);
+		const reloadFreshnessWaitMs = Math.max(deps.readinessTimeoutMs ?? RELOAD_FRESHNESS_WAIT_MS, reloadWaitStepMs);
+		const reloadReadinessTimeoutMs = deps.readinessTimeoutMs ?? RELOAD_FRESHNESS_WAIT_MS;
+		const reloadResult = await withFileLock(
+			reloadAttemptPath,
+			async () => {
+				const currentState = await readDaemonState(input.settings, fsImpl);
+				const previousAttempt = await readJson<{
+					lastReloadAt?: number;
+					ownerId?: string;
+					targetGeneration?: number;
+				}>(fsImpl, reloadAttemptPath).catch(() => undefined);
+				const reloadNow = now();
+				const cooldownApplies =
+					previousAttempt?.targetGeneration === DAEMON_GENERATION &&
+					typeof previousAttempt.lastReloadAt === "number" &&
+					Number.isFinite(previousAttempt.lastReloadAt) &&
+					reloadNow - previousAttempt.lastReloadAt < AUTOMATIC_RELOAD_COOLDOWN_MS;
+				if (cooldownApplies) {
+					// A sibling ensure may have just finished its reload. Its replacement
+					// daemon heartbeats only after startup, so wait briefly for the fresh
+					// ready owner instead of issuing a duplicate reload in the gap.
+					const sleep = deps.sleep ?? Bun.sleep;
+					const waitStepMs = reloadWaitStepMs;
+					const waitBudgetMs = reloadFreshnessWaitMs;
+					const deadline = reloadNow + waitBudgetMs;
+					// Iteration-capped so a frozen `now` cannot spin forever.
+					const maxWaits = Math.ceil(waitBudgetMs / waitStepMs);
+					for (let waits = 0; waits <= maxWaits; waits++) {
+						const state = await readDaemonState(input.settings, fsImpl);
+						const t = now();
+						if (
+							isFreshLiveOwner({
+								state,
+								now: t,
+								tokenFingerprint: fp,
+								chatId: cfg.chatId,
+								pidAlive,
+								pidIncarnation,
+							})
+						)
+							return "attached" as const;
+						if (t >= deadline) break;
+						await sleep(waitStepMs);
+					}
+				}
+				await writeJsonAtomic(fsImpl, reloadAttemptPath, {
+					lastReloadAt: reloadNow,
+					ownerId: currentState?.ownerId ?? "",
+					targetGeneration: DAEMON_GENERATION,
+				});
+				const controller = new TelegramDaemonController(input.settings, telegramControllerDeps(deps));
+				const upgrade = await controller.reloadForGenerationUpgrade({}, spawned.legacyReloadRequired === true);
+				return upgrade.outcome === "ready" ? ("reloaded" as const) : upgrade;
+			},
+			reloadReservationLockOptions({
+				freshnessWaitMs: reloadFreshnessWaitMs,
+				readinessTimeoutMs: reloadReadinessTimeoutMs,
+				retryDelayMs: reloadWaitStepMs,
+			}),
+		);
+		if (reloadResult === "attached") return "attached";
+		if (reloadResult !== "reloaded") {
 			await restoreNotificationRootRegistration({
 				settings: input.settings,
 				sessionId: input.sessionId,
@@ -2899,7 +2999,7 @@ export async function ensureTelegramDaemonRunningDetailed(
 				previous,
 				fs: deps.fs,
 			});
-			throw new Error(`Unable to replace stale Telegram daemon: ${upgrade.operation.message}`);
+			throw new Error(`Unable to replace stale Telegram daemon: ${reloadResult.operation.message}`);
 		}
 		return "reloaded";
 	}
@@ -4611,18 +4711,15 @@ export class TelegramNotificationDaemon {
 					);
 				} catch {}
 			}
-			// Preserve the transport-session contract: ordinary endpoints own a topic
-			// as soon as they connect. A later authenticated logical rekey is the only
-			// path that may recover a different logical session's durable topic.
 			void (async () => {
 				if (this.#logicalSessionId(session) !== sessionId) return;
-				const topicId = await this.ensureTopic(sessionId, this.topicNameFor(sessionId, {}), session);
+				const topic = this.topics.get(sessionId);
+				if (!topic || topic.authorityState === "delete_pending" || topic.bindingMalformed) return;
 				const topicLease = this.topicAuthorityLeaseFromRegistry(sessionId);
-				if (topicId && topicLease?.topicId === topicId)
-					await this.flushPendingThreadedFrames(sessionId, topicLease);
+				if (topicLease?.topicId === topic.topicId) await this.flushPendingThreadedFrames(sessionId, topicLease);
 			})().catch(err =>
 				logger.warn(
-					`notifications: Telegram initial topic creation failed: ${sanitizeDiagnostic(String(err), this.opts.botToken)}`,
+					`notifications: Telegram topic reattach flush failed: ${sanitizeDiagnostic(String(err), this.opts.botToken)}`,
 				),
 			);
 		});
@@ -5503,19 +5600,16 @@ export class TelegramNotificationDaemon {
 			this.legacyTopicOwners.set(previousSessionId, session);
 			this.preservedInitiatorTopics.add(previousSessionId);
 		}
-		if (candidateSessionId === session.sessionId && !this.topics.get(candidateSessionId))
+		if (candidateSessionId === session.sessionId)
 			void (async () => {
-				const topicId = await this.ensureTopic(
-					candidateSessionId,
-					this.topicNameFor(candidateSessionId, {}),
-					session,
-				);
+				const topic = this.topics.get(candidateSessionId);
+				if (!topic || topic.authorityState === "delete_pending" || topic.bindingMalformed) return;
 				const topicLease = this.topicAuthorityLeaseFromRegistry(candidateSessionId);
-				if (topicId && topicLease?.topicId === topicId)
+				if (topicLease?.topicId === topic.topicId)
 					await this.flushPendingThreadedFrames(candidateSessionId, topicLease);
 			})().catch(err =>
 				logger.warn(
-					`notifications: Telegram recovered topic creation failed: ${sanitizeDiagnostic(String(err), this.opts.botToken)}`,
+					`notifications: Telegram recovered topic reattach flush failed: ${sanitizeDiagnostic(String(err), this.opts.botToken)}`,
 				),
 			);
 		return true;
@@ -7109,21 +7203,6 @@ export class TelegramNotificationDaemon {
 			const latestIdentity = identityIndex < 0 ? undefined : replayed[identityIndex];
 			const replayIdentitySessionId = latestIdentity?.sessionId as string | undefined;
 			const endpointBinding = this.#endpointBinding(session);
-			// An open transport owns an eager topic-create claim. An identity-less replay
-			// that races that claim must await its own public creation before classifying
-			// endpoint authority; otherwise the registry correctly sees an in-flight
-			// claim as ambiguous and rejects a valid bootstrap.
-			if (!this.topics.get(session.sessionId) && this.#ownsLiveOpenEndpoint(session, endpointBinding)) {
-				try {
-					await this.ensureTopic(session.sessionId, this.topicNameFor(session.sessionId, {}), session);
-				} catch (error) {
-					logger.warn(
-						`notifications: Telegram replay topic creation failed: ${sanitizeDiagnostic(String(error), this.opts.botToken)}`,
-					);
-					this.dropSession(session, "replay_topic_creation_failed");
-					return;
-				}
-			}
 			// Identity-less replay may resume only the exact transport owner. A
 			// rekeyed A→B transport remains denied unless replay proves B.
 			const endpointAuthority = this.#endpointAuthority(endpointBinding, session);

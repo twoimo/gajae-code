@@ -411,6 +411,23 @@ export function isAnthropicThinkingBlockMutationError(error: unknown): boolean {
 	);
 }
 
+/**
+ * 400 shape where a replayed `thinking`/`redacted_thinking` block fails signature
+ * validation, e.g. `messages.5.content.24: Invalid \`signature\` in \`thinking\` block`.
+ * Unlike the latest-assistant mutation error above, the cited block can sit anywhere
+ * in the replayed history, so recovery must repair every assistant message rather
+ * than only the latest one.
+ */
+export function isAnthropicThinkingSignatureInvalidError(error: unknown): boolean {
+	if (extractHttpStatusFromError(error) !== 400) return false;
+	const message = error instanceof Error ? error.message : String(error);
+	return (
+		/invalid_request_error/i.test(message) &&
+		/thinking|redacted_thinking/i.test(message) &&
+		/invalid\s+`?signature`?/i.test(message)
+	);
+}
+
 function hasStrictAnthropicTools(params: MessageCreateParamsStreaming): boolean {
 	const tools = params.tools as Array<{ strict?: unknown }> | undefined;
 	return tools?.some(tool => tool.strict === true) ?? false;
@@ -1316,20 +1333,19 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 			let strictFallbackErrorMessage: string | undefined;
 			let dropFastMode = providerSessionState?.fastModeDisabled ?? false;
 			let droppedForcedToolChoice = false;
-			const prepareParams = async (paramsOptions?: {
-				repairLatestAssistantThinking?: boolean;
-				dropForcedToolChoice?: boolean;
-			}): Promise<MessageCreateParamsStreaming> => {
-				let nextParams = buildParams(
-					model,
-					baseUrl,
-					context,
-					isOAuthToken,
-					options,
-					disableStrictTools,
-					paramsOptions?.repairLatestAssistantThinking === true,
-				);
-				if (paramsOptions?.dropForcedToolChoice === true) {
+			let repairLatestAssistantThinking = false;
+			let repairAllAssistantThinking = false;
+			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
+				// Degradation state is cumulative: every fallback rebuild must merge all
+				// repairs activated so far. Rebuilding from only the immediate call lets
+				// a later strict/forced-tool/fast-mode fallback reintroduce the rejected
+				// shape (e.g. invalid thinking signatures or forced tool_choice), and
+				// the one-shot thinking-repair guard then blocks recovery.
+				let nextParams = buildParams(model, baseUrl, context, isOAuthToken, options, disableStrictTools, {
+					repairLatestAssistantThinking,
+					repairAllAssistantThinking,
+				});
+				if (droppedForcedToolChoice) {
 					delete nextParams.tool_choice;
 				}
 				if (disableStrictTools) {
@@ -1763,23 +1779,30 @@ export const streamAnthropic: StreamFunction<"anthropic-messages"> = (
 							registryKey: resolveToolChoice(model, options?.toolChoice).registryKey,
 						});
 						droppedForcedToolChoice = true;
-						params = await prepareParams({ dropForcedToolChoice: true });
+						params = await prepareParams();
 						providerRetryAttempt = 0;
 						resetOutputForRetry();
 						continue;
 					}
+					const thinkingSignatureInvalid = isAnthropicThinkingSignatureInvalidError(streamFailure);
 					if (
 						!options?.fallbackManaged &&
 						!thinkingRepairAttempted &&
 						firstTokenTime === undefined &&
-						isAnthropicThinkingBlockMutationError(streamFailure)
+						(thinkingSignatureInvalid || isAnthropicThinkingBlockMutationError(streamFailure))
 					) {
-						logger.debug("anthropic: repairing latest assistant thinking replay after provider rejection", {
+						logger.debug("anthropic: repairing assistant thinking replay after provider rejection", {
 							model: model.id,
+							scope: thinkingSignatureInvalid ? "all" : "latest",
 							error: streamFailure instanceof Error ? streamFailure.message : String(streamFailure),
 						});
 						thinkingRepairAttempted = true;
-						params = await prepareParams({ repairLatestAssistantThinking: true });
+						if (thinkingSignatureInvalid) {
+							repairAllAssistantThinking = true;
+						} else {
+							repairLatestAssistantThinking = true;
+						}
+						params = await prepareParams();
 						providerRetryAttempt = 0;
 						resetOutputForRetry();
 						continue;
@@ -2243,13 +2266,13 @@ function buildParams(
 	isOAuthToken: boolean,
 	options?: AnthropicOptions,
 	disableStrictTools = false,
-	repairLatestAssistantThinking = false,
+	thinkingRepair?: { repairLatestAssistantThinking?: boolean; repairAllAssistantThinking?: boolean },
 ): MessageCreateParamsStreaming {
 	const { mode: cacheMode, cacheControl } = getCacheControl(model, baseUrl, options?.cacheRetention);
 
 	const params: AnthropicSamplingParams = {
 		model: model.id,
-		messages: convertAnthropicMessages(context.messages, model, isOAuthToken, { repairLatestAssistantThinking }),
+		messages: convertAnthropicMessages(context.messages, model, isOAuthToken, thinkingRepair),
 		max_tokens: options?.maxTokens || (model.maxTokens / 3) | 0,
 		stream: true,
 	};
@@ -2440,7 +2463,7 @@ export function convertAnthropicMessages(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
-	options?: { repairLatestAssistantThinking?: boolean },
+	options?: { repairLatestAssistantThinking?: boolean; repairAllAssistantThinking?: boolean },
 ): MessageParam[] {
 	const params: MessageParam[] = [];
 

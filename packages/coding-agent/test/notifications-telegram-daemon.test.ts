@@ -2217,11 +2217,11 @@ describe("telegram daemon", () => {
 			}),
 		);
 	}
-	test("keeps wire protocol 3 while startup dead-root prune + leak-artifact self-heal uses generation 25", () => {
+	test("keeps wire protocol 3 while generation 26 adds bounded reload and lazy topic lifecycle safeguards", () => {
 		expect(NOTIFICATION_PROTOCOL_VERSION).toBe(3);
-		// Production generation advanced to 25 via #2958/#2956 (startup dead-root
-		// prune + leak-artifact self-heal); see DAEMON_GENERATION contract history.
-		expect(DAEMON_GENERATION).toBe(25);
+		// Generation 25 preserves #2958 startup dead-root prune + leak-artifact
+		// self-heal; generation 26 adds #2956/#2960 bounded reload and lazy topics.
+		expect(DAEMON_GENERATION).toBe(26);
 	});
 
 	test("#2028 reloads a fully-provenanced owner without a generation", async () => {
@@ -7581,19 +7581,14 @@ describe("telegram daemon connection-drop resilience", () => {
 		expect(daemon.sessions.get("S")?.ws).toBe(successor as unknown as WebSocket);
 
 		successor.dispatchEvent(new Event("open"));
-		for (
-			let attempts = 0;
-			attempts < 20 && bot.calls.filter(call => call.method === "createForumTopic").length === 0;
-			attempts++
-		)
-			await Bun.sleep(1);
-		expect(bot.calls.filter(call => call.method === "createForumTopic")).toHaveLength(1);
+		await Bun.sleep(1);
+		expect(bot.calls.filter(call => call.method === "createForumTopic")).toHaveLength(0);
 
 		predecessor.setReadyState(FakeWs.OPEN);
 		predecessor.dispatchEvent(new Event("open"));
 		predecessor.emit({ type: "turn_stream", sessionId: "S", text: "predecessor must not route" });
 		await Bun.sleep(1);
-		expect(bot.calls.filter(call => call.method === "createForumTopic")).toHaveLength(1);
+		expect(bot.calls.filter(call => call.method === "createForumTopic")).toHaveLength(0);
 		expect(
 			bot.calls.some(call => call.method === "sendMessage" && call.body.text === "predecessor must not route"),
 		).toBe(false);
@@ -7607,6 +7602,7 @@ describe("telegram daemon connection-drop resilience", () => {
 			lastSeq: 0,
 			events: [{ payload: { type: "identity_header", sessionId: "S", repo: "r", branch: "b" } }],
 		});
+		expect(bot.calls.filter(call => call.method === "createForumTopic")).toHaveLength(1);
 		await daemon.handleSessionMessage(active, { type: "turn_stream", sessionId: "S", text: "successor routes" });
 		expect(
 			bot.calls.filter(call => call.method === "sendMessage" && call.body.text === "successor routes"),
@@ -9951,6 +9947,10 @@ test("session_closed tombstones its endpoint generation so scans do not recreate
 		lastSeq: 0,
 		events: [],
 	});
+	await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+		type: "identity_header",
+		sessionId: "S",
+	});
 	await waitForCreate();
 	await waitForTopicRecord();
 
@@ -9968,6 +9968,15 @@ test("session_closed tombstones its endpoint generation so scans do not recreate
 	await daemon.scanRoots();
 	expect(FakeWs.instances).toHaveLength(2);
 	FakeWs.instances[1]!.dispatchEvent(new Event("open"));
+	await daemon.handleSessionMessage(daemon.sessions.get("S")!, {
+		type: "event_replay_result",
+		ok: true,
+		id: "telegram-startup-replay:S",
+		generation: 1,
+		lastSeq: 0,
+		events: [],
+	});
+	await daemon.handleSessionMessage(daemon.sessions.get("S")!, { type: "identity_header", sessionId: "S" });
 	const resumedCreate = await waitForCreate();
 	expect(resumedCreate.body.name).toBe("GJC S");
 });
@@ -11316,7 +11325,7 @@ test("a fresh daemon scanRoots reconnects an existing session endpoint", async (
 	expect(FakeWs.instances.some(ws => ws.url.startsWith("ws://live"))).toBe(true);
 });
 
-test("connectSession eagerly creates a Telegram topic on connect (before any frame)", async () => {
+test("connectSession does not create a Telegram topic before an outbound frame", async () => {
 	FakeWs.instances = [];
 	const agentDir = tempAgentDir();
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
@@ -11330,16 +11339,12 @@ test("connectSession eagerly creates a Telegram topic on connect (before any fra
 		WebSocketImpl: FakeWs as any,
 	});
 	daemon.connectSession("sess-abc123", "ws://x", "tok");
-	// FakeWs does not auto-dispatch "open"; fire it to exercise the connect hook.
 	FakeWs.instances[0]!.dispatchEvent(new Event("open"));
 	await new Promise(r => setTimeout(r, 10));
-	const createTopic = bot.calls.find(c => c.method === "createForumTopic");
-	expect(createTopic).toBeTruthy();
-	// Provisional name uses the session id tail until identity_header renames it.
-	expect(createTopic!.body.name).toBe("GJC abc123");
+	expect(bot.calls.find(c => c.method === "createForumTopic")).toBeUndefined();
 });
 
-test("identity_header during an in-flight eager create still renames the topic", async () => {
+test("identity_header lazily creates a topic and applies its resolved name", async () => {
 	FakeWs.instances = [];
 	const agentDir = tempAgentDir();
 	const s = setPrivateAgentDir(settings(agentDir), agentDir);
@@ -11351,7 +11356,7 @@ test("identity_header during an in-flight eager create still renames the topic",
 	bot.call = (async (method: string, body: any) => {
 		bot.calls.push({ method, body });
 		if (method === "createForumTopic") {
-			const tid = await createGate; // stay in-flight until released
+			const tid = await createGate;
 			return { ok: true, result: { message_thread_id: Number(tid) } };
 		}
 		if (method === "getChat") return { ok: true, result: { type: "private" } };
@@ -11368,11 +11373,16 @@ test("identity_header during an in-flight eager create still renames the topic",
 		WebSocketImpl: FakeWs as any,
 	});
 	daemon.connectSession("sess-xyz999", "ws://x", "tok");
-	// Eager create starts and blocks in-flight on createGate.
 	FakeWs.instances[0]!.dispatchEvent(new Event("open"));
-	await Promise.resolve();
-	// identity_header arrives live while replay is pending, then appears in the
-	// replay snapshot too. The barrier must apply it exactly once.
+	await daemon.handleSessionMessage(daemon.sessions.get("sess-xyz999")!, {
+		type: "event_replay_result",
+		ok: true,
+		id: "telegram-startup-replay:sess-xyz999",
+		generation: 1,
+		lastSeq: 0,
+		events: [],
+	});
+	expect(bot.calls.filter(c => c.method === "createForumTopic")).toHaveLength(0);
 	const session = daemon.sessions.get("sess-xyz999")!;
 	const identity = {
 		type: "identity_header",
@@ -11380,24 +11390,13 @@ test("identity_header during an in-flight eager create still renames the topic",
 		repo: "myrepo",
 		branch: "mybranch",
 	};
-	await daemon.handleSessionMessage(session, identity);
-	const replayP = daemon.handleSessionMessage(session, {
-		type: "event_replay_result",
-		ok: true,
-		id: "telegram-startup-replay:sess-xyz999",
-		generation: 1,
-		lastSeq: 1,
-		events: [{ type: "event", name: "identity_header", payload: identity }],
-	});
+	const identityP = daemon.handleSessionMessage(session, identity);
 	await Promise.resolve();
-	releaseCreate("777"); // now resolve the single shared create
-	await replayP;
-	// Exactly one topic created (provisional name), then renamed to identity name.
+	releaseCreate("777");
+	await identityP;
 	expect(bot.calls.filter(c => c.method === "createForumTopic")).toHaveLength(1);
-	expect(bot.calls.find(c => c.method === "createForumTopic")!.body.name).toBe("GJC xyz999");
-	const edit = bot.calls.find(c => c.method === "editForumTopic");
-	expect(edit).toBeTruthy();
-	expect(edit!.body.name).toBe("myrepo/mybranch");
+	expect(bot.calls.find(c => c.method === "createForumTopic")!.body.name).toBe("myrepo/mybranch");
+	expect(bot.calls.find(c => c.method === "editForumTopic")).toBeUndefined();
 });
 
 test("scanRoots connects only live endpoints (skips stale + dead-PID records)", async () => {
@@ -13516,6 +13515,13 @@ describe("Telegram tool activity capability and routing", () => {
 			lastSeq: 0,
 			events: [],
 		});
+		await replay;
+		const identity = daemon.handleSessionMessage(session, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "repo",
+			branch: "branch",
+		});
 		await topicStarted.promise;
 		await daemon.handleTelegramUpdate({
 			update_id: 972,
@@ -13526,7 +13532,7 @@ describe("Telegram tool activity capability and routing", () => {
 			message: { chat: { id: 42, type: "private" }, text: "/toolactivity on", message_id: 73 },
 		});
 		releaseTopic.resolve();
-		await replay;
+		await identity;
 
 		expect(bot.calls.some(call => String(call.body.text).includes("read — started"))).toBe(false);
 	});
@@ -15443,7 +15449,7 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 		).toBe(false);
 	});
 
-	test("identity-less replay bootstraps a fresh open transport through its held eager create", async () => {
+	test("identity-less replay buffers frames until a lazy identity create flushes them", async () => {
 		FakeWs.instances = [];
 		const createStarted = Promise.withResolvers<void>();
 		const releaseCreate = Promise.withResolvers<unknown>();
@@ -15466,7 +15472,6 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 		daemon.connectSession("FRESH", "ws://fresh", "fresh-token");
 		const session = daemon.sessions.get("FRESH")!;
 		session.ws.dispatchEvent(new Event("open"));
-		await createStarted.promise;
 		const replay = daemon.handleSessionMessage(session, {
 			type: "event_replay_result",
 			ok: true,
@@ -15487,8 +15492,16 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 			),
 		).toBe(false);
 
+		const identity = daemon.handleSessionMessage(session, {
+			type: "identity_header",
+			sessionId: "FRESH",
+			repo: "repo",
+			branch: "branch",
+		});
+		await createStarted.promise;
 		releaseCreate.resolve({ ok: true, result: { message_thread_id: 101 } });
 		await replay;
+		await identity;
 		const internals = daemon as unknown as {
 			flushPool(): Promise<void>;
 			pendingThreadedFrames: Map<string, unknown[]>;
@@ -15870,7 +15883,7 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 		await creating;
 	});
 
-	test("identity-less replay authorizes and drains after its own eager create settles", async () => {
+	test("identity-less replay drains after lazy identity creation", async () => {
 		FakeWs.instances = [];
 		const createStarted = Promise.withResolvers<void>();
 		const releaseCreate = Promise.withResolvers<unknown>();
@@ -15890,10 +15903,9 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 		}
 		const bot = new HeldCreateBotApi();
 		const daemon = recoveryDaemon(tempAgentDir(), bot);
-		daemon.connectSession("A", "ws://own-eager-create", "token");
+		daemon.connectSession("A", "ws://own-lazy-create", "token");
 		const session = daemon.sessions.get("A")!;
 		session.ws.dispatchEvent(new Event("open"));
-		await createStarted.promise;
 		const replay = daemon.handleSessionMessage(session, {
 			type: "event_replay_result",
 			ok: true,
@@ -15906,7 +15918,7 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 		await daemon.handleSessionMessage(session, {
 			type: "turn_stream",
 			sessionId: "A",
-			text: "drains after eager create",
+			text: "drains after lazy creation",
 		});
 		const internals = daemon as unknown as {
 			flushPool(): Promise<void>;
@@ -15914,8 +15926,16 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 		};
 		for (let attempt = 0; attempt < 20 && !internals.pendingThreadedFrames.has("A"); attempt++) await Bun.sleep(1);
 		expect(internals.pendingThreadedFrames.get("A")).toHaveLength(1);
+		const identity = daemon.handleSessionMessage(session, {
+			type: "identity_header",
+			sessionId: "A",
+			repo: "repo",
+			branch: "branch",
+		});
+		await createStarted.promise;
 		releaseCreate.resolve({ ok: true, result: { message_thread_id: 101 } });
 		await replay;
+		await identity;
 		for (let attempt = 0; attempt < 20 && internals.pendingThreadedFrames.has("A"); attempt++) await Bun.sleep(1);
 		await internals.flushPool();
 		expect(session.replayPending).toBe(false);
@@ -15927,7 +15947,7 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 				call =>
 					call.method === "sendMessage" &&
 					call.body.message_thread_id === 101 &&
-					call.body.text === "drains after eager create",
+					call.body.text === "drains after lazy creation",
 			),
 		).toHaveLength(1);
 	});
