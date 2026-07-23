@@ -454,7 +454,7 @@ mod tests {
 		sync::atomic::{AtomicU64, Ordering},
 	};
 
-	use super::index_tree;
+	use super::{PlainTree, index_tree};
 
 	static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -522,12 +522,29 @@ mod tests {
 	}
 
 	#[cfg(windows)]
+	fn index_junction_fixture(tree: &Path) -> PlainTree {
+		const TRANSIENT_ERROR: &str = "plain-diff entry changed while it was being captured: victim";
+		const MAX_ATTEMPTS: usize = 3;
+
+		for attempt in 1..=MAX_ATTEMPTS {
+			match index_tree(tree) {
+				Ok(index) => return index,
+				Err(error) if error.to_string() == TRANSIENT_ERROR && attempt < MAX_ATTEMPTS => {
+					std::thread::yield_now();
+				},
+				Err(error) => panic!("failed to index Windows junction fixture: {error}"),
+			}
+		}
+		unreachable!()
+	}
+
+	#[cfg(windows)]
 	#[test]
 	fn retained_root_handle_rejects_intermediate_junction_swap_after_indexing() {
 		let fixture = Fixture::new();
 		fs::write(fixture.tree.join("victim/value.txt"), b"inside snapshot").unwrap();
 		fs::write(fixture.outside.join("value.txt"), b"outside operator secret").unwrap();
-		let index = index_tree(&fixture.tree).unwrap();
+		let index = index_junction_fixture(&fixture.tree);
 
 		fs::rename(fixture.tree.join("victim"), fixture.tree.join("victim-held")).unwrap();
 		create_junction(&fixture.tree.join("victim"), &fixture.outside);
