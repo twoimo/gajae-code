@@ -37,7 +37,7 @@ import {
 	type TelegramDaemonControlDeps,
 	TelegramDaemonController,
 } from "./telegram-daemon-control";
-import { withTelegramSetupLease } from "./telegram-setup";
+import { type TelegramSetupPreflight, withTelegramSetupLease } from "./telegram-setup";
 
 export { DAEMON_GENERATION, NOTIFICATION_PROTOCOL_VERSION } from "./telegram-daemon-contract";
 
@@ -2233,6 +2233,57 @@ export async function readDaemonRoots(
 ): Promise<string[]> {
 	const roots = await readJson<{ roots?: string[] }>(fs, daemonPaths(settings.getAgentDir()).roots);
 	return roots?.roots ?? [];
+}
+
+/** Injectable readers for {@link resolveTelegramSetupPreflight}, defaulting to the real OS/state probes. */
+export interface ResolveTelegramSetupPreflightDeps {
+	readDaemonState?: (settings: Settings) => Promise<DaemonState | undefined>;
+	pidAlive?: (pid: number) => boolean;
+	pidIncarnation?: (pid: number) => string | undefined;
+}
+
+/**
+ * Build the Telegram setup preflight from persisted daemon state. The daemon is
+ * reported live ONLY when its PID is alive AND its current process incarnation
+ * still matches the persisted incarnation. Skipping the incarnation check makes
+ * a stale state file whose PID has been recycled by an unrelated process
+ * masquerade as a live owner, which wrongly blocks discovery pairing. Both the
+ * `notify setup` CLI and the /settings Notifications tab share this resolver so
+ * pairing behaves identically on both surfaces.
+ */
+export async function resolveTelegramSetupPreflight(
+	settings: Settings,
+	deps: ResolveTelegramSetupPreflightDeps = {},
+): Promise<TelegramSetupPreflight> {
+	const storedChatId = getNotificationConfig(settings).chatId;
+	const pidAlive = deps.pidAlive ?? defaultPidAlive;
+	const pidIncarnation = deps.pidIncarnation ?? defaultPidIncarnation;
+	try {
+		const state = await (deps.readDaemonState ?? readDaemonState)(settings);
+		if (!state) return { storedChatId };
+		const validPid = Number.isSafeInteger(state.pid) && state.pid > 0;
+		if (!validPid || !pidAlive(state.pid)) return { storedChatId };
+		const persistedIncarnation = state.incarnation;
+		const currentIncarnation = pidIncarnation(state.pid);
+		if (
+			!isProcessIncarnation(persistedIncarnation) ||
+			!isProcessIncarnation(currentIncarnation) ||
+			persistedIncarnation !== currentIncarnation
+		)
+			return { storedChatId };
+		return {
+			storedChatId,
+			daemon: {
+				live: true,
+				tokenFingerprint: typeof state.tokenFingerprint === "string" ? state.tokenFingerprint : undefined,
+				chatId: typeof state.chatId === "string" ? state.chatId : undefined,
+			},
+		};
+	} catch {
+		// A state read failure is not proof of a live daemon; proceed normally. The
+		// daemon's own 409 handling remains the backstop against poller contention.
+		return { storedChatId };
+	}
 }
 
 function defaultPidAlive(pid: number): boolean {
