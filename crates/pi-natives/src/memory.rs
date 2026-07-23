@@ -10,8 +10,8 @@ use windows_sys::Win32::{
 	Foundation::GetLastError,
 	System::{
 		JobObjects::{
-			IsProcessInJob, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOBOBJECT_LIMIT_JOB_MEMORY,
-			JOBOBJECT_LIMIT_PROCESS_MEMORY, JOBOBJECT_LIMIT_VIOLATION_INFORMATION,
+			IsProcessInJob, JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+			JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOBOBJECT_LIMIT_VIOLATION_INFORMATION,
 			JobObjectExtendedLimitInformation, JobObjectLimitViolationInformation,
 			QueryInformationJobObject,
 		},
@@ -105,8 +105,8 @@ impl WindowsJobMemoryProbeResult {
 		counters: PROCESS_MEMORY_COUNTERS_EX,
 	) -> Self {
 		let limit_flags = limits.BasicLimitInformation.LimitFlags;
-		let has_job_limit = limit_flags & JOBOBJECT_LIMIT_JOB_MEMORY != 0;
-		let has_process_limit = limit_flags & JOBOBJECT_LIMIT_PROCESS_MEMORY != 0;
+		let has_job_limit = limit_flags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0;
+		let has_process_limit = limit_flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY != 0;
 		Self {
 			kind: "job_snapshot".to_string(),
 			platform: current_platform_tag().to_string(),
