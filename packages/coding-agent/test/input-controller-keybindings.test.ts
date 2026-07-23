@@ -68,6 +68,8 @@ async function createContext(options?: {
 		"app.message.followUp": options?.followUpKeys ?? [],
 		"app.message.dequeue": ["alt+up", "alt+down"],
 		"app.irc.sidebar.toggle": options?.ircSidebarToggleKeys ?? ["alt+i"],
+		"tui.select.confirm": ["enter"],
+		"tui.select.cancel": ["escape"],
 	};
 
 	const setActionKeys = vi.fn();
@@ -199,6 +201,9 @@ async function createContext(options?: {
 		keybindings: {
 			getKeys(action: string) {
 				return keyMap[action] ? [...keyMap[action]] : [];
+			},
+			getDisplayString(action: string) {
+				return (keyMap[action] ?? []).map(key => formatKeyHintForPlatform(key, { platform: "darwin" })).join("/");
 			},
 			formatKeyHint(key: string) {
 				return formatKeyHintForPlatform(key, { platform: "darwin" });

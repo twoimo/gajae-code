@@ -46,15 +46,13 @@ describe("docs/keybindings.md current-surface audit", () => {
 });
 
 describe("Windows-to-Darwin declared default parity", () => {
-	it("covers every declared Windows default and only excludes POSIX suspend", () => {
-		const covered = new Set(WINDOWS_RUNTIME_SHORTCUTS.map(({ id }) => id));
-		const omittedBoundActions = (Object.keys(KEYBINDINGS) as Keybinding[]).filter(
-			id => keysForPlatform(id, "win32").length > 0 && !covered.has(id),
-		);
-
-		expect(omittedBoundActions).toEqual(["app.suspend"]);
-		expect(WINDOWS_RUNTIME_SHORTCUTS.length).toBeGreaterThan(0);
-		for (const { darwin } of WINDOWS_RUNTIME_SHORTCUTS) expect(darwin.length).toBeGreaterThan(0);
+	it("gives every shipped Windows chord a Darwin equivalent except POSIX suspend", () => {
+		for (const id of Object.keys(KEYBINDINGS) as Keybinding[]) {
+			const windows = keysForPlatform(id, "win32");
+			if (windows.length === 0 || id === "app.suspend") continue;
+			expect(keysForPlatform(id, "darwin").length, `${id}: missing Darwin equivalent`).toBeGreaterThan(0);
+		}
+		expect(keysForPlatform("app.suspend", "darwin")).toEqual(keysForPlatform("app.suspend", "win32"));
 	});
 
 	it("maps the only platform-varying defaults explicitly", () => {

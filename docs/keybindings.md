@@ -26,7 +26,7 @@ For terminals that do not forward Option, remap the queue actions to canonical C
 ```json
 {
   "app.message.queue": "ctrl+q",
-  "app.message.dequeue": ["ctrl+up", "ctrl+down"]
+  "app.message.dequeue": ["alt+shift+up", "alt+shift+down"]
 }
 ```
 Static onboarding and generated reference material describe shipped defaults and must stay host-independent. The active runtime surface is authoritative for effective bindings after user remaps and extensions load: use `/hotkeys` to see those bindings on the current platform.

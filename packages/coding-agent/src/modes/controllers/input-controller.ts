@@ -1047,6 +1047,9 @@ export class InputController {
 		const pane = new QueuePaneComponent(entries, {
 			selectedIndex,
 			formatKeyHint: key => this.ctx.keybindings.formatKeyHint(key),
+			formatSelectAction: action => this.ctx.keybindings.getDisplayString(action),
+			matchesSelectAction: (keyData, action) =>
+				this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
 			onSelect: entry => {
 				const restored = this.#restoreQueuedMessageToEditor(entry);
 				close();
@@ -1226,7 +1229,13 @@ export class InputController {
 				this.#restoreEditorFocus();
 				this.ctx.ui.requestRender();
 			},
-			{ selectedIndex, formatKeyHint: key => this.ctx.keybindings.formatKeyHint(key) },
+			{
+				selectedIndex,
+				formatKeyHint: key => this.ctx.keybindings.formatKeyHint(key),
+				formatSelectAction: action => this.ctx.keybindings.getDisplayString(action),
+				matchesSelectAction: (keyData, action) =>
+					this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+			},
 		);
 		this.ctx.editorContainer.clear();
 		this.ctx.editorContainer.addChild(selector);

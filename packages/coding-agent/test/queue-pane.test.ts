@@ -48,6 +48,30 @@ describe("QueuePaneComponent", () => {
 		expect(deleted).toEqual(["followUp:2"]);
 		expect(closed).toBe(true);
 	});
+	it("uses effective selector confirm and cancel bindings", () => {
+		const edited: string[] = [];
+		let closed = false;
+		const pane = new QueuePaneComponent([{ id: "steer:1", text: "interrupt", mode: "steer", label: "Steer" }], {
+			formatKeyHint: key => formatKeyHint(key, { platform: "darwin" }),
+			formatSelectAction: action => (action === "tui.select.confirm" ? "⌃E" : "⌃X"),
+			matchesSelectAction: (keyData, action) =>
+				action === "tui.select.confirm" ? keyData === "\x05" : keyData === "\x18",
+			onSelect: entry => edited.push(entry.id),
+			onDelete: () => {},
+			onMove: () => {},
+			onClose: () => {
+				closed = true;
+			},
+		});
+
+		const rendered = pane.render(160).join("\n");
+		expect(rendered).toContain("⌃E edit");
+		expect(rendered).toContain("⌃X close");
+		pane.handleInput("\x05");
+		pane.handleInput("\x18");
+		expect(edited).toContain("steer:1");
+		expect(closed).toBe(true);
+	});
 
 	it("renders textual controls off Darwin", () => {
 		const pane = new QueuePaneComponent([{ id: "steer:1", text: "interrupt", mode: "steer", label: "Steer" }], {

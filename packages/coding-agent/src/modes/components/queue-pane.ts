@@ -5,6 +5,7 @@ import { getSelectListTheme, theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 
 const MAX_VISIBLE_QUEUE_MESSAGES = 8;
+type QueueSelectorAction = "tui.select.confirm" | "tui.select.cancel";
 
 export class QueuePaneComponent extends Container {
 	#selectList: SelectList;
@@ -15,11 +16,14 @@ export class QueuePaneComponent extends Container {
 	#onSelect: (entry: QueuedMessageEditEntry) => void;
 	#onClose: () => void;
 	#entries: QueuedMessageEditEntry[];
+	#matchesSelectAction: (keyData: string, action: QueueSelectorAction) => boolean;
 	constructor(
 		entries: QueuedMessageEditEntry[],
 		options: {
 			selectedIndex?: number;
 			formatKeyHint?: (key: string) => string;
+			formatSelectAction?: (action: QueueSelectorAction) => string;
+			matchesSelectAction?: (keyData: string, action: QueueSelectorAction) => boolean;
 			onSelect: (entry: QueuedMessageEditEntry) => void;
 			onDelete: (entry: QueuedMessageEditEntry, index: number) => void;
 			onMove: (entry: QueuedMessageEditEntry, index: number, direction: "up" | "down") => void;
@@ -32,15 +36,18 @@ export class QueuePaneComponent extends Container {
 		this.#onMove = options.onMove;
 		this.#onClose = options.onClose;
 		this.#entries = entries;
+		this.#matchesSelectAction =
+			options.matchesSelectAction ??
+			((keyData, action) => matchesKey(keyData, action === "tui.select.confirm" ? "enter" : "escape"));
 		this.#selectedIndex = Math.max(0, Math.min(options.selectedIndex ?? 0, entries.length - 1));
 		this.#selectedEntry = entries[this.#selectedIndex];
 		const byId = new Map(entries.map(entry => [entry.id, entry]));
 		const displayKey = options.formatKeyHint ?? formatKeyHint;
 		const selectKeys = `${displayKey("alt+up")}/${displayKey("alt+down")}`;
-		const editKey = displayKey("enter");
+		const editKey = options.formatSelectAction?.("tui.select.confirm") || displayKey("enter");
 		const deleteKey = displayKey("delete");
 		const moveKeys = `${displayKey("ctrl+up")}/${displayKey("ctrl+down")}`;
-		const closeKey = displayKey("escape");
+		const closeKey = options.formatSelectAction?.("tui.select.cancel") || displayKey("escape");
 		const itemHint = `${editKey} edit · ${deleteKey} remove · ${moveKeys} move`;
 		const controlsHint = `${selectKeys} select · ${itemHint} · ${closeKey} close`;
 		const items: SelectItem[] = entries.map((entry, index) => ({
@@ -87,11 +94,11 @@ export class QueuePaneComponent extends Container {
 			if (this.#selectedEntry) this.#onMove(this.#selectedEntry, this.#selectedIndex, "down");
 			return;
 		}
-		if (matchesKey(keyData, "enter")) {
+		if (this.#matchesSelectAction(keyData, "tui.select.confirm")) {
 			if (this.#selectedEntry) this.#onSelect(this.#selectedEntry);
 			return;
 		}
-		if (matchesKey(keyData, "escape")) {
+		if (this.#matchesSelectAction(keyData, "tui.select.cancel")) {
 			this.#onClose();
 			return;
 		}
