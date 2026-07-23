@@ -2049,7 +2049,10 @@ export class ModelRegistry {
 		const modelsUrl = `${baseUrl}/models`;
 
 		const headers: Record<string, string> = { ...(providerConfig.headers ?? {}) };
-		const apiKey = await this.authStorage.getApiKey(providerConfig.provider);
+		// Resolve with the same baseUrl context completion requests use so an
+		// endpoint-scoped (or config-pinned) credential wins here exactly as it
+		// does for chat completions.
+		const apiKey = await this.authStorage.getApiKey(providerConfig.provider, undefined, { baseUrl });
 		if (apiKey && apiKey !== DEFAULT_LOCAL_TOKEN && apiKey !== kNoAuth) {
 			headers.Authorization = `Bearer ${apiKey}`;
 		}
@@ -2059,6 +2062,13 @@ export class ModelRegistry {
 			signal: AbortSignal.timeout(250),
 		});
 		if (!response.ok) {
+			if (response.status === 401 || response.status === 403) {
+				// Redacted by construction: name the provider, endpoint, and the
+				// config surface to fix — never the resolved key.
+				throw new Error(
+					`HTTP ${response.status} from ${modelsUrl}: provider "${providerConfig.provider}" credential was rejected for OpenAI models-list discovery; check providers.${providerConfig.provider}.apiKey/apiKeyEnv.`,
+				);
+			}
 			throw new Error(`HTTP ${response.status} from ${modelsUrl}`);
 		}
 		const payload = (await response.json()) as { data?: Array<{ id: string }> };
