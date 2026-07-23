@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.11.7] - 2026-07-22
 ### Added
 
 - `/btw` now opens an ephemeral multi-turn side chat: plain text continues the side thread until Esc returns to the main chat, while visible text-only context stays outside the main transcript and session observability/debug hooks and is scrubbed synchronously on close or abort.
@@ -23,7 +25,6 @@
 - Telegram `/session_close` now fails closed when tmux disappearance cannot be confirmed, and publishes the managed owner verdict before locked terminal-state preservation so normal close finalization is not delayed behind that state path.
 - Managed publication now fails closed on malformed, committed, or mutation-unknown native outcomes: it never retries or cleans a destination, and preserves bounded atomic-unavailable/durability diagnostics through managed startup (#2804).
 
-## [0.11.6] - 2026-07-21
 ## [0.11.5] - 2026-07-20
 ### Fixed
 

@@ -1,6 +1,8 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.11.7] - 2026-07-22
 ### Fixed
 
 - Internal transcript PageUp/PageDown now continues through tool-output and other non-semantic rows instead of intermittently becoming a no-op after a semantic viewport anchor was established.

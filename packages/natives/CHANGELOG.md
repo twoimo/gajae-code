@@ -5,6 +5,8 @@
 
 - No-replace publication now reports dedicated mutation certainty and bounded diagnostics, and retained Linux publication syncs every distinct rename parent without short-circuiting after a failure (#2804).
 
+## [0.11.7] - 2026-07-22
+
 ## [0.11.5] - 2026-07-20
 ### Added
 - `Process.signalRoot` exposes stable root-only process signaling, and identity-bound exact unlink reports stale quarantines, live successors, and retained internal exchange-placeholder cleanup paths as distinct recovery evidence.
