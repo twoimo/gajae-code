@@ -6,6 +6,7 @@
 
 - Added cross-platform memory-pressure observability with effective host/cgroup limits, configurable GC and restart advisory thresholds, typed Linux process probes, and a Windows Job Object native probe; unsupported lifecycle actions remain advisory-only.
 - Added versioned memory-guard checkpoints with strict transcript/blob validation and fail-closed cross-process writer/TTY ownership claims for future graceful restart activation.
+- Added Linux-only team worker memory-pressure replacement with checkpoint classification, bounded retries, deterministic target selection, and fail-closed blocked tasks; Windows and macOS remain advisory-only.
 
 ## [0.11.8] - 2026-07-23
 ### Added
