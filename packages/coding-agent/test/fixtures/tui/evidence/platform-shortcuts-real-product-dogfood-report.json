@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "compiled-tui-dogfood-report",
   "pr": 2967,
-  "head": "f650f24db7d9d69f55c77ea40809d89a098c5728",
+  "head": "e21e2db8832f19c1ebc5890241f944cd77b17fef",
   "buildCommand": [
     "bun",
     "--cwd=packages/coding-agent",
@@ -20,10 +20,10 @@
     ]
   ],
   "dogfoodInvocation": "compiled packages/coding-agent/dist/gjc in a 120x36 xterm-256color PTY for 8 seconds, then Ctrl-C shutdown",
-  "binarySha256": "fb74233304ba66cb5154c2fa25630bf19c0c081ec752788eb7549e331e018e57",
+  "binarySha256": "116d7d9a174d0be3ee44a3952fc5080a3ff9da8ffac4d9f5bfeb76b9e0c9bc8b",
   "rawAnsiArtifact": "packages/coding-agent/test/fixtures/tui/evidence/platform-shortcuts-real-product-dogfood.ansi.gz",
-  "rawAnsiSha256": "de6b398089374af4d75d3b569f587557a63dde52518844e2a55d28eab5d80e2e",
-  "rawAnsiBytes": 519500,
+  "rawAnsiSha256": "600d82934c265b389fd81a0199372d209c4feacb8f50238472417a8bf26459a2",
+  "rawAnsiBytes": 518989,
   "observations": {
     "composerPlaceholder": true,
     "flowPanel": true,
