@@ -108,6 +108,7 @@ export class QueuedMessageSelectorComponent extends Container {
 			this.#onCancel();
 			return;
 		}
+		if (matchesKey(keyData, "enter") || matchesKey(keyData, "escape")) return;
 		if (matchesKey(keyData, "delete")) {
 			if (this.#selectedEntry) this.#onDelete(this.#selectedEntry, this.#selectedIndex);
 			return;

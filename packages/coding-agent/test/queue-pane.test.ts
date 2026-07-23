@@ -67,6 +67,10 @@ describe("QueuePaneComponent", () => {
 		const rendered = pane.render(160).join("\n");
 		expect(rendered).toContain("⌃E edit");
 		expect(rendered).toContain("⌃X close");
+		pane.handleInput("\n");
+		pane.handleInput("\x1b");
+		expect(edited).toEqual([]);
+		expect(closed).toBe(false);
 		pane.handleInput("\x05");
 		pane.handleInput("\x18");
 		expect(edited).toContain("steer:1");

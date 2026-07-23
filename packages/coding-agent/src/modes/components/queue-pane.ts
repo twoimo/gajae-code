@@ -102,6 +102,7 @@ export class QueuePaneComponent extends Container {
 			this.#onClose();
 			return;
 		}
+		if (matchesKey(keyData, "enter") || matchesKey(keyData, "escape")) return;
 		if (matchesKey(keyData, "delete")) {
 			if (this.#selectedEntry) this.#onDelete(this.#selectedEntry, this.#selectedIndex);
 			return;
