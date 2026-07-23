@@ -177,8 +177,8 @@ function resolveCgroupDirectory(
 		const mountRoot = decodeMountInfoPath(leftFields[3]!);
 		const mountPoint = decodeMountInfoPath(leftFields[4]!);
 		const relative = path.posix.relative(mountRoot, membershipPath);
-		if (relative.startsWith("..") || path.posix.isAbsolute(relative)) continue;
-		return path.join(mountPoint, relative);
+		if (!relative.startsWith("..") && !path.posix.isAbsolute(relative)) return path.join(mountPoint, relative);
+		return path.join(mountPoint, membershipPath.replace(/^\/+/, ""));
 	}
 	return null;
 }
@@ -286,7 +286,10 @@ function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryP
 	);
 	if (candidates.length === 0) return null;
 	const pressured = candidates.reduce((selected, candidate) =>
-		candidate.usage / candidate.limit > selected.usage / selected.limit ? candidate : selected,
+		candidate.usage / Math.min(hostBytes, candidate.limit) >
+		selected.usage / Math.min(hostBytes, selected.limit)
+			? candidate
+			: selected,
 	);
 	return {
 		hardCapBytes: Math.min(hostBytes, pressured.limit),

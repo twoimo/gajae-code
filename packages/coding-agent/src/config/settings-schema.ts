@@ -2685,12 +2685,14 @@ export const SETTINGS_SCHEMA = {
 	"memoryGuard.parentReserveMb": {
 		type: "number",
 		default: 1024,
-		validate: (value: number) => Number.isFinite(value) && value >= 0,
+		validate: (value: number) =>
+			Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER / (1024 * 1024),
 	},
 	"memoryGuard.policyLimitMb": {
 		type: "number",
 		default: 0,
-		validate: (value: number) => Number.isFinite(value) && value >= 0,
+		validate: (value: number) =>
+			Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER / (1024 * 1024),
 	},
 
 	"computer.enabled": {

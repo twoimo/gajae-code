@@ -583,6 +583,26 @@ describe("resource GC monotonic scheduler", () => {
 		expectSchedulerStopped();
 	});
 
+	it("preserves an earlier shared deadline when another session changes cadence", async () => {
+		const clock = controlledScheduler();
+		const fast = gcSettings(100);
+		const changing = gcSettings(1_000);
+		const unregisterFast = registerResourceGcSession({ sessionId: "unchanged-fast", settings: fast });
+		const originalOwner = __getResourceGcStateForTest().pendingOwner;
+		await clock.advance(90);
+		const unregisterChanging = registerResourceGcSession({ sessionId: "changing-slow", settings: changing });
+
+		changing.set("resourceGc.sweepIntervalMs", 500);
+
+		expect(__getResourceGcStateForTest()).toMatchObject({
+			pendingDeadline: 1_100,
+			pendingOwner: originalOwner,
+		});
+		unregisterChanging();
+		unregisterFast();
+		expectSchedulerStopped();
+	});
+
 	it("C: unregistering the shortest session never postpones pending work", async () => {
 		const clock = controlledScheduler();
 		const releaseTab = vi.fn(async () => true);
