@@ -41,7 +41,12 @@ function baseDeps(over: Partial<ResourceGcDeps> = {}): ResourceGcDeps {
 	return {
 		now: () => NOW,
 		rssBytes: () => 1,
-		totalMemoryBytes: () => 1024 * MB,
+		memorySnapshot: async () => ({
+			hardCapBytes: 1024 * MB,
+			totalUsageBytes: 1,
+			parentBytes: 1,
+			source: "host",
+		}),
 		runGc: vi.fn(),
 		logWarn: vi.fn(),
 		listTabs: () => [],
@@ -114,6 +119,7 @@ function controlledReleases(): { releaseTab: Mock<ResourceGcDeps["releaseTab"]>;
 describe("resource GC controller", () => {
 	afterEach(() => {
 		__resetResourceGcForTest();
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
 
@@ -137,7 +143,12 @@ describe("resource GC controller", () => {
 		const deps = baseDeps({
 			now: () => now,
 			rssBytes: () => rss,
-			totalMemoryBytes: () => 200 * MB,
+			memorySnapshot: async () => ({
+				hardCapBytes: 200 * MB,
+				totalUsageBytes: rss,
+				parentBytes: rss,
+				source: "host",
+			}),
 			runGc,
 			logWarn,
 		});
@@ -158,6 +169,13 @@ describe("resource GC controller", () => {
 			"Memory guard: restart threshold sustained; restart remains advisory-only",
 			expect.objectContaining({ sessionId: "s1", effectiveLimitBytes: 100 * MB }),
 		);
+		settings.set("memoryGuard.enabled", false);
+		await sweepOnce(deps);
+		settings.set("memoryGuard.enabled", true);
+		await sweepOnce(deps);
+		now += 90_000;
+		await sweepOnce(deps);
+		expect(logWarn.mock.calls.filter(call => call[0].includes("restart threshold sustained"))).toHaveLength(2);
 	});
 
 	it("keeps positive fractional sweep intervals schedulable", () => {
@@ -167,6 +185,60 @@ describe("resource GC controller", () => {
 		});
 		expect(__getResourceGcStateForTest().timerActive).toBe(true);
 		unregister();
+	});
+
+	it("uses aggregate domain usage and runs process-wide GC once for concurrent sessions", async () => {
+		const settings = Settings.isolated({
+			"memoryGuard.enabled": true,
+			"memoryGuard.policyLimitMb": 100,
+			"memoryGuard.gcThresholdPercent": 70,
+			"browser.gc.enabled": false,
+			"computer.screenshotGc.enabled": false,
+		});
+		registerResourceGcSession({ sessionId: "s1", settings });
+		registerResourceGcSession({ sessionId: "s2", settings });
+		const runGc = vi.fn();
+		await sweepOnce(
+			baseDeps({
+				runGc,
+				memorySnapshot: async () => ({
+					hardCapBytes: 100 * MB,
+					totalUsageBytes: 90 * MB,
+					parentBytes: 10 * MB,
+					source: "linux_cgroup_v2",
+				}),
+			}),
+		);
+		expect(runGc).toHaveBeenCalledTimes(1);
+	});
+
+	it("schedules an enabled guard at its configured check interval", async () => {
+		const clock = controlledScheduler();
+		const runGc = vi.fn();
+		__setResourceGcDepsForTest({
+			runGc,
+			memorySnapshot: async () => ({
+				hardCapBytes: 100 * MB,
+				totalUsageBytes: 90 * MB,
+				parentBytes: 10 * MB,
+				source: "linux_cgroup_v2",
+			}),
+		});
+		registerResourceGcSession({
+			sessionId: "fast-memory-check",
+			settings: Settings.isolated({
+				"resourceGc.sweepIntervalMs": 30_000,
+				"memoryGuard.enabled": true,
+				"memoryGuard.checkIntervalMs": 5_000,
+				"memoryGuard.policyLimitMb": 100,
+				"browser.gc.enabled": false,
+				"computer.screenshotGc.enabled": false,
+			}),
+		});
+		await clock.advance(4_999);
+		expect(runGc).not.toHaveBeenCalled();
+		await clock.advance(1);
+		expect(runGc).toHaveBeenCalledTimes(1);
 	});
 
 	it("idle sweep evicts idle tabs oldest-first and spares recent ones", async () => {
@@ -344,11 +416,13 @@ describe("resource GC controller", () => {
 		});
 		registerResourceGcSession({ sessionId: "s1", settings });
 
+		const enteredRelease = Promise.withResolvers<void>();
 		let resolveRelease: (() => void) | undefined;
 		const releaseTab = vi.fn(
 			() =>
 				new Promise<boolean>(resolve => {
 					resolveRelease = () => resolve(true);
+					enteredRelease.resolve();
 				}),
 		);
 		__setResourceGcDepsForTest({
@@ -357,7 +431,7 @@ describe("resource GC controller", () => {
 		});
 
 		const first = __runResourceGcTickForTest(); // enters sweep, blocks on releaseTab
-		await Promise.resolve();
+		await enteredRelease.promise;
 		await __runResourceGcTickForTest(); // guard: returns immediately
 		expect(releaseTab).toHaveBeenCalledTimes(1);
 
