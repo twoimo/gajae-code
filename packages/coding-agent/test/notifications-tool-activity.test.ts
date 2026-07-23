@@ -126,6 +126,12 @@ describe("SDK replay capability filter", () => {
 			sessionId: "session",
 			stateRoot: "/tmp/session",
 			token: "token",
+			connectionCapabilities: connectionId =>
+				connectionId === "legacy"
+					? new Set()
+					: connectionId === "capable"
+						? new Set(["tool_activity_v1"])
+						: undefined,
 			sendFrame: (connectionId, frame) => {
 				sent.push({ connectionId, frame });
 			},
@@ -149,7 +155,7 @@ describe("SDK replay capability filter", () => {
 			type: "event_replay",
 			id: "capable",
 			sinceSeq: 0,
-			capabilities: ["tool_activity_v1"],
+			capabilities: [],
 		});
 		await wait();
 		expect((sent.at(-1)!.frame.events as Array<{ kind: string }>).slice(1).map(event => event.kind)).toEqual([

@@ -50,6 +50,21 @@ describe.skipIf(process.platform === "win32")("blob store owner-only permissions
 		}
 	});
 
+	it("creates base BlobStore async put() blobs owner-only under a permissive umask", async () => {
+		const previousUmask = process.umask(0o002);
+		try {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-blob-mode-async-"));
+			temporaryDirectories.push(root);
+			const store = new BlobStore(path.join(root, "blobs"));
+			const { path: blobPath } = await store.put(Buffer.from("async blob"));
+
+			expect(fs.statSync(path.join(root, "blobs")).mode & 0o777).toBe(0o700);
+			expect(fs.statSync(blobPath).mode & 0o777).toBe(0o600);
+		} finally {
+			process.umask(previousUmask);
+		}
+	});
+
 	it("installs immutable blobs owner-only under a permissive umask", () => {
 		const previousUmask = process.umask(0o002);
 		try {

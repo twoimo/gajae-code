@@ -247,6 +247,9 @@ describe("LocalProtocolHandler", () => {
 				expect(resource.sourcePath?.startsWith(`${path.resolve(artifactsDir)}${path.sep}`)).toBe(false);
 				await expect(fs.lstat(path.join(artifactsDir, "local"))).rejects.toMatchObject({ code: "ENOENT" });
 				expect((await InternalUrlRouter.instance().resolve("local://legacy.json")).content).toBe('{"legacy":true}');
+				expect(await fs.readFile(path.join(localRoot, ".gjc-local-legacy-migrated-v1"), "utf8")).toBe(
+					"cleanup_pending\n",
+				);
 			});
 		});
 	});
@@ -266,6 +269,9 @@ describe("LocalProtocolHandler", () => {
 				await initializeLocalRoot(LocalProtocolHandler.resolveOptions()!);
 				expect(await fs.readFile(path.join(localRoot, "legacy.json"), "utf8")).toBe('{"legacy":true}');
 				await expect(fs.lstat(path.join(artifactsDir, "local"))).rejects.toMatchObject({ code: "ENOENT" });
+				expect(await fs.readFile(path.join(localRoot, ".gjc-local-legacy-migrated-v1"), "utf8")).toBe(
+					"cleanup_pending\n",
+				);
 			});
 		});
 	});

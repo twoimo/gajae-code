@@ -146,12 +146,39 @@ async function installGeneratedBindings(outputDir: string): Promise<void> {
 	}
 }
 
+async function ensurePublishDiagnosticDeclaration(): Promise<void> {
+	const declarationPath = path.join(nativeDir, "index.d.ts");
+	const bindings = await Bun.file(declarationPath).text();
+	if (bindings.includes("export interface NativePublishDiagnostic")) return;
+	if (!bindings.includes("diagnostic: NativePublishDiagnostic"))
+		throw new Error("napi build did not generate the native publish diagnostic reference");
+	const declaration = `\n/** Bounded, path-free evidence for a parent-directory durability failure. */
+export interface NativePublishSyncFailure {
+  phase: string
+  parentRole: string
+  osCode: number
+  kind: string
+}
+
+/** Bounded, path-free evidence for one atomic publication. */
+export interface NativePublishDiagnostic {
+  schemaVersion: number
+  collectionState: string
+  osCode?: number
+  syncFailures?: Array<NativePublishSyncFailure>
+}
+`;
+	await Bun.write(declarationPath, `${bindings.trimEnd()}\n${declaration}`);
+}
+
 async function validateRecoveryFsBindings(): Promise<void> {
 	const bindings = await Bun.file(path.join(nativeDir, "index.d.ts")).text();
 	for (const symbol of [
 		"RecoveryFsRoot",
 		"RecoveryFsIdentity",
 		"RecoveryFsResult",
+		"NativePublishDiagnostic",
+		"NativePublishSyncFailure",
 		"openRecoveryFsRoot",
 		"repairOwnerOnlyPathSecurityExpected",
 		"verifyOwnerOnlyPathSecurityExpected",
@@ -247,7 +274,6 @@ try {
 	}
 
 	await installGeneratedBindings(buildOutputDir);
-	await validateRecoveryFsBindings();
 
 	await Bun.write(
 		`${canonicalAddonPath}.build.json`,
@@ -255,6 +281,8 @@ try {
 	);
 
 	await generateEnumExports();
+	await ensurePublishDiagnosticDeclaration();
+	await validateRecoveryFsBindings();
 
 	console.log("Build complete.");
 } finally {

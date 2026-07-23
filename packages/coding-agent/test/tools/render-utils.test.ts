@@ -209,4 +209,14 @@ describe("render helper null-safety", () => {
 		// Sanity: real input still works.
 		expect(shortenPath("/home/u/x", "/home/u")).toBe("~/x");
 	});
+
+	it("shortenPath only abbreviates paths inside home, not siblings sharing the prefix", () => {
+		expect(shortenPath("/home/woody/a.txt", "/home/woody")).toBe("~/a.txt");
+		expect(shortenPath("/home/woody", "/home/woody")).toBe("~");
+		// Siblings that merely share the string prefix must be returned verbatim.
+		expect(shortenPath("/home/woodyx/notes.txt", "/home/woody")).toBe("/home/woodyx/notes.txt");
+		expect(shortenPath("/home/woody-backup/x", "/home/woody")).toBe("/home/woody-backup/x");
+		expect(shortenPath("/home/woodyshire", "/home/woody")).toBe("/home/woodyshire");
+		expect(shortenPath("/etc/passwd", "/home/woody")).toBe("/etc/passwd");
+	});
 });

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.7] - 2026-07-22
+
 ### Fixed
 
 - Compiled dashboard assets now remain in a validated in-memory archive map instead of being materialized in a predictable shared temporary cache.

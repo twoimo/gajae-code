@@ -30,10 +30,13 @@ export type ChatDaemonAction = "stop" | "reload";
  * `kill -9`. Generation 8 adopts Windows expected-identity ACL verification and
  * repair for shared native authority. Generation 9 refreshes the shared native
  * authority declaration contract with bounded frame-delivery acknowledgement.
+ * Generation 11 accepts typed retained exact-unlink cleanup authority — a
+ * concrete detached quarantine plus a proven-absent canonical lock pathname —
+ * when deleting an observed owner-lock lease.
  */
 export const CHAT_DAEMON_GENERATIONS: Readonly<Record<ChatDaemonKind, number>> = {
-	discord: 9,
-	slack: 9,
+	discord: 11,
+	slack: 11,
 };
 
 export function chatDaemonGeneration(kind: ChatDaemonKind): number {
@@ -939,10 +942,19 @@ async function ownsChatDaemonOwnerLock(lock: string, lease: ChatDaemonOwnerLockL
 /** Deletes only the exact lease observed by this contender; a successor is retained. */
 function unlinkExactChatDaemonOwnerLock(lock: string, lease: ChatDaemonOwnerLockLease): boolean {
 	try {
-		return native.exactUnlink(lock, {
+		const removed = native.exactUnlink(lock, {
 			...lease,
 			quarantineName: `.gjc-delete-chat-daemon-lock-${crypto.randomUUID()}`,
-		}).ok;
+		});
+		if (removed.ok) return true;
+		// Accept only typed retained authority: a concrete detached quarantine plus
+		// a proven-absent canonical lock pathname. Anything else stays fail-closed.
+		return (
+			removed.code === "cleanup_pending" &&
+			typeof removed.detachedPath === "string" &&
+			removed.detachedPath.length > 0 &&
+			!fs.existsSync(lock)
+		);
 	} catch {
 		return false;
 	}

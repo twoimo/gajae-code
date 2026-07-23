@@ -75,5 +75,13 @@ use napi_derive::napi;
 /// MUST stay in sync with `VERSION_SENTINEL_EXPORT` in
 /// `packages/natives/native/index.js` (which derives the name from
 /// `package.json#version`).
-#[napi(js_name = "__piNativesV0_11_6")]
+#[napi(js_name = "__piNativesV0_11_7")]
 pub const fn pi_natives_version_sentinel() {}
+
+/// Publish-result wire-contract sentinel.
+///
+/// The loader requires this in addition to the release sentinel, so a
+/// same-version modern artifact built before the retained-publish contract
+/// cannot be selected over a compatible baseline.
+#[napi(js_name = "__piNativesPublishOutcomeV1")]
+pub const fn pi_natives_publish_outcome_sentinel() {}

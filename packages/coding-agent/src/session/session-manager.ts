@@ -59,6 +59,7 @@ import {
 	listManagedCandidates,
 	type ManagedCandidateWriteAuthority,
 	type ManagedMigrationPolicy,
+	type ManagedOpenCandidateResult,
 	type ManagedScope,
 	managedDirectoryAuthorityForScope,
 	managedRootForScope,
@@ -69,12 +70,15 @@ import {
 } from "./internal/managed-session-scope";
 import {
 	assertManagedDirectoryRoot,
+	fsyncManagedArtifactTree,
 	type ManagedDirectoryRoot,
 	type ManagedFileSnapshot,
 	ManagedSessionDescendantStore,
 	type ManagedSessionSecurityPolicy,
+	mayCleanManagedTreeStaging,
 	retainManagedDirectoryAuthority,
 } from "./internal/managed-session-storage";
+import { classifyNativePublishOutcome, formatNativePublishDiagnostic } from "./internal/native-publish-outcome";
 
 import {
 	type BashExecutionMessage,
@@ -1320,6 +1324,18 @@ function freezeInternalReadSnapshot<T>(value: T): T {
 	return copy;
 }
 
+function managedScopeStartupError(
+	action: "resolve" | "prepare",
+	failure: Extract<ReturnType<typeof resolveManagedScopeForWrite>, { kind: "error" }>,
+): Error {
+	return new Error(`Could not ${action} managed session scope.`, {
+		cause: {
+			classification: failure.cause?.classification ?? failure.code,
+			...(failure.cause?.diagnostic === undefined ? {} : { diagnostic: failure.cause.diagnostic }),
+		},
+	});
+}
+
 /** Resolve and prepare the default v2 session scope before any managed writer exists. */
 function computeDefaultSessionDir(
 	cwd: string,
@@ -1328,12 +1344,12 @@ function computeDefaultSessionDir(
 ): string {
 	if (!(storage instanceof FileSessionStorage)) throw new SessionManagedStorageError();
 	const resolved = resolveManagedScopeForWrite({ cwd, agentDir: path.resolve(sessionsRoot, ".."), sessionsRoot });
-	if (resolved.kind === "error") throw new Error(`Could not resolve managed session scope: ${resolved.message}`);
+	if (resolved.kind === "error") throw managedScopeStartupError("resolve", resolved);
 	const prepared = prepareManagedSessionScopeForWriteSync(
 		resolved.scope,
 		process.platform === "win32" ? "windows-existing-verify-first" : "default",
 	);
-	if (prepared.kind === "error") throw new Error(`Could not prepare managed session scope: ${prepared.message}`);
+	if (prepared.kind === "error") throw managedScopeStartupError("prepare", prepared);
 	return prepared.scope.directoryPath;
 }
 
@@ -1468,12 +1484,12 @@ function managedDestination(cwd: string, storage: SessionStorage, agentDir?: str
 		agentDir: agentDir ?? path.resolve(sessionsRoot, ".."),
 		sessionsRoot,
 	});
-	if (resolved.kind === "error") throw new Error(`Could not resolve managed session scope: ${resolved.message}`);
+	if (resolved.kind === "error") throw managedScopeStartupError("resolve", resolved);
 	const prepared = prepareManagedSessionScopeForWriteSync(
 		resolved.scope,
 		process.platform === "win32" ? "windows-existing-verify-first" : "default",
 	);
-	if (prepared.kind === "error") throw new Error(`Could not prepare managed session scope: ${prepared.message}`);
+	if (prepared.kind === "error") throw managedScopeStartupError("prepare", prepared);
 	return freezeManagedDestination(prepared.scope);
 }
 
@@ -2158,23 +2174,6 @@ function formatTimeAgo(date: Date): string {
 	return date.toLocaleDateString();
 }
 
-async function syncPathAndParent(filePath: string): Promise<void> {
-	const file = await fs.promises.open(filePath, "r");
-	try {
-		await file.sync();
-	} finally {
-		await file.close();
-	}
-	if (process.platform !== "win32") {
-		const parent = await fs.promises.open(path.dirname(filePath), "r");
-		try {
-			await parent.sync();
-		} finally {
-			await parent.close();
-		}
-	}
-}
-
 interface SessionMoveDirectoryHandle {
 	sync(): Promise<void>;
 	close(): Promise<void>;
@@ -2191,40 +2190,6 @@ export async function syncSessionMoveDirectory(
 		await handle.sync();
 	} finally {
 		await handle.close();
-	}
-}
-
-/** Durably flush every copied file and directory before an EXDEV source removal. */
-async function syncCopiedTree(treePath: string): Promise<void> {
-	const stat = await fs.promises.lstat(treePath);
-	if (stat.isSymbolicLink()) throw new Error("Refusing to fsync a copied symbolic link during a cross-device move");
-	if (stat.isFile()) {
-		const file = await fs.promises.open(treePath, "r");
-		try {
-			await file.sync();
-		} finally {
-			await file.close();
-		}
-		return;
-	}
-	if (!stat.isDirectory()) throw new Error("Copied cross-device move contains an unsupported filesystem entry");
-	const directory = await fs.promises.opendir(treePath);
-	try {
-		for (;;) {
-			const entry = await directory.read();
-			if (entry === null) break;
-			await syncCopiedTree(path.join(treePath, entry.name));
-		}
-	} finally {
-		await directory.close();
-	}
-	if (process.platform !== "win32") {
-		const handle = await fs.promises.open(treePath, "r");
-		try {
-			await handle.sync();
-		} finally {
-			await handle.close();
-		}
 	}
 }
 
@@ -2275,14 +2240,6 @@ async function captureCrossDeviceTreeIdentity(treePath: string): Promise<CrossDe
 	return `directory:${before.dev}:${before.ino}:${before.size}:${before.mtimeNs}:[${children.join(",")}]`;
 }
 
-async function removeCrossDeviceSourceIfUnchanged(source: string, expected: CrossDeviceTreeIdentity): Promise<void> {
-	if ((await captureCrossDeviceTreeIdentity(source)) !== expected)
-		throw new Error("Cross-device move source changed before removal");
-	const stat = await fs.promises.lstat(source);
-	if (stat.isDirectory()) await fs.promises.rm(source, { recursive: true, force: false });
-	else await fs.promises.unlink(source);
-}
-
 /**
  * An EXDEV retirement must be driven by a native descriptor/handle-bound
  * snapshot-copy-verify transaction.  Do not fall back to pathname copy/remove:
@@ -2298,83 +2255,25 @@ class CrossDeviceMoveUnsupportedError extends Error {
 	}
 }
 
-class PathMoveCompletedWithSyncFailure extends Error {
-	constructor(readonly cause: unknown) {
-		super("Path move completed but final source-directory sync failed.", { cause });
-	}
-}
-
 async function movePathAcrossDevicesSafe(source: string, destination: string): Promise<void> {
 	const sourceIdentity = await captureCrossDeviceTreeIdentity(source);
-	const renamed = native.renameNoReplacePath(source, destination);
-	if (renamed.ok) {
-		try {
-			if ((await captureCrossDeviceTreeIdentity(destination)) !== sourceIdentity)
-				throw new Error("Atomic session rename did not preserve the captured source identity");
-			await syncSessionMoveDirectory(path.dirname(destination));
-			if (path.dirname(source) !== path.dirname(destination)) await syncSessionMoveDirectory(path.dirname(source));
-		} catch (error) {
-			throw new PathMoveCompletedWithSyncFailure(error);
-		}
+	const outcome = classifyNativePublishOutcome(native.renameNoReplacePath(source, destination));
+	if (outcome.ok) {
+		if ((await captureCrossDeviceTreeIdentity(destination)) !== sourceIdentity)
+			throw new Error("Atomic session rename did not preserve the captured source identity");
+		await syncSessionMoveDirectory(path.dirname(destination));
+		if (path.dirname(source) !== path.dirname(destination)) await syncSessionMoveDirectory(path.dirname(source));
 		return;
 	}
-	if (renamed.code === "quarantine_collision") {
+	if (outcome.reason === "destination_exists") {
 		const error = new Error(`Session move destination already exists: ${destination}`) as NodeJS.ErrnoException;
 		error.code = "EEXIST";
 		throw error;
 	}
-	if (renamed.code !== "atomic_unavailable")
-		throw new Error(`Atomic session rename failed: ${renamed.code ?? "unknown"}`);
-	const sourceStat = await fs.promises.lstat(source);
-	if (!sourceStat.isDirectory()) {
-		let destinationCreated = false;
-		let sourceRemoved = false;
-		try {
-			try {
-				await fs.promises.link(source, destination);
-				destinationCreated = true;
-			} catch (error) {
-				if (hasFsCode(error, "EXDEV")) throw new CrossDeviceMoveUnsupportedError(source, destination, error);
-				if (
-					!hasFsCode(error, "EPERM") &&
-					!hasFsCode(error, "EACCES") &&
-					!hasFsCode(error, "ENOTSUP") &&
-					!hasFsCode(error, "EOPNOTSUPP")
-				)
-					throw error;
-				await fs.promises.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
-				destinationCreated = true;
-			}
-			await syncPathAndParent(destination);
-			await removeCrossDeviceSourceIfUnchanged(source, sourceIdentity);
-			sourceRemoved = true;
-			await syncSessionMoveDirectory(path.dirname(source));
-			return;
-		} catch (error) {
-			if (!sourceRemoved && destinationCreated) await fs.promises.unlink(destination).catch(() => undefined);
-			if (sourceRemoved && !(error instanceof PathMoveCompletedWithSyncFailure))
-				throw new PathMoveCompletedWithSyncFailure(error);
-			throw error;
-		}
-	}
-
-	const destinationParent = await fs.promises.lstat(path.dirname(destination));
-	if (sourceStat.dev !== destinationParent.dev) throw new CrossDeviceMoveUnsupportedError(source, destination);
-
-	try {
-		await fs.promises.cp(source, destination, { recursive: true, force: false, errorOnExist: true });
-		await syncCopiedTree(destination);
-		await removeCrossDeviceSourceIfUnchanged(source, sourceIdentity);
-		try {
-			await syncSessionMoveDirectory(path.dirname(source));
-		} catch (error) {
-			throw new PathMoveCompletedWithSyncFailure(error);
-		}
-	} catch (error) {
-		if (!(error instanceof PathMoveCompletedWithSyncFailure))
-			await fs.promises.rm(destination, { recursive: true, force: true }).catch(() => undefined);
-		throw error;
-	}
+	if (outcome.reason === "atomic_unavailable")
+		throw new CrossDeviceMoveUnsupportedError(source, destination, new Error(formatNativePublishDiagnostic(outcome)));
+	const message = `Atomic session rename failed: ${outcome.code ?? outcome.reason}`;
+	throw new Error(message, { cause: new Error(formatNativePublishDiagnostic(outcome)) });
 }
 
 const MAX_PERSIST_CHARS = 500_000;
@@ -4331,7 +4230,8 @@ export class SessionManager {
 				const candidate = listing.owned.find(candidate => path.resolve(candidate.path) === requestedPath);
 				if (!candidate) throw new Error("Managed session deletion requires exact logical authorization.");
 				const deleted = await deleteManagedSessionCandidate(resolved.scope, candidate);
-				if (deleted.kind === "error") throw new Error(`Could not delete managed session: ${deleted.message}`);
+				if (deleted.kind !== "deleted" && deleted.kind !== "already_deleted")
+					throw new Error(`Could not delete managed session: ${deleted.message}`);
 			} else {
 				await this.storage.deleteSessionWithArtifacts(sessionPath);
 			}
@@ -4460,27 +4360,20 @@ export class SessionManager {
 					throw new Error("managed_fork_transcript_changed");
 			}
 		} catch (error) {
-			let failure = error;
-			const failedSessionFile = this.#sessionFile;
-			if (this.destination.kind === "managed") {
+			const failure = error;
+			if (forkArtifactPublication) {
 				try {
-					if (forkTranscriptStore && forkTranscriptPublication)
-						forkTranscriptStore.removeExpected(path.basename(failedSessionFile), forkTranscriptPublication);
-					if (forkArtifactPublication)
-						forkArtifactPublication.cleanupStore.removeTreeExpected(
-							forkArtifactPublication.cleanupRelativePath,
-							forkArtifactPublication.snapshot,
-						);
+					forkArtifactPublication.cleanupStore.removeTreeExpected(
+						forkArtifactPublication.cleanupRelativePath,
+						forkArtifactPublication.snapshot,
+					);
 				} catch (cleanupError) {
-					failure = new Error(`Failed to clean up managed fork destination: ${toError(cleanupError).message}`, {
-						cause: toError(error),
-					});
-				}
-			} else {
-				try {
-					await this.storage.unlink(failedSessionFile);
-				} catch {
-					// Preserve ambiguous cleanup evidence while restoring the active manager.
+					const cleanupMessage = toError(cleanupError).message;
+					if (cleanupMessage !== "cleanup_pending") {
+						throw new Error(`Failed to clean up fork artifacts: ${cleanupMessage}`, {
+							cause: toError(failure),
+						});
+					}
 				}
 			}
 			this.#sessionId = oldSessionId;
@@ -4559,8 +4452,7 @@ export class SessionManager {
 			}
 			if (JSON.stringify(parentStore.captureTree(sourceName)) !== JSON.stringify(sourceSnapshot))
 				throw new Error("artifact_source_changed");
-			parentStore.moveTreeNoReplace(stagingName, destinationName, stagingSnapshot);
-			publishedSnapshot = parentStore.captureTree(destinationName);
+			publishedSnapshot = parentStore.moveTreeNoReplace(stagingName, destinationName, stagingSnapshot);
 			const comparable = (tree: native.NativeDirectoryTreeSnapshot) =>
 				tree.entries.map(entry => ({
 					relativePath: entry.relativePath,
@@ -4584,12 +4476,15 @@ export class SessionManager {
 			};
 		} catch (error) {
 			try {
-				if (publishedSnapshot) parentStore.removeTreeExpected(destinationName, publishedSnapshot);
-				else if (stagingSnapshot) parentStore.removeTreeExpected(stagingName, stagingSnapshot);
+				if (stagingSnapshot && mayCleanManagedTreeStaging(error))
+					parentStore.removeTreeExpected(stagingName, stagingSnapshot);
 			} catch (cleanupError) {
-				throw new Error(`Failed to clean up managed fork artifacts: ${toError(cleanupError).message}`, {
-					cause: toError(error),
-				});
+				const cleanupMessage = toError(cleanupError).message;
+				if (cleanupMessage !== "cleanup_pending") {
+					throw new Error(`Failed to clean up managed fork artifacts: ${cleanupMessage}`, {
+						cause: toError(error),
+					});
+				}
 			}
 			throw error;
 		}
@@ -4607,7 +4502,6 @@ export class SessionManager {
 		const previousSessionDir = this.sessionDir;
 		const previousSessionFile = this.#sessionFile;
 		const previousDestination = this.destination;
-		const previousArtifactDir = previousSessionFile?.slice(0, -6);
 
 		const nextDestination =
 			this.storage instanceof FileSessionStorage
@@ -4719,15 +4613,8 @@ export class SessionManager {
 								managedPublishedArtifacts,
 							);
 						}
-						if (managedTranscript)
+						if (managedTranscript && !managedSourceStore.readExpected(path.basename(oldSessionFile)))
 							await managedSourceStore.publishNoReplace(path.basename(oldSessionFile), managedTranscript.bytes);
-						if (managedPublishedArtifacts)
-							managedDestinationStore.removeTreeExpected(
-								path.basename(newArtifactDir),
-								managedPublishedArtifacts,
-							);
-						if (managedPublishedTranscript)
-							managedDestinationStore.removeExpected(path.basename(newSessionFile), managedPublishedTranscript);
 					};
 					managedTranscript = managedSourceStore.readExpected(path.basename(oldSessionFile));
 					hadSessionFile = managedTranscript !== null;
@@ -4764,10 +4651,20 @@ export class SessionManager {
 						if (!retainedTreeSnapshotEquals(terminalArtifacts, managedPublishedArtifacts))
 							throw new Error("managed_move_destination_artifacts_changed");
 					}
-					if (managedArtifacts)
-						managedSourceStore.removeTreeExpected(path.basename(oldArtifactDir), managedArtifacts);
-					if (managedTranscript)
-						managedSourceStore.removeExpected(path.basename(oldSessionFile), managedTranscript);
+					if (managedArtifacts) {
+						try {
+							managedSourceStore.removeTreeExpected(path.basename(oldArtifactDir), managedArtifacts);
+						} catch (cleanupError) {
+							if (toError(cleanupError).message !== "cleanup_pending") throw cleanupError;
+						}
+					}
+					if (managedTranscript) {
+						try {
+							managedSourceStore.removeExpected(path.basename(oldSessionFile), managedTranscript);
+						} catch (cleanupError) {
+							if (toError(cleanupError).message !== "cleanup_pending") throw cleanupError;
+						}
+					}
 				} else {
 					if (hadSessionFile && oldSessionFile !== newSessionFile) {
 						await movePathAcrossDevicesSafe(oldSessionFile, newSessionFile);
@@ -4823,13 +4720,6 @@ export class SessionManager {
 							!managedSourceStore.readExpected(path.basename(oldSessionFile))
 						)
 							await managedSourceStore.publishNoReplace(path.basename(oldSessionFile), managedTranscript.bytes);
-						if (managedPublishedArtifacts)
-							managedDestinationStore.removeTreeExpected(
-								path.basename(newArtifactDir),
-								managedPublishedArtifacts,
-							);
-						if (managedPublishedTranscript)
-							managedDestinationStore.removeExpected(path.basename(newSessionFile), managedPublishedTranscript);
 					} catch (rollbackErr) {
 						restoreResidentStateAndThrow(
 							new Error(`Failed to rollback managed move: ${toError(rollbackErr).message}`, {
@@ -4850,7 +4740,8 @@ export class SessionManager {
 			this.#bumpAllRevisions();
 		}
 
-		// Update cwd and sessionDir after the physical move succeeds, but roll the move back if metadata persistence fails.
+		// Update cwd and sessionDir after physical publication succeeds. Metadata failures restore the source
+		// authority but deliberately retain any destination publication evidence rather than deleting it.
 		this.cwd = resolvedCwd;
 		this.sessionDir = newSessionDir;
 		this.destination = nextDestination;
@@ -4871,60 +4762,37 @@ export class SessionManager {
 				await this.#appendHeaderPatch({ cwd: resolvedCwd });
 			}
 		} catch (error) {
-			const failedSessionFile = this.#sessionFile;
-			const failedArtifactDir = failedSessionFile?.slice(0, -6);
-			try {
-				await this.#closePersistWriter().catch(() => {});
-				this.#persistChain = Promise.resolve();
-				this.#persistError = undefined;
-				this.#persistErrorReported = false;
-				if (rollbackManagedMove) {
+			await this.#closePersistWriter().catch(() => {});
+			this.#persistChain = Promise.resolve();
+			this.#persistError = undefined;
+			this.#persistErrorReported = false;
+			if (rollbackManagedMove) {
+				try {
 					await rollbackManagedMove();
-					this.#sessionFile = previousSessionFile;
-					this.cwd = previousCwd;
-					this.sessionDir = previousSessionDir;
-					this.destination = previousDestination;
-					this.#managedTranscriptStoreCache =
-						managedMove && managedSourceStore
-							? { directory: path.resolve(previousSessionDir), store: managedSourceStore }
-							: null;
-					const header = this.#fileEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
-					if (header) applyHeaderPatch(header, { cwd: previousCwd });
-					this.#headerExportRevision++;
-					throw error;
-				}
-				if (
-					this.storage instanceof FileSessionStorage &&
-					failedArtifactDir &&
-					previousArtifactDir &&
-					failedArtifactDir !== previousArtifactDir &&
-					fs.existsSync(failedArtifactDir)
-				) {
-					await movePathAcrossDevicesSafe(failedArtifactDir, previousArtifactDir);
-				}
-				if (
-					this.storage instanceof FileSessionStorage &&
-					failedSessionFile &&
-					previousSessionFile &&
-					failedSessionFile !== previousSessionFile &&
-					fs.existsSync(failedSessionFile)
-				) {
-					await movePathAcrossDevicesSafe(failedSessionFile, previousSessionFile);
+				} catch (rollbackError) {
+					if (toError(rollbackError).message !== "cleanup_pending") {
+						throw new Error(`Failed to rollback managed move: ${toError(rollbackError).message}`, {
+							cause: toError(error),
+						});
+					}
 				}
 				this.#sessionFile = previousSessionFile;
 				this.cwd = previousCwd;
 				this.sessionDir = previousSessionDir;
 				this.destination = previousDestination;
-				this.#managedTranscriptStoreCache = null;
+				this.#managedTranscriptStoreCache =
+					managedMove && managedSourceStore
+						? { directory: path.resolve(previousSessionDir), store: managedSourceStore }
+						: null;
 				const header = this.#fileEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
 				if (header) applyHeaderPatch(header, { cwd: previousCwd });
 				this.#headerExportRevision++;
-				if (previousSessionFile && this.storage.existsSync(previousSessionFile)) await this.#rewriteFile();
-			} catch (rollbackError) {
-				throw new Error(`Failed to rollback session move: ${toError(rollbackError).message}`, {
-					cause: toError(error),
-				});
+				throw error;
 			}
+			// The destination has already been published. Retain it rather than moving it
+			// back over the source after a metadata failure.
+			this.#managedTranscriptStoreCache = null;
+			this.#headerExportRevision++;
 			throw error;
 		}
 
@@ -7254,9 +7122,11 @@ export class SessionManager {
 		const storage = new FileSessionStorage();
 		const managedDestinationStore = managedStoreFromContext(destination.securityContext, destination.directory);
 		const assertManagedDestinationBound = (): void => {
-			assertManagedDirectoryRoot(destination.securityContext.rootAuthority);
 			managedDestinationStore.assertBound();
+			if (!destination.securityContext.retainedAuthority)
+				assertManagedDirectoryRoot(destination.securityContext.rootAuthority);
 		};
+
 		assertManagedDestinationBound();
 		const inspected = inspectResumeSessionFile(filePath, storage);
 		if ("kind" in inspected) {
@@ -7312,18 +7182,26 @@ export class SessionManager {
 					}
 				: {}),
 		};
-		const opened = await openManagedCandidateForWrite(
-			resolved.scope,
-			candidate,
-			expectedIdentity ?? inspected.identity,
-			migrationPolicy,
-			authority,
-		);
-		assertManagedDestinationBound();
+		let opened: ManagedOpenCandidateResult;
+		try {
+			opened = await openManagedCandidateForWrite(
+				resolved.scope,
+				candidate,
+				expectedIdentity ?? inspected.identity,
+				migrationPolicy,
+				authority,
+			);
+		} catch (error) {
+			if (error instanceof Error && error.message.startsWith("Managed root authority changed"))
+				managedDestinationStore.assertBound();
+			throw error;
+		}
 		if (opened.kind === "error") {
+			managedDestinationStore.assertBound();
 			if (opened.code === "legacy_migration_disabled") throw new SessionMigrationPolicyError();
 			throw new Error(`Could not open managed session: ${opened.message}`);
 		}
+		assertManagedDestinationBound();
 		return opened.path;
 	}
 
@@ -7536,7 +7414,8 @@ export class SessionManager {
 		const candidate = listing.owned.find(item => path.resolve(item.path) === path.resolve(sessionPath));
 		if (!candidate) throw new Error("Session is not an authorized managed candidate.");
 		const deleted = await deleteManagedSessionCandidate(resolved.scope, candidate);
-		if (deleted.kind === "error") throw new Error(`Could not delete managed session: ${deleted.message}`);
+		if (deleted.kind !== "deleted" && deleted.kind !== "already_deleted")
+			throw new Error(`Could not delete managed session: ${deleted.message}`);
 	}
 
 	/** Capture exact source content for a strict fork without granting write ownership. */
@@ -7596,16 +7475,22 @@ export class SessionManager {
 		}
 
 		const dir = destination.directory;
-		const removeSessionDirOnFailure =
+		const privateStagingDir =
 			destination.kind !== "managed" &&
 			snapshot.storage instanceof FileSessionStorage &&
-			!snapshot.storage.existsSync(dir);
+			!snapshot.storage.existsSync(dir)
+				? fs.mkdtempSync(path.join(path.dirname(dir), `.${path.basename(dir)}.fork-staging-`))
+				: undefined;
+		const forkDestination = privateStagingDir ? explicitDestination(privateStagingDir) : destination;
 		let managedForkStore: ManagedSessionDescendantStore | undefined;
 		let managedForkTranscript: ManagedFileSnapshot | null = null;
 		let manager: SessionManager | undefined;
 		let authorityFailure: StrictSessionOpenFailure | undefined;
+		let privateStagingSnapshot: native.NativeDirectoryTreeSnapshot | undefined;
+		let privateStagingPublished = false;
+
 		try {
-			manager = new SessionManager(cwd, dir, true, snapshot.storage, destination);
+			manager = new SessionManager(cwd, privateStagingDir ?? dir, true, snapshot.storage, forkDestination);
 			await resolveBlobRefsInEntries(forkEntries, manager.#blobStore);
 			manager.#fileEntries = forkEntries;
 			const sourceHeader = manager.#fileEntries.find(e => e.type === "session") as SessionHeader | undefined;
@@ -7635,6 +7520,13 @@ export class SessionManager {
 				throw new Error("Captured fork source authority changed before destination write.");
 			}
 			await manager.#rewriteFile();
+			if (privateStagingDir) {
+				const capturedStaging = native.snapshotDirectoryTree(privateStagingDir);
+				if (!capturedStaging.ok || !capturedStaging.snapshot)
+					throw new Error(capturedStaging.code ?? "fork_staging_snapshot_failed");
+				privateStagingSnapshot = capturedStaging.snapshot;
+			}
+
 			if (destination.kind === "managed" && manager.#sessionFile) {
 				managedForkStore = manager.#managedTranscriptStore();
 				managedForkTranscript = managedForkStore.readExpected(path.basename(manager.#sessionFile));
@@ -7654,66 +7546,57 @@ export class SessionManager {
 				if (!managedFileSnapshotEquals(terminalTranscript, managedForkTranscript))
 					throw new Error("managed_fork_transcript_changed");
 			}
+			if (privateStagingDir && manager.#sessionFile) {
+				const materializedEntries = materializeResidentEntriesForReadSync(
+					manager.#fileEntries,
+					manager.#residentBlobStores(),
+				);
+				manager.#fileEntries = materializedEntries;
+				manager.#disposeResidentTextBlobStore();
+				const capturedStaging = native.snapshotDirectoryTree(privateStagingDir);
+				if (!capturedStaging.ok || !capturedStaging.snapshot)
+					throw new Error(capturedStaging.code ?? "fork_staging_snapshot_failed");
+				privateStagingSnapshot = capturedStaging.snapshot;
+				fsyncManagedArtifactTree(privateStagingDir);
+				const outcome = classifyNativePublishOutcome(native.renameNoReplacePath(privateStagingDir, dir));
+				if (!outcome.ok) throw new Error(outcome.code ?? "fork_destination_publish_failed");
+				privateStagingPublished = true;
+				const terminal = native.snapshotDirectoryTree(dir);
+				if (
+					!terminal.ok ||
+					!terminal.snapshot ||
+					!retainedTreeSnapshotEqualsAfterRename(terminal.snapshot, privateStagingSnapshot)
+				)
+					throw new Error("fork_destination_terminal_identity_changed");
+				await syncSessionMoveDirectory(path.dirname(dir));
+				const durableTerminal = native.snapshotDirectoryTree(dir);
+				if (
+					!durableTerminal.ok ||
+					!durableTerminal.snapshot ||
+					!retainedTreeSnapshotEqualsAfterRename(durableTerminal.snapshot, privateStagingSnapshot)
+				)
+					throw new Error("fork_destination_durability_identity_changed");
+				manager.sessionDir = dir;
+				manager.destination = destination;
+				manager.#sessionFile = path.join(dir, path.basename(manager.#sessionFile));
+				manager.#resetResidentTextBlobStore();
+				manager.#reexternalizeFileEntriesForResidentStore();
+				manager.#bumpAllRevisions();
+			}
 			if (manager.#sessionFile) writeTerminalBreadcrumb(manager.cwd, manager.#sessionFile);
 			return { kind: "forked", manager };
 		} catch (error) {
 			if (manager) {
-				const sessionFile = manager.#sessionFile;
 				const cleanupErrors: Error[] = [];
 				try {
 					await manager.close();
 				} catch (cleanupError) {
-					cleanupErrors.push(toError(cleanupError));
+					if (toError(cleanupError).message !== "cleanup_pending") cleanupErrors.push(toError(cleanupError));
 				}
-				if (sessionFile) {
-					if (destination.kind === "managed") {
-						try {
-							if (managedForkStore && managedForkTranscript)
-								managedForkStore.removeExpected(path.basename(sessionFile), managedForkTranscript);
-						} catch (cleanupError) {
-							cleanupErrors.push(toError(cleanupError));
-						}
-					} else {
-						try {
-							await manager.storage.unlink(sessionFile);
-						} catch (cleanupError) {
-							if (!isEnoent(cleanupError)) cleanupErrors.push(toError(cleanupError));
-						}
-						if (manager.storage instanceof FileSessionStorage) {
-							try {
-								await fs.promises.rm(sessionFile.slice(0, -6), { recursive: true, force: true });
-							} catch (cleanupError) {
-								cleanupErrors.push(toError(cleanupError));
-							}
-							try {
-								const sessionFileName = path.basename(sessionFile);
-								const transientPrefix = `.${sessionFileName}.`;
-								const backupPrefix = `${sessionFileName}.`;
-								for (const name of await fs.promises.readdir(path.dirname(sessionFile))) {
-									if (
-										(name.startsWith(transientPrefix) && name.endsWith(".tmp")) ||
-										(name.startsWith(backupPrefix) && name.endsWith(".bak"))
-									) {
-										await fs.promises.rm(path.join(path.dirname(sessionFile), name), {
-											recursive: true,
-											force: true,
-										});
-									}
-								}
-							} catch (cleanupError) {
-								if (!isEnoent(cleanupError)) cleanupErrors.push(toError(cleanupError));
-							}
-						}
-					}
-				}
-				if (removeSessionDirOnFailure) {
-					try {
-						await fs.promises.rmdir(dir);
-					} catch (cleanupError) {
-						const code = (cleanupError as NodeJS.ErrnoException).code;
-						if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST")
-							cleanupErrors.push(toError(cleanupError));
-					}
+				if (!privateStagingPublished && privateStagingDir && privateStagingSnapshot) {
+					const removed = native.exactRemoveDirectoryTree(privateStagingDir, privateStagingSnapshot);
+					if (!removed.ok && removed.code !== "not_found" && removed.code !== "cleanup_pending")
+						cleanupErrors.push(new Error(removed.code ?? "fork_staging_cleanup_failed"));
 				}
 				if (cleanupErrors.length > 0) {
 					throw new Error(`Failed to clean up fork destination: ${cleanupErrors[0]!.message}`, {

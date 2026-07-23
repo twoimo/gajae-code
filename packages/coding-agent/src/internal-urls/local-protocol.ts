@@ -145,6 +145,8 @@ async function assertDirectoryNotSymlink(directoryPath: string): Promise<void> {
 const LEGACY_MIGRATION_MARKER = ".gjc-local-legacy-migrated-v1";
 const MAX_LEGACY_LOCAL_BYTES = 64 * 1024 * 1024;
 
+type LegacyMigrationState = "complete" | "cleanup_pending";
+
 interface LegacyEntrySnapshot {
 	readonly relativePath: string;
 	readonly dev: bigint;
@@ -334,7 +336,7 @@ async function migrateManagedLegacyLocal(
 	}
 	const staging = path.join(scratchParent, `.gjc-local-migration-${randomUUID()}`);
 	const installed: Array<{ readonly path: string; readonly dev: bigint; readonly ino: bigint }> = [];
-	let installedMarker: { readonly dev: bigint; readonly ino: bigint } | null = null;
+	let sourceRetired = false;
 	try {
 		await fs.mkdir(staging, { mode: 0o700 });
 		for (const entry of captured.entries) {
@@ -360,18 +362,22 @@ async function migrateManagedLegacyLocal(
 			const identity = await fs.lstat(destination, { bigint: true });
 			installed.push({ path: destination, dev: identity.dev, ino: identity.ino });
 		}
+		try {
+			source.retire(captured.snapshot);
+			sourceRetired = true;
+		} catch (error) {
+			if (!(error instanceof Error) || error.message !== "cleanup_pending") throw error;
+			await fs.writeFile(marker, "cleanup_pending\n", { mode: 0o600, flag: "wx" });
+			return;
+		}
 		await fs.writeFile(marker, "verified\n", { mode: 0o600, flag: "wx" });
-		const markerIdentity = await fs.lstat(marker, { bigint: true });
-		installedMarker = { dev: markerIdentity.dev, ino: markerIdentity.ino };
-		source.retire(captured.snapshot);
 	} catch (error) {
-		const currentMarker = await fs.lstat(marker, { bigint: true }).catch(() => null);
-		if (installedMarker && currentMarker?.dev === installedMarker.dev && currentMarker.ino === installedMarker.ino)
-			await fs.rm(marker, { force: true });
-		for (const destination of installed.reverse()) {
-			const current = await fs.lstat(destination.path, { bigint: true }).catch(() => null);
-			if (current?.dev === destination.dev && current.ino === destination.ino)
-				await fs.rm(destination.path, { recursive: true, force: true });
+		if (!sourceRetired) {
+			for (const destination of installed.reverse()) {
+				const current = await fs.lstat(destination.path, { bigint: true }).catch(() => null);
+				if (current?.dev === destination.dev && current.ino === destination.ino)
+					await fs.rm(destination.path, { recursive: true, force: true });
+			}
 		}
 		throw error;
 	} finally {
@@ -379,15 +385,16 @@ async function migrateManagedLegacyLocal(
 	}
 }
 
-async function readMigrationMarker(marker: string): Promise<boolean> {
+async function readMigrationMarker(marker: string): Promise<LegacyMigrationState | null> {
 	try {
 		const snapshot = await snapshotRegularFile(marker, LEGACY_MIGRATION_MARKER);
 		if (snapshot.size > 32n || snapshot.bytes === undefined) throw new Error("Unsafe local:// migration marker");
 		const value = snapshot.bytes.toString("utf8");
-		if (value !== "verified\n" && value !== "absent\n") throw new Error("Unsafe local:// migration marker");
-		return true;
+		if (value === "cleanup_pending\n") return "cleanup_pending";
+		if (value === "verified\n" || value === "absent\n") return "complete";
+		throw new Error("Unsafe local:// migration marker");
 	} catch (error) {
-		if (isEnoent(error)) return false;
+		if (isEnoent(error)) return null;
 		throw error;
 	}
 }
@@ -436,7 +443,17 @@ async function migrateLegacyLocal(
 			}
 			await fs.rename(path.join(staging, entry), path.join(localRoot, entry));
 		}
-		await retireLegacyTree(legacySource.root, manifest);
+		try {
+			await retireLegacyTree(legacySource.root, manifest);
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				error.message !== "Legacy local:// migration retirement failed: cleanup_pending"
+			)
+				throw error;
+			await fs.writeFile(marker, "cleanup_pending\n", { mode: 0o600, flag: "wx" });
+			return;
+		}
 		await fs.writeFile(marker, "verified\n", { mode: 0o600, flag: "wx" });
 	} finally {
 		await fs.rm(staging, { recursive: true, force: true });

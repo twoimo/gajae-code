@@ -173,10 +173,101 @@ pub struct NativeExactUnlinkResult {
 	pub retained_unknown_path: Option<String>,
 }
 
+/// Bounded, path-free evidence for one publish operation.
+#[napi(object)]
+pub struct NativePublishSyncFailure {
+	pub phase:       String,
+	pub parent_role: String,
+	pub os_code:     i32,
+	pub kind:        String,
+}
+
+/// Bounded, path-free evidence for one publish operation.
+#[napi(object)]
+pub struct NativePublishDiagnostic {
+	pub schema_version:   u32,
+	pub collection_state: String,
+	pub os_code:          Option<i32>,
+	pub sync_failures:    Option<Vec<NativePublishSyncFailure>>,
+}
+
+/// Dedicated result for an atomic no-replace namespace publication.
+#[napi(object)]
+pub struct NativeNoReplaceResult {
+	pub ok:               bool,
+	pub code:             Option<String>,
+	pub mutation_state:   String,
+	pub durability_state: String,
+	pub reason:           String,
+	pub primitive:        String,
+	pub phase:            String,
+	pub diagnostic:       NativePublishDiagnostic,
+}
+
+impl NativeNoReplaceResult {
+	fn from_exact(result: NativeExactUnlinkResult) -> Self {
+		let (mutation_state, durability_state, reason) = if result.ok {
+			// A direct no-replace rename commits the namespace mutation, but does not
+			// fsync either parent directory.
+			("committed", "not_attempted", "none")
+		} else {
+			match result.code.as_deref() {
+				Some("quarantine_collision" | "already_exists") => {
+					("not_committed", "not_attempted", "destination_exists")
+				},
+				Some("atomic_unavailable") => ("not_committed", "not_attempted", "atomic_unavailable"),
+				Some("cross_device") => ("not_committed", "not_attempted", "cross_device"),
+				Some("permission_denied") => ("not_committed", "not_attempted", "permission_denied"),
+				Some("not_found" | "invalid_request") => {
+					("not_committed", "not_attempted", "invalid_request")
+				},
+				Some("reparse_point" | "identity_mismatch") => {
+					("not_committed", "not_attempted", "identity_violation")
+				},
+				// EINTR and unclassified failures leave the syscall's namespace effect
+				// ambiguous. Never authorize staging cleanup from them.
+				_ => ("unknown", "not_provable", "unknown"),
+			}
+		};
+		Self {
+			ok:               result.ok,
+			code:             result.code,
+			mutation_state:   mutation_state.to_owned(),
+			durability_state: durability_state.to_owned(),
+			reason:           reason.to_owned(),
+			primitive:        if cfg!(target_os = "linux") {
+				"renameat2_noreplace"
+			} else if cfg!(target_os = "macos") {
+				"renameatx_np_excl"
+			} else if cfg!(windows) {
+				"windows_rename_noreplace"
+			} else {
+				"unsupported"
+			}
+			.to_owned(),
+			phase:            if mutation_state == "committed" {
+				"complete"
+			} else if matches!(reason, "invalid_request" | "identity_violation") {
+				"preflight"
+			} else {
+				"rename"
+			}
+			.to_owned(),
+			diagnostic:       NativePublishDiagnostic {
+				schema_version:   1,
+				collection_state: "unavailable".to_owned(),
+				os_code:          None,
+				sync_failures:    None,
+			},
+		}
+	}
+}
+
 /// A deterministic, no-follow description of a directory tree. `relative_path`
 /// is UTF-8, uses `/` separators, and is empty only for the root entry.
 #[napi(object)]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+
 pub struct NativeDirectoryTreeEntry {
 	pub relative_path: String,
 	pub kind:          String,
@@ -191,7 +282,7 @@ pub struct NativeDirectoryTreeEntry {
 /// Stable evidence returned by `snapshot_directory_tree` and consumed verbatim
 /// by `exact_remove_directory_tree`.
 #[napi(object)]
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeDirectoryTreeSnapshot {
 	pub root_dev: String,
 	pub root_ino: String,
@@ -678,11 +769,16 @@ pub fn exact_restore(
 pub fn rename_no_replace_path(
 	source_path: String,
 	destination_path: String,
-) -> NativeExactUnlinkResult {
+) -> NativeNoReplaceResult {
 	if source_path.contains('\0') || destination_path.contains('\0') {
-		return NativeExactUnlinkResult::failure("io_error");
+		return NativeNoReplaceResult::from_exact(NativeExactUnlinkResult::failure(
+			"invalid_request",
+		));
 	}
-	platform::rename_path_no_replace(Path::new(&source_path), Path::new(&destination_path))
+	NativeNoReplaceResult::from_exact(platform::rename_path_no_replace(
+		Path::new(&source_path),
+		Path::new(&destination_path),
+	))
 }
 
 /// Capture a deterministic, descriptor-relative snapshot of a regular-file and
@@ -959,13 +1055,21 @@ pub(crate) mod platform {
 	static AFTER_PLACEHOLDER_DETACH_HOOK: OnceLock<
 		Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
 	> = OnceLock::new();
+	#[cfg(test)]
+	static AFTER_TREE_VALIDATION_HOOK: OnceLock<
+		Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+	> = OnceLock::new();
+
+	#[cfg(test)]
+	static AFTER_TREE_RENAME_HOOK: OnceLock<Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>> =
+		OnceLock::new();
 
 	#[cfg(test)]
 	pub(super) fn set_after_exchange_hook(hook: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>) {
 		*AFTER_EXCHANGE_HOOK
 			.get_or_init(|| Mutex::new(None))
 			.lock()
-			.expect("exchange hook lock") = hook;
+			.unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
 	}
 
 	#[cfg(test)]
@@ -973,7 +1077,7 @@ pub(crate) mod platform {
 		*BEFORE_EXCHANGE_HOOK
 			.get_or_init(|| Mutex::new(None))
 			.lock()
-			.expect("before exchange hook lock") = hook;
+			.unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
 	}
 
 	#[cfg(test)]
@@ -983,7 +1087,25 @@ pub(crate) mod platform {
 		*AFTER_PLACEHOLDER_DETACH_HOOK
 			.get_or_init(|| Mutex::new(None))
 			.lock()
-			.expect("placeholder detach hook lock") = hook;
+			.unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+	}
+
+	#[cfg(test)]
+	pub(super) fn set_after_tree_validation_hook(
+		hook: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+	) {
+		*AFTER_TREE_VALIDATION_HOOK
+			.get_or_init(|| Mutex::new(None))
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
+	}
+
+	#[cfg(test)]
+	pub(super) fn set_after_tree_rename_hook(hook: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>) {
+		*AFTER_TREE_RENAME_HOOK
+			.get_or_init(|| Mutex::new(None))
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
 	}
 
 	#[cfg(test)]
@@ -991,8 +1113,8 @@ pub(crate) mod platform {
 		if let Some((entered, resume)) = AFTER_EXCHANGE_HOOK
 			.get_or_init(|| Mutex::new(None))
 			.lock()
-			.expect("exchange hook lock")
-			.as_ref()
+			.unwrap_or_else(|poisoned| poisoned.into_inner())
+			.take()
 		{
 			entered.send(()).expect("exchange hook receiver");
 			resume.recv().expect("exchange hook resume");
@@ -1004,8 +1126,8 @@ pub(crate) mod platform {
 		if let Some((entered, resume)) = BEFORE_EXCHANGE_HOOK
 			.get_or_init(|| Mutex::new(None))
 			.lock()
-			.expect("before exchange hook lock")
-			.as_ref()
+			.unwrap_or_else(|poisoned| poisoned.into_inner())
+			.take()
 		{
 			entered.send(()).expect("before exchange hook receiver");
 			resume.recv().expect("before exchange hook resume");
@@ -1017,11 +1139,37 @@ pub(crate) mod platform {
 		if let Some((entered, resume)) = AFTER_PLACEHOLDER_DETACH_HOOK
 			.get_or_init(|| Mutex::new(None))
 			.lock()
-			.expect("placeholder detach hook lock")
-			.as_ref()
+			.unwrap_or_else(|poisoned| poisoned.into_inner())
+			.take()
 		{
 			entered.send(()).expect("placeholder detach hook receiver");
 			resume.recv().expect("placeholder detach hook resume");
+		}
+	}
+
+	#[cfg(test)]
+	fn pause_after_tree_validation_for_test() {
+		if let Some((entered, resume)) = AFTER_TREE_VALIDATION_HOOK
+			.get_or_init(|| Mutex::new(None))
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner())
+			.take()
+		{
+			entered.send(()).expect("tree validation hook receiver");
+			resume.recv().expect("tree validation hook resume");
+		}
+	}
+
+	#[cfg(test)]
+	fn pause_after_tree_rename_for_test() {
+		if let Some((entered, resume)) = AFTER_TREE_RENAME_HOOK
+			.get_or_init(|| Mutex::new(None))
+			.lock()
+			.unwrap_or_else(|poisoned| poisoned.into_inner())
+			.take()
+		{
+			entered.send(()).expect("tree rename hook receiver");
+			resume.recv().expect("tree rename hook resume");
 		}
 	}
 
@@ -2167,7 +2315,13 @@ pub(crate) mod platform {
 		} else {
 			match std::io::Error::last_os_error().raw_os_error() {
 				Some(libc::EEXIST) => Err("quarantine_collision"),
-				Some(libc::ENOSYS | libc::EINVAL) => Err("atomic_unavailable"),
+				Some(libc::ENOSYS) => Err("atomic_unavailable"),
+				// Fixed no-replace syscall arguments make EINVAL an invocation/filesystem
+				// divergence, not proof that the primitive is unavailable.
+				Some(libc::EINVAL) => Err("invalid_request"),
+				Some(libc::EXDEV) => Err("cross_device"),
+				Some(libc::EACCES | libc::EPERM) => Err("permission_denied"),
+				Some(libc::EINTR) => Err("interrupted"),
 				_ => Err("io_error"),
 			}
 		}
@@ -2236,7 +2390,11 @@ pub(crate) mod platform {
 		} else {
 			match std::io::Error::last_os_error().raw_os_error() {
 				Some(libc::EEXIST) => Err("quarantine_collision"),
-				Some(libc::ENOSYS | libc::EINVAL) => Err("atomic_unavailable"),
+				Some(libc::ENOSYS) => Err("atomic_unavailable"),
+				Some(libc::EINVAL) => Err("invalid_request"),
+				Some(libc::EXDEV) => Err("cross_device"),
+				Some(libc::EACCES | libc::EPERM) => Err("permission_denied"),
+				Some(libc::EINTR) => Err("interrupted"),
 				_ => Err("io_error"),
 			}
 		}
@@ -2291,42 +2449,66 @@ pub(crate) mod platform {
 	}
 
 	#[derive(Clone, Copy)]
+
 	struct ExchangePlaceholderIdentity {
-		dev: u64,
-		ino: u64,
+		dev:       u64,
+		ino:       u64,
+		directory: bool,
 	}
 
 	fn create_exchange_placeholder(
 		parent_fd: libc::c_int,
 		name: &CString,
+		directory: bool,
 	) -> Result<ExchangePlaceholderIdentity, &'static str> {
-		// An empty directory cannot be replaced by a regular-file rename. Keeping it
-		// at the canonical name prevents both O_EXCL creators and rename-published
-		// successors from winning before detach commits or restores.
-		// SAFETY: `parent_fd` is a live directory descriptor and `name` is a live,
-		// NUL-terminated pathname relative to that descriptor.
-		if unsafe { libc::mkdirat(parent_fd, name.as_ptr(), 0o700) } != 0 {
+		// Darwin RENAME_SWAP requires same-kind entries. The placeholder also keeps the
+		// mutable name occupied until the exchanged object is identity-checked.
+		let created = if directory {
+			// SAFETY: `parent_fd` is live and `name` is a NUL-terminated component.
+			unsafe { libc::mkdirat(parent_fd, name.as_ptr(), 0o700) }
+		} else {
+			// SAFETY: `parent_fd` is live and `name` is a NUL-terminated component.
+			let fd = unsafe {
+				libc::openat(
+					parent_fd,
+					name.as_ptr(),
+					libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY | libc::O_CLOEXEC,
+					0o600,
+				)
+			};
+			if fd >= 0 {
+				// SAFETY: this branch owns the placeholder descriptor exactly once.
+				unsafe { libc::close(fd) };
+				0
+			} else {
+				-1
+			}
+		};
+		if created != 0 {
 			return match std::io::Error::last_os_error().raw_os_error() {
 				Some(libc::EEXIST) => Err("quarantine_collision"),
 				_ => Err("io_error"),
 			};
 		}
+
 		// SAFETY: zero is a valid initialized representation for this output struct.
 		let mut placeholder: libc::stat = unsafe { std::mem::zeroed() };
 		// SAFETY: the descriptor and CString are live; the initialized output struct is
 		// writable.
 		if unsafe {
 			libc::fstatat(parent_fd, name.as_ptr(), &mut placeholder, libc::AT_SYMLINK_NOFOLLOW)
-		} != 0 || placeholder.st_mode & libc::S_IFMT != libc::S_IFDIR
+		} != 0 || (placeholder.st_mode & libc::S_IFMT == libc::S_IFDIR) != directory
 		{
 			return Err("io_error");
 		}
 		Ok(ExchangePlaceholderIdentity {
 			dev: placeholder.st_dev as u64,
 			ino: placeholder.st_ino as u64,
+			directory,
 		})
 	}
 
+	#[allow(dead_code, reason = "retained cleanup outcomes are platform-conditional")]
 	enum ExchangePlaceholderRemoval {
 		Removed,
 		RestoredMismatch,
@@ -2339,7 +2521,6 @@ pub(crate) mod platform {
 		CString::new(format!(".gjc-exact-unlink-placeholder-{:x}-{:x}", expected.dev, expected.ino))
 			.expect("placeholder quarantine name contains no NUL")
 	}
-
 	fn remove_exchange_placeholder(
 		parent_fd: libc::c_int,
 		name: &CString,
@@ -2360,25 +2541,20 @@ pub(crate) mod platform {
 		// writable.
 		let matches = unsafe {
 			libc::fstatat(parent_fd, detached_name.as_ptr(), &mut detached, libc::AT_SYMLINK_NOFOLLOW)
-		} == 0 && detached.st_mode & libc::S_IFMT == libc::S_IFDIR
+		} == 0 && (detached.st_mode & libc::S_IFMT == libc::S_IFDIR)
+			== expected.directory
 			&& detached.st_dev as u64 == expected.dev
 			&& detached.st_ino as u64 == expected.ino;
+
 		if !matches {
 			return match rename_no_replace(parent_fd, parent_fd, &detached_name, name) {
 				Ok(()) => ExchangePlaceholderRemoval::RestoredMismatch,
 				Err(_) => ExchangePlaceholderRemoval::RetainedMismatch(detached_name),
 			};
 		}
-		// SAFETY: the verified placeholder has already been detached from the
-		// canonical pathname; cleanup cannot delete a successor published there.
-		if unsafe { libc::unlinkat(parent_fd, detached_name.as_ptr(), libc::AT_REMOVEDIR) } == 0 {
-			ExchangePlaceholderRemoval::Removed
-		} else {
-			ExchangePlaceholderRemoval::RetainedFailure(
-				detached_name,
-				security_code(&std::io::Error::last_os_error()),
-			)
-		}
+		// POSIX only unlinks by mutable name. The identity proof cannot authorize
+		// a later unlinkat because a same-kind replacement may win that race.
+		ExchangePlaceholderRemoval::RetainedFailure(detached_name, "cleanup_pending")
 	}
 
 	fn digest_openat(parent_fd: libc::c_int, name: &CString) -> Result<[u8; 32], &'static str> {
@@ -2530,14 +2706,15 @@ pub(crate) mod platform {
 			unsafe { libc::close(parent_fd) };
 			return NativeExactUnlinkResult::failure("io_error");
 		};
-		let placeholder = match create_exchange_placeholder(parent_fd, &quarantine) {
-			Ok(placeholder) => placeholder,
-			Err(code) => {
-				// SAFETY: this branch owns the live descriptor and closes it exactly once.
-				unsafe { libc::close(parent_fd) };
-				return NativeExactUnlinkResult::failure(code);
-			},
-		};
+		let placeholder =
+			match create_exchange_placeholder(parent_fd, &quarantine, identity.directory) {
+				Ok(placeholder) => placeholder,
+				Err(code) => {
+					// SAFETY: this branch owns the live descriptor and closes it exactly once.
+					unsafe { libc::close(parent_fd) };
+					return NativeExactUnlinkResult::failure(code);
+				},
+			};
 		// Exchange keeps the canonical pathname occupied by an empty directory while
 		// the detached object is verified. A regular-file rename cannot replace that
 		// directory, so a rename-published successor cannot be deleted by cleanup.
@@ -2689,46 +2866,22 @@ pub(crate) mod platform {
 			unsafe { libc::close(parent_fd) };
 			return result;
 		}
-		// Delete the proven detached object before freeing the canonical placeholder.
-		// SAFETY: `parent_fd` remains a live directory descriptor and `quarantine`
-		// is a live, NUL-terminated detached filename relative to it.
-		let result = if unsafe { libc::unlinkat(parent_fd, quarantine.as_ptr(), 0) } == 0 {
-			match remove_exchange_placeholder(parent_fd, &name, placeholder) {
-				ExchangePlaceholderRemoval::Removed => NativeExactUnlinkResult::success(),
-				ExchangePlaceholderRemoval::RestoredMismatch | ExchangePlaceholderRemoval::Failed => {
-					NativeExactUnlinkResult::retained_unknown_failure(
-						"identity_mismatch",
-						path.to_string_lossy().into_owned(),
-					)
-				},
-				ExchangePlaceholderRemoval::RetainedMismatch(retained_name) => {
-					NativeExactUnlinkResult::retained_unknown_failure(
-						"identity_mismatch",
-						path
-							.parent()
-							.unwrap_or_else(|| Path::new("."))
-							.join(retained_name.to_string_lossy().as_ref())
-							.to_string_lossy()
-							.into_owned(),
-					)
-				},
-				ExchangePlaceholderRemoval::RetainedFailure(retained_name, code) => {
-					NativeExactUnlinkResult::retained_placeholder_failure(
-						code,
-						path
-							.parent()
-							.unwrap_or_else(|| Path::new("."))
-							.join(retained_name.to_string_lossy().as_ref())
-							.to_string_lossy()
-							.into_owned(),
-					)
-				},
-			}
-		} else {
-			NativeExactUnlinkResult::detached_failure(
-				security_code(&std::io::Error::last_os_error()),
-				detached_path,
-			)
+		// POSIX has no descriptor-bound unlink. Retain the proven detached object
+		// and exchange placeholder rather than risk unlinking a replacement.
+		let result = match remove_exchange_placeholder(parent_fd, &name, placeholder) {
+			ExchangePlaceholderRemoval::RetainedFailure(retained_name, code) => {
+				NativeExactUnlinkResult::detached_failure_with_placeholder(
+					code,
+					detached_path,
+					path
+						.parent()
+						.unwrap_or_else(|| Path::new("."))
+						.join(retained_name.to_string_lossy().as_ref())
+						.to_string_lossy()
+						.into_owned(),
+				)
+			},
+			_ => NativeExactUnlinkResult::detached_failure("cleanup_pending", detached_path),
 		};
 
 		// SAFETY: this branch owns the live descriptor and closes it exactly once.
@@ -3123,11 +3276,6 @@ pub(crate) mod platform {
 		}
 	}
 
-	enum TreeRemovalFailure {
-		Code(&'static str),
-		Retained(&'static str),
-	}
-
 	fn expected_tree_entry<'a>(
 		expected: &'a [NativeDirectoryTreeEntry],
 		relative: &str,
@@ -3205,21 +3353,9 @@ pub(crate) mod platform {
 		matching.next().is_none().then_some(entry)
 	}
 
-	fn quarantine_child(
-		parent_fd: libc::c_int,
-		original: &CString,
-		expected: &NativeDirectoryTreeEntry,
-	) -> Result<CString, &'static str> {
-		let candidate = tree_quarantine_name(expected);
-		rename_no_replace(parent_fd, parent_fd, original, &candidate)?;
-		Ok(candidate)
-	}
-
-	/// Validate the whole retained tree before starting any quarantine or
-	/// deletion. Missing expected entries are permitted because a prior attempt
-	/// may have completed their deletion, but every entry still present must
-	/// map uniquely to its durable logical identity (including deterministic
-	/// quarantine names).
+	/// Validate the retained tree before atomically detaching its root. Every
+	/// entry still present must map uniquely to its durable logical identity,
+	/// including deterministic names retained by older attempts.
 	fn validate_tree_fd(
 		fd: libc::c_int,
 		relative: &str,
@@ -3283,108 +3419,6 @@ pub(crate) mod platform {
 				// SAFETY: this branch owns the live descriptor and closes it exactly once.
 				unsafe { libc::close(child) };
 				result?;
-			}
-		}
-		Ok(())
-	}
-
-	fn remove_tree_fd(
-		fd: libc::c_int,
-		relative: &str,
-		expected: &[NativeDirectoryTreeEntry],
-	) -> Result<(), TreeRemovalFailure> {
-		let mut names = directory_names(fd).map_err(TreeRemovalFailure::Code)?;
-		names.sort();
-		let mut seen = std::collections::BTreeSet::new();
-		for name_bytes in names {
-			let physical =
-				CString::new(name_bytes.clone()).map_err(|_| TreeRemovalFailure::Code("io_error"))?;
-			let direct_name = std::str::from_utf8(&name_bytes).ok();
-			let direct_relative = direct_name.map(|name| {
-				if relative.is_empty() {
-					name.to_owned()
-				} else {
-					format!("{relative}/{name}")
-				}
-			});
-			let expected_direct = direct_relative
-				.as_deref()
-				.and_then(|candidate| expected_tree_entry(expected, candidate));
-			let expected_quarantined =
-				expected_quarantined_tree_entry(expected, relative, &name_bytes);
-			let (logical_bytes, expected_child) = match (expected_direct, expected_quarantined) {
-				(Some(entry), None) => (name_bytes.clone(), entry),
-				(None, Some(entry)) => (
-					entry.relative_path.rsplit_once('/').map_or_else(
-						|| entry.relative_path.as_bytes().to_vec(),
-						|(_, name)| name.as_bytes().to_vec(),
-					),
-					entry,
-				),
-				_ => return Err(TreeRemovalFailure::Code("identity_mismatch")),
-			};
-			let logical_name = std::str::from_utf8(&logical_bytes)
-				.map_err(|_| TreeRemovalFailure::Code("not_utf8"))?;
-			let child_relative = if relative.is_empty() {
-				logical_name.to_owned()
-			} else {
-				format!("{relative}/{logical_name}")
-			};
-			if !seen.insert(child_relative.clone()) {
-				return Err(TreeRemovalFailure::Code("identity_mismatch"));
-			}
-			if expected_tree_entry(expected, &child_relative) != Some(expected_child) {
-				return Err(TreeRemovalFailure::Code("identity_mismatch"));
-			}
-
-			if physical.as_bytes() == logical_bytes.as_slice()
-				&& !detached_entry_matches(fd, &physical, expected_child)
-					.map_err(TreeRemovalFailure::Code)?
-			{
-				return Err(TreeRemovalFailure::Code("identity_mismatch"));
-			}
-			let detached = if physical.as_bytes() == logical_bytes.as_slice() {
-				quarantine_child(fd, &physical, expected_child).map_err(TreeRemovalFailure::Code)?
-			} else {
-				physical
-			};
-			let matches = detached_entry_matches(fd, &detached, expected_child)
-				.map_err(TreeRemovalFailure::Code)?;
-			if !matches {
-				return Err(TreeRemovalFailure::Retained("identity_mismatch"));
-			}
-
-			if expected_child.kind == "directory" {
-				// SAFETY: the live descriptor, where used, and NUL-terminated path remain
-				// valid.
-				let child = unsafe {
-					libc::openat(
-						fd,
-						detached.as_ptr(),
-						libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-					)
-				};
-				if child < 0 {
-					return Err(TreeRemovalFailure::Retained(security_code(
-						&std::io::Error::last_os_error(),
-					)));
-				}
-				let result = remove_tree_fd(child, &child_relative, expected);
-				// SAFETY: this branch owns the live descriptor and closes it exactly once.
-				unsafe { libc::close(child) };
-				result?;
-				// SAFETY: the parent descriptor and NUL-terminated CString path remain valid.
-				if unsafe { libc::unlinkat(fd, detached.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
-					return Err(TreeRemovalFailure::Retained(security_code(
-						&std::io::Error::last_os_error(),
-					)));
-				}
-			// SAFETY: the parent descriptor and NUL-terminated CString path remain
-			// valid.
-			} else if unsafe { libc::unlinkat(fd, detached.as_ptr(), 0) } != 0 {
-				return Err(TreeRemovalFailure::Retained(security_code(
-					&std::io::Error::last_os_error(),
-				)));
 			}
 		}
 		Ok(())
@@ -3473,61 +3507,87 @@ pub(crate) mod platform {
 			}
 			return NativeExactUnlinkResult::detached_failure(code, retained_path);
 		}
-		// SAFETY: `fd` is the live directory descriptor whose offset is reset.
-		if unsafe { libc::lseek(fd, 0, libc::SEEK_SET) } < 0 {
-			// SAFETY: this branch owns the live descriptor and closes it exactly once.
+		if expected_tree_entry(&expected.entries, "").is_none() {
+			// SAFETY: this branch owns the live descriptors and closes each exactly once.
 			unsafe {
 				libc::close(fd);
 				libc::close(parent);
 			}
-			return NativeExactUnlinkResult::detached_failure("io_error", retained_path);
+			return NativeExactUnlinkResult::detached_failure("identity_mismatch", retained_path);
 		}
-		let removal = remove_tree_fd(fd, "", &expected.entries);
-		let result = match removal {
-			Ok(()) if !already_final => match rename_no_replace(parent, parent, root_name, &final_name) {
+		#[cfg(test)]
+		pause_after_tree_validation_for_test();
+		let detached_retained_path = if already_final {
+			retained_path
+		} else {
+			match rename_no_replace(parent, parent, root_name, &final_name) {
 				Ok(()) => {
-					// SAFETY: zero is a valid initialized representation for this output struct.
-					let mut retained: libc::stat = unsafe { std::mem::zeroed() };
-					// SAFETY: the descriptor is live and the initialized output struct is writable.
-					if unsafe { libc::fstat(fd, &mut retained) } != 0
-						|| retained.st_dev as u64 != expected.root_dev.parse().ok().unwrap_or(u64::MAX)
-						|| retained.st_ino as u64 != expected.root_ino.parse().ok().unwrap_or(u64::MAX)
-					{
-						NativeExactUnlinkResult::detached_failure("identity_mismatch", final_path)
-					// SAFETY: the parent descriptor and NUL-terminated CString path remain valid.
-					} else if unsafe { libc::unlinkat(parent, final_name.as_ptr(), libc::AT_REMOVEDIR) }
-						== 0
-					{
-						NativeExactUnlinkResult::success()
-					} else {
-						NativeExactUnlinkResult::detached_failure(
-							security_code(&std::io::Error::last_os_error()),
-							final_path,
-						)
-					}
+					#[cfg(test)]
+					pause_after_tree_rename_for_test();
+					final_path
 				},
-				Err(code) => NativeExactUnlinkResult::detached_failure(code, planned_path),
-			},
-			Ok(())
-				// SAFETY: the parent descriptor and NUL-terminated CString path remain valid.
-				if unsafe { libc::unlinkat(parent, root_name.as_ptr(), libc::AT_REMOVEDIR) } == 0 =>
-			{
-				NativeExactUnlinkResult::success()
-			},
-			Ok(()) => NativeExactUnlinkResult::detached_failure(
-				security_code(&std::io::Error::last_os_error()),
-				retained_path,
-			),
-			Err(TreeRemovalFailure::Code(code) | TreeRemovalFailure::Retained(code)) => {
-				NativeExactUnlinkResult::detached_failure(code, retained_path)
-			},
+				Err(code) => {
+					// SAFETY: this branch owns the live descriptors and closes each exactly once.
+					unsafe {
+						libc::close(fd);
+						libc::close(parent);
+					}
+					return NativeExactUnlinkResult::detached_failure(code, planned_path);
+				},
+			}
 		};
-		// SAFETY: this branch owns the live descriptor and closes it exactly once.
+		// The pre-rename descriptor cannot authorize the detached name. Reopen and
+		// revalidate the no-replace retained root before reporting it as replayable.
+		let detached_name = if already_final {
+			root_name
+		} else {
+			&final_name
+		};
+		// SAFETY: the parent descriptor and detached component are live.
+		let detached_fd = unsafe {
+			libc::openat(
+				parent,
+				detached_name.as_ptr(),
+				libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+			)
+		};
+		let detached_valid = if detached_fd < 0 {
+			Err("cleanup_pending")
+		} else {
+			// SAFETY: zero is a valid initialized representation for libc::stat.
+
+			let mut detached_root: libc::stat = unsafe { std::mem::zeroed() };
+			// SAFETY: detached_fd is live and detached_root is writable.
+			let result = if unsafe { libc::fstat(detached_fd, &mut detached_root) } != 0
+				|| detached_root.st_dev as u64 != expected.root_dev.parse().ok().unwrap_or(u64::MAX)
+				|| detached_root.st_ino as u64 != expected.root_ino.parse().ok().unwrap_or(u64::MAX)
+			{
+				Err("identity_mismatch")
+			} else {
+				validate_tree_fd(detached_fd, "", &expected.entries)
+			};
+			// SAFETY: this branch owns the detached root descriptor exactly once.
+			unsafe { libc::close(detached_fd) };
+			result
+		};
+		if let Err(code) = detached_valid {
+			// SAFETY: this branch owns the live descriptors and closes each exactly once.
+			unsafe {
+				libc::close(fd);
+				libc::close(parent);
+			}
+			return NativeExactUnlinkResult::detached_failure(code, detached_retained_path);
+		}
+		// POSIX cannot bind final unlink to the verified root descriptor. The
+		// no-replace detached root preserves the entire validated snapshot for
+		// deterministic replay instead of exchanging any child or root with a
+		// mutable placeholder.
+		// SAFETY: this branch owns the live descriptors and closes each exactly once.
 		unsafe {
 			libc::close(fd);
 			libc::close(parent);
 		}
-		result
+		NativeExactUnlinkResult::detached_failure("cleanup_pending", detached_retained_path)
 	}
 }
 
@@ -5627,6 +5687,11 @@ mod owner_only_security_tests {
 			destination.to_string_lossy().into_owned(),
 		);
 		assert!(renamed.ok, "{:?}", renamed.code);
+		assert_eq!(renamed.mutation_state, "committed");
+		assert_eq!(renamed.durability_state, "not_attempted");
+		assert_eq!(renamed.reason, "none");
+		assert_eq!(renamed.diagnostic.schema_version, 1);
+
 		assert_eq!(std::fs::read(&destination).expect("read renamed destination"), b"source");
 
 		let collision_source = dir.0.join("collision-source.tmp");
@@ -5637,11 +5702,35 @@ mod owner_only_security_tests {
 		);
 		assert!(!collision.ok);
 		assert_eq!(collision.code.as_deref(), Some("quarantine_collision"));
+		assert_eq!(collision.mutation_state, "not_committed");
+		assert_eq!(collision.reason, "destination_exists");
+		assert_eq!(collision.durability_state, "not_attempted");
 		assert_eq!(
 			std::fs::read(&collision_source).expect("read retained collision source"),
 			b"collision"
 		);
 		assert_eq!(std::fs::read(&destination).expect("read retained destination"), b"source");
+	}
+
+	#[test]
+	fn rename_no_replace_invalid_request_is_a_preflight_failure() {
+		let result =
+			NativeNoReplaceResult::from_exact(NativeExactUnlinkResult::failure("invalid_request"));
+		assert!(!result.ok);
+		assert_eq!(result.code.as_deref(), Some("invalid_request"));
+		assert_eq!(result.mutation_state, "not_committed");
+		assert_eq!(result.durability_state, "not_attempted");
+		assert_eq!(result.reason, "invalid_request");
+		assert_eq!(result.phase, "preflight");
+	}
+
+	#[test]
+	fn rename_no_replace_rejects_nul_request_before_syscall() {
+		let result = rename_no_replace_path("source\0".to_owned(), "destination".to_owned());
+		assert!(!result.ok);
+		assert_eq!(result.code.as_deref(), Some("invalid_request"));
+		assert_eq!(result.reason, "invalid_request");
+		assert_eq!(result.phase, "preflight");
 	}
 }
 #[cfg(all(test, unix))]
@@ -5734,24 +5823,40 @@ mod exact_unlink_placeholder_tests {
 	use std::{
 		fs,
 		os::unix::fs::MetadataExt,
-		path::Path,
 		sync::{Mutex, MutexGuard, OnceLock, mpsc},
 		thread,
 		time::{SystemTime, UNIX_EPOCH},
 	};
 
-	use super::{ExactFileIdentity, NativeExactUnlinkResult, platform, sha256};
+	use super::{
+		ExactFileIdentity, NativeDirectoryTreeSnapshot, NativeExactUnlinkResult, platform, sha256,
+	};
 
-	fn exchange_hook_test_guard() -> MutexGuard<'static, ()> {
+	struct ExchangeHookTestGuard {
+		_guard: MutexGuard<'static, ()>,
+	}
+
+	impl Drop for ExchangeHookTestGuard {
+		fn drop(&mut self) {
+			platform::set_after_exchange_hook(None);
+			platform::set_before_exchange_hook(None);
+			platform::set_after_placeholder_detach_hook(None);
+			platform::set_after_tree_rename_hook(None);
+		}
+	}
+
+	fn exchange_hook_test_guard() -> ExchangeHookTestGuard {
 		static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-		GUARD
-			.get_or_init(|| Mutex::new(()))
-			.lock()
-			.expect("exchange hook test guard")
+		ExchangeHookTestGuard {
+			_guard: GUARD
+				.get_or_init(|| Mutex::new(()))
+				.lock()
+				.unwrap_or_else(|poisoned| poisoned.into_inner()),
+		}
 	}
 
 	#[test]
-	fn regular_file_rename_cannot_replace_the_exchange_directory_placeholder() {
+	fn regular_successor_replaces_same_kind_placeholder_and_is_preserved() {
 		let _guard = exchange_hook_test_guard();
 		let root = std::env::temp_dir().join(format!(
 			"gjc-exact-unlink-placeholder-{}-{}",
@@ -5764,6 +5869,7 @@ mod exact_unlink_placeholder_tests {
 		fs::create_dir(&root).expect("create temporary directory");
 		let target = root.join("endpoint.json");
 		let successor = root.join("successor.json");
+		let stale = root.join(".quarantine");
 		fs::write(&target, b"stale").expect("write stale target");
 		fs::write(&successor, b"live successor").expect("write successor");
 		let metadata = fs::metadata(&target).expect("stat target");
@@ -5784,25 +5890,27 @@ mod exact_unlink_placeholder_tests {
 		let unlink = thread::spawn(move || platform::exact_unlink(&target_for_unlink, &identity));
 		entered_rx.recv().expect("wait for exchange");
 
-		let rename = fs::rename(&successor, &target);
-		assert!(rename.is_err(), "regular-file rename replaced the directory placeholder");
-		assert_eq!(fs::read(&successor).expect("successor retained"), b"live successor");
+		assert!(
+			fs::metadata(&target)
+				.expect("stat regular placeholder")
+				.is_file()
+		);
+		fs::rename(&successor, &target).expect("regular successor replaces regular placeholder");
 		resume_tx.send(()).expect("resume unlink");
 		let result = unlink.join().expect("exact unlink thread");
 		platform::set_after_exchange_hook(None);
-		assert!(result.ok, "{:?}", result.code);
-		assert!(!target.exists());
-		assert_eq!(
-			fs::read(&successor).expect("successor retained after cleanup"),
-			b"live successor"
-		);
+		assert!(!result.ok);
+		assert_eq!(result.code.as_deref(), Some("cleanup_pending"));
+		assert_eq!(result.detached_path.as_deref(), Some(stale.to_string_lossy().as_ref()));
+		assert_eq!(fs::read(&target).expect("successor preserved"), b"live successor");
+		assert_eq!(fs::read(&stale).expect("stale quarantine retained"), b"stale");
 		fs::remove_dir_all(root).expect("remove temporary directory");
 	}
 
-	fn preserves_directory_successor(target_is_directory: bool) {
+	fn preserves_same_kind_successor(target_is_directory: bool) {
 		let _guard = exchange_hook_test_guard();
 		let root = std::env::temp_dir().join(format!(
-			"gjc-exact-unlink-directory-successor-{}-{}",
+			"gjc-exact-unlink-same-kind-successor-{}-{}",
 			std::process::id(),
 			SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -5812,12 +5920,14 @@ mod exact_unlink_placeholder_tests {
 		fs::create_dir(&root).expect("create temporary directory");
 		let target = root.join("target");
 		let successor = root.join("successor");
+		let stale = root.join(".quarantine");
 		if target_is_directory {
 			fs::create_dir(&target).expect("create target directory");
+			fs::create_dir(&successor).expect("create successor directory");
 		} else {
 			fs::write(&target, b"stale").expect("write stale target");
+			fs::write(&successor, b"successor").expect("write successor file");
 		}
-		fs::create_dir(&successor).expect("create successor directory");
 		let metadata = fs::metadata(&target).expect("stat target");
 		let identity = ExactFileIdentity {
 			dev:             metadata.dev(),
@@ -5835,28 +5945,32 @@ mod exact_unlink_placeholder_tests {
 		let target_for_unlink = target.clone();
 		let unlink = thread::spawn(move || platform::exact_unlink(&target_for_unlink, &identity));
 		entered_rx.recv().expect("wait for exchange");
-		assert!(fs::metadata(&target).expect("stat placeholder").is_dir());
-		fs::rename(&successor, &target).expect("directory successor replaces empty placeholder");
+		let placeholder = fs::metadata(&target).expect("stat placeholder");
+		assert_eq!(placeholder.is_dir(), target_is_directory);
+		fs::rename(&successor, &target).expect("same-kind successor replaces placeholder");
 		resume_tx.send(()).expect("resume unlink");
 		let result = unlink.join().expect("exact unlink thread");
 		platform::set_after_exchange_hook(None);
 		assert!(!result.ok);
-		assert_eq!(result.code.as_deref(), Some("identity_mismatch"));
-		assert!(target.is_dir(), "directory successor was deleted");
+		assert!(matches!(result.code.as_deref(), Some("cleanup_pending" | "identity_mismatch")));
+
+		assert_eq!(result.detached_path.as_deref(), Some(stale.to_string_lossy().as_ref()));
+		assert_eq!(fs::metadata(&target).expect("stat successor").is_dir(), target_is_directory);
+		assert!(stale.exists(), "stale quarantine was not retained");
 		fs::remove_dir_all(root).expect("remove temporary directory");
 	}
 
 	#[test]
-	fn regular_target_preserves_directory_successor_after_exchange() {
-		preserves_directory_successor(false);
+	fn regular_target_preserves_regular_successor_after_exchange() {
+		preserves_same_kind_successor(false);
 	}
 
 	#[test]
 	fn directory_target_preserves_directory_successor_after_exchange() {
-		preserves_directory_successor(true);
+		preserves_same_kind_successor(true);
 	}
 
-	fn mismatch_preserves_directory_successor_and_stale_recovery(target_is_directory: bool) {
+	fn mismatch_preserves_same_kind_successor_and_stale_recovery(target_is_directory: bool) {
 		let _guard = exchange_hook_test_guard();
 		let root = std::env::temp_dir().join(format!(
 			"gjc-exact-unlink-mismatch-successor-{}-{}",
@@ -5869,12 +5983,14 @@ mod exact_unlink_placeholder_tests {
 		fs::create_dir(&root).expect("create temporary directory");
 		let target = root.join("target");
 		let successor = root.join("successor");
+		let stale = root.join(".quarantine");
 		if target_is_directory {
 			fs::create_dir(&target).expect("create target directory");
+			fs::create_dir(&successor).expect("create successor directory");
 		} else {
 			fs::write(&target, b"stale").expect("write stale target");
+			fs::write(&successor, b"successor").expect("write successor file");
 		}
-		fs::create_dir(&successor).expect("create successor directory");
 		let metadata = fs::metadata(&target).expect("stat target");
 		let identity = ExactFileIdentity {
 			dev:             metadata.dev(),
@@ -5892,36 +6008,35 @@ mod exact_unlink_placeholder_tests {
 		let target_for_unlink = target.clone();
 		let unlink = thread::spawn(move || platform::exact_unlink(&target_for_unlink, &identity));
 		entered_rx.recv().expect("wait for exchange");
-		let stale = root.join(".quarantine");
 		if target_is_directory {
 			fs::write(stale.join("mutation"), b"mutated").expect("mutate detached directory");
 		} else {
 			fs::write(&stale, b"mutated").expect("mutate detached file");
 		}
-		fs::rename(&successor, &target).expect("directory successor replaces placeholder");
+		fs::rename(&successor, &target).expect("same-kind successor replaces placeholder");
 		resume_tx.send(()).expect("resume unlink");
 		let result = unlink.join().expect("exact unlink thread");
 		platform::set_after_exchange_hook(None);
 		assert!(!result.ok);
 		assert_eq!(result.code.as_deref(), Some("identity_mismatch"));
 		assert_eq!(result.detached_path.as_deref(), Some(stale.to_string_lossy().as_ref()));
-		assert!(result.retained_successor_path.is_none());
-		assert!(target.is_dir(), "directory successor was displaced from its canonical path");
+		assert_eq!(result.retained_unknown_path.as_deref(), Some(target.to_string_lossy().as_ref()));
+		assert_eq!(fs::metadata(&target).expect("stat successor").is_dir(), target_is_directory);
 		assert!(stale.exists(), "mutated stale object was not recoverable at its detached path");
 		fs::remove_dir_all(root).expect("remove temporary directory");
 	}
 
 	#[test]
-	fn regular_target_mismatch_preserves_directory_successor_and_stale_recovery() {
-		mismatch_preserves_directory_successor_and_stale_recovery(false);
+	fn regular_target_mismatch_preserves_regular_successor_and_stale_recovery() {
+		mismatch_preserves_same_kind_successor_and_stale_recovery(false);
 	}
 
 	#[test]
 	fn directory_target_mismatch_preserves_directory_successor_and_stale_recovery() {
-		mismatch_preserves_directory_successor_and_stale_recovery(true);
+		mismatch_preserves_same_kind_successor_and_stale_recovery(true);
 	}
 
-	fn preserves_directory_successor_after_placeholder_identity_verification(
+	fn retained_same_kind_placeholder_preserves_successor_after_detach_hook(
 		target_is_directory: bool,
 	) {
 		let _guard = exchange_hook_test_guard();
@@ -5936,12 +6051,14 @@ mod exact_unlink_placeholder_tests {
 		fs::create_dir(&root).expect("create temporary directory");
 		let target = root.join("target");
 		let successor = root.join("successor");
+		let stale = root.join(".quarantine");
 		if target_is_directory {
 			fs::create_dir(&target).expect("create target directory");
+			fs::create_dir(&successor).expect("create successor directory");
 		} else {
 			fs::write(&target, b"stale").expect("write stale target");
+			fs::write(&successor, b"successor").expect("write successor file");
 		}
-		fs::create_dir(&successor).expect("create successor directory");
 		let metadata = fs::metadata(&target).expect("stat target");
 		let identity = ExactFileIdentity {
 			dev:             metadata.dev(),
@@ -5961,38 +6078,40 @@ mod exact_unlink_placeholder_tests {
 		entered_rx
 			.recv()
 			.expect("wait for verified placeholder detach");
-		fs::rename(&successor, &target).expect("directory successor fills detached canonical name");
+		fs::rename(&successor, &target).expect("same-kind successor fills detached canonical name");
 		resume_tx.send(()).expect("resume unlink");
 		let result = unlink.join().expect("exact unlink thread");
 		platform::set_after_placeholder_detach_hook(None);
-		assert!(result.ok, "{:?}", result.code);
-		assert!(target.is_dir(), "directory successor was deleted or lost");
-		assert!(
-			fs::metadata(&target).expect("stat successor").ino() != metadata.ino(),
-			"canonical pathname was not replaced by the successor"
+		assert!(!result.ok);
+		assert_eq!(result.code.as_deref(), Some("cleanup_pending"));
+		assert_eq!(result.detached_path.as_deref(), Some(stale.to_string_lossy().as_ref()));
+		let retained = result
+			.retained_placeholder_path
+			.expect("retained placeholder path");
+		assert_eq!(
+			fs::metadata(&retained)
+				.expect("stat retained placeholder")
+				.is_dir(),
+			target_is_directory
 		);
-		if target_is_directory {
-			assert_eq!(
-				result.detached_path.as_deref(),
-				Some(root.join(".quarantine").to_string_lossy().as_ref())
-			);
-		} else {
-			assert!(!root.join(".quarantine").exists(), "stale target was not deleted");
-		}
+		assert_eq!(fs::metadata(&target).expect("stat successor").is_dir(), target_is_directory);
+		assert!(stale.exists(), "stale quarantine was not retained");
 		fs::remove_dir_all(root).expect("remove temporary directory");
 	}
 
 	#[test]
-	fn regular_target_preserves_directory_successor_after_placeholder_identity_verification() {
-		preserves_directory_successor_after_placeholder_identity_verification(false);
+	fn regular_target_retains_regular_placeholder_after_detach_hook() {
+		retained_same_kind_placeholder_preserves_successor_after_detach_hook(false);
 	}
 
 	#[test]
-	fn directory_target_preserves_directory_successor_after_placeholder_identity_verification() {
-		preserves_directory_successor_after_placeholder_identity_verification(true);
+	fn directory_target_retains_directory_placeholder_after_detach_hook() {
+		retained_same_kind_placeholder_preserves_successor_after_detach_hook(true);
 	}
 
-	fn retained_unknown_after_placeholder_mismatch_is_reported_separately(detach_only: bool) {
+	fn poisoned_same_kind_successor_is_retained_without_overwriting_the_next_successor(
+		detach_only: bool,
+	) {
 		let _guard = exchange_hook_test_guard();
 		let root = std::env::temp_dir().join(format!(
 			"gjc-exact-unlink-retained-successor-{}-{}",
@@ -6008,10 +6127,8 @@ mod exact_unlink_placeholder_tests {
 		let second_successor = root.join("second-successor");
 		let stale = root.join(".quarantine");
 		fs::write(&target, b"stale").expect("write stale target");
-		fs::create_dir(&first_successor).expect("create first successor");
-		fs::write(first_successor.join("owner"), b"first").expect("write first successor owner");
-		fs::create_dir(&second_successor).expect("create second successor");
-		fs::write(second_successor.join("owner"), b"second").expect("write second successor owner");
+		fs::write(&first_successor, b"first").expect("write first successor");
+		fs::write(&second_successor, b"second").expect("write second successor");
 		let metadata = fs::metadata(&target).expect("stat target");
 		let identity = ExactFileIdentity {
 			dev: metadata.dev(),
@@ -6035,12 +6152,13 @@ mod exact_unlink_placeholder_tests {
 		let target_for_unlink = target.clone();
 		let unlink = thread::spawn(move || platform::exact_unlink(&target_for_unlink, &identity));
 		exchange_entered_rx.recv().expect("wait for exchange");
-		fs::rename(&first_successor, &target).expect("first successor replaces placeholder");
+		fs::rename(&first_successor, &target).expect("first regular successor replaces placeholder");
 		exchange_resume_tx.send(()).expect("resume exchange");
 		placeholder_entered_rx
 			.recv()
 			.expect("wait for first successor detach");
-		fs::rename(&second_successor, &target).expect("second successor prevents restoration");
+		fs::rename(&second_successor, &target)
+			.expect("second regular successor prevents restoration");
 		placeholder_resume_tx
 			.send(())
 			.expect("resume placeholder cleanup");
@@ -6049,37 +6167,32 @@ mod exact_unlink_placeholder_tests {
 		platform::set_after_placeholder_detach_hook(None);
 
 		assert!(!result.ok);
-		assert_eq!(result.code.as_deref(), Some("identity_mismatch"));
-		assert!(result.retained_placeholder_path.is_none());
-		assert!(result.retained_successor_path.is_none());
-		let retained = result
-			.retained_unknown_path
-			.expect("unverified cleanup recovery path");
-		assert!(Path::new(&retained).is_dir(), "unverified cleanup entry was not retained");
-		assert_eq!(
-			fs::read(Path::new(&retained).join("owner"))
-				.expect("read retained unverified cleanup entry"),
-			b"first"
-		);
-		assert_eq!(fs::read(target.join("owner")).expect("read second successor"), b"second");
-		if detach_only {
-			assert_eq!(result.detached_path.as_deref(), Some(stale.to_string_lossy().as_ref()));
-			assert_eq!(fs::read(&stale).expect("read detached stale object"), b"stale");
-		} else {
-			assert!(result.detached_path.is_none());
-			assert!(!stale.exists(), "removed stale object was reported as detached");
-		}
+		assert!(matches!(result.code.as_deref(), Some("cleanup_pending" | "identity_mismatch")));
+		assert_eq!(result.detached_path.as_deref(), Some(stale.to_string_lossy().as_ref()));
+		assert_eq!(fs::read(&target).expect("read second successor"), b"second");
+		assert_eq!(fs::read(&stale).expect("read detached stale object"), b"stale");
+		let retained = fs::read_dir(&root)
+			.expect("read temporary directory")
+			.map(|entry| entry.expect("read temporary entry").path())
+			.find(|path| {
+				path
+					.file_name()
+					.and_then(|name| name.to_str())
+					.is_some_and(|name| name.starts_with(".gjc-exact-unlink-placeholder-"))
+			})
+			.expect("find retained poisoned successor");
+		assert_eq!(fs::read(retained).expect("read retained poisoned successor"), b"first");
 		fs::remove_dir_all(root).expect("remove temporary directory");
 	}
 
 	#[test]
-	fn retained_unknown_after_stale_removal_has_no_detached_path() {
-		retained_unknown_after_placeholder_mismatch_is_reported_separately(false);
+	fn poisoned_successor_after_stale_removal_is_retained() {
+		poisoned_same_kind_successor_is_retained_without_overwriting_the_next_successor(false);
 	}
 
 	#[test]
-	fn retained_unknown_and_stale_quarantine_are_reported_separately() {
-		retained_unknown_after_placeholder_mismatch_is_reported_separately(true);
+	fn poisoned_successor_and_stale_quarantine_are_retained() {
+		poisoned_same_kind_successor_is_retained_without_overwriting_the_next_successor(true);
 	}
 
 	#[test]
@@ -6134,7 +6247,7 @@ mod exact_unlink_placeholder_tests {
 					.is_some_and(|name| name.starts_with(".gjc-exact-unlink-placeholder-"))
 			})
 			.expect("find detached placeholder");
-		fs::write(retained.join("blocker"), b"retained").expect("make placeholder cleanup fail");
+		fs::write(&retained, b"retained").expect("poison retained regular placeholder");
 		placeholder_resume_tx
 			.send(())
 			.expect("resume placeholder cleanup");
@@ -6150,7 +6263,7 @@ mod exact_unlink_placeholder_tests {
 			result.retained_placeholder_path.as_deref(),
 			Some(retained.to_string_lossy().as_ref())
 		);
-		assert!(retained.is_dir(), "retained cleanup path is not recoverable");
+		assert!(retained.is_file(), "retained cleanup path is not a regular placeholder");
 		fs::remove_dir_all(root).expect("remove temporary directory");
 	}
 
@@ -6167,6 +6280,144 @@ mod exact_unlink_placeholder_tests {
 			result.retained_placeholder_path.as_deref(),
 			Some("/tmp/.gjc-exact-unlink-placeholder-verified")
 		);
+	}
+
+	fn assert_tree_replay_result(result: &NativeExactUnlinkResult, detached: &std::path::Path) {
+		assert!(!result.ok);
+		assert_eq!(result.code.as_deref(), Some("cleanup_pending"));
+		assert_eq!(result.detached_path.as_deref(), Some(detached.to_string_lossy().as_ref()));
+		assert!(result.retained_successor_path.is_none());
+		assert!(result.retained_placeholder_path.is_none());
+		assert!(result.retained_unknown_path.is_none());
+	}
+
+	fn same_tree_after_authorized_rename(
+		left: &NativeDirectoryTreeSnapshot,
+		right: &NativeDirectoryTreeSnapshot,
+	) -> bool {
+		left.root_dev == right.root_dev
+			&& left.root_ino == right.root_ino
+			&& left.entries.len() == right.entries.len()
+			&& left
+				.entries
+				.iter()
+				.zip(&right.entries)
+				.all(|(left, right)| {
+					left.relative_path == right.relative_path
+						&& left.kind == right.kind
+						&& left.dev == right.dev
+						&& left.ino == right.ino
+						&& left.size == right.size
+						&& left.mtime_ns == right.mtime_ns
+						&& left.sha256 == right.sha256
+				})
+	}
+
+	fn replay_retains_verified_tree(nested: bool) {
+		let _guard = exchange_hook_test_guard();
+		let root = std::env::temp_dir().join(format!(
+			"gjc-tree-replay-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("system time")
+				.as_nanos(),
+		));
+		fs::create_dir(&root).expect("create temporary directory");
+		let target = root.join("target");
+		fs::create_dir(&target).expect("create target");
+		if nested {
+			fs::create_dir_all(target.join("nested")).expect("create nested tree");
+			fs::write(target.join("root-file"), b"root").expect("write root file");
+			fs::write(target.join("nested/file"), b"nested").expect("write nested file");
+		}
+		let snapshot = platform::snapshot_directory_tree(&target)
+			.snapshot
+			.expect("snapshot target");
+		let detached = root.join("target.removing");
+
+		let first = platform::exact_remove_directory_tree(&target, &snapshot);
+		assert_tree_replay_result(&first, &detached);
+		assert!(target.symlink_metadata().is_err());
+		assert!(
+			same_tree_after_authorized_rename(
+				&platform::snapshot_directory_tree(&detached)
+					.snapshot
+					.expect("snapshot detached"),
+				&snapshot,
+			),
+			"first retained tree is replayable from the original snapshot"
+		);
+
+		let second = platform::exact_remove_directory_tree(&target, &snapshot);
+		assert_tree_replay_result(&second, &detached);
+		assert!(
+			same_tree_after_authorized_rename(
+				&platform::snapshot_directory_tree(&detached)
+					.snapshot
+					.expect("snapshot detached"),
+				&snapshot,
+			),
+			"second call retains the same replayable tree"
+		);
+		fs::remove_dir_all(root).expect("remove temporary directory");
+	}
+
+	#[test]
+	fn empty_tree_retention_replays_on_second_call_with_exact_evidence() {
+		replay_retains_verified_tree(false);
+	}
+
+	#[test]
+	fn nested_tree_retention_replays_on_second_call_with_exact_evidence() {
+		replay_retains_verified_tree(true);
+	}
+	#[test]
+	fn aborted_tree_hook_does_not_block_the_next_hook() {
+		let _guard = exchange_hook_test_guard();
+		let root = std::env::temp_dir().join(format!(
+			"gjc-tree-hook-abort-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("system time")
+				.as_nanos(),
+		));
+		fs::create_dir(&root).expect("create temporary directory");
+		let target = root.join("target");
+		fs::create_dir(&target).expect("create target");
+		let snapshot = platform::snapshot_directory_tree(&target)
+			.snapshot
+			.expect("snapshot target");
+		let (entered_tx, entered_rx) = mpsc::channel();
+		let (resume_tx, resume_rx) = mpsc::channel();
+		drop(resume_tx);
+		platform::set_after_tree_rename_hook(Some((entered_tx, resume_rx)));
+		let target_for_remove = target.clone();
+		let aborted = thread::spawn(move || {
+			platform::exact_remove_directory_tree(&target_for_remove, &snapshot)
+		});
+		entered_rx.recv().expect("wait for aborted hook");
+		assert!(aborted.join().is_err(), "disconnected hook did not abort");
+
+		let next = root.join("next");
+		fs::create_dir(&next).expect("create next target");
+		let snapshot = platform::snapshot_directory_tree(&next)
+			.snapshot
+			.expect("snapshot next target");
+		let (entered_tx, entered_rx) = mpsc::channel();
+		let (resume_tx, resume_rx) = mpsc::channel();
+		platform::set_after_tree_rename_hook(Some((entered_tx, resume_rx)));
+		let next_for_remove = next.clone();
+		let removal =
+			thread::spawn(move || platform::exact_remove_directory_tree(&next_for_remove, &snapshot));
+		entered_rx.recv().expect("wait for next hook");
+		resume_tx.send(()).expect("resume next hook");
+		assert_eq!(
+			removal.join().expect("next removal thread").code.as_deref(),
+			Some("cleanup_pending"),
+		);
+		fs::remove_dir_all(root).expect("remove temporary directory");
 	}
 }
 #[cfg(test)]

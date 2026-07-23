@@ -203,6 +203,12 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		expect(renameNoReplacePath(source, destination)).toEqual({
 			ok: false,
 			code: "quarantine_collision",
+			mutationState: "not_committed",
+			durabilityState: "not_attempted",
+			reason: "destination_exists",
+			primitive: "windows_rename_noreplace",
+			phase: "rename",
+			diagnostic: { schemaVersion: 1, collectionState: "unavailable" },
 		});
 		expect(await fs.readFile(destination, "utf8")).toBe("committed-bytes");
 		expect(await fs.readFile(source, "utf8")).toBe("candidate-bytes");

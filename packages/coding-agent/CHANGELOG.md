@@ -1,6 +1,17 @@
 # Changelog
 
 ## [Unreleased]
+
+### Fixed
+
+- Telegram notification daemon self-heals degraded on-disk state: permanently missing scan roots are pruned (so one deleted worktree no longer disables orphan-topic cleanup), and retained exact-unlink transition/placeholder artifacts are reaped on ownership acquire and each scan. `gjc daemon reload` can recover without manual filesystem surgery (#2956).
+- On macOS, resuming a managed session no longer fails with `identity_mismatch` when the first write-append open changes only file `ctime` (e.g. APFS write-provenance / `com.apple.provenance`). `appendSync` allows a single bounded re-capture + retry when `dev`/`ino`/`size`/`mtime`/SHA-256 remain unchanged, and still rejects real content races and repeated ctime transitions (#2944).
+- Interactive `/resume` / `AgentSession.switchSession()` now awaits verified managed `local://` legacy-root migration for the newly selected session before post-commit lifecycle proceeds, matching cold-start `createAgentSession()` readiness from #2797 so synchronous `local://` resolution no longer fails with "legacy migration must complete before path resolution" after a mid-session switch (#2925).
+- Concurrent edits to the same file path are serialized through a path-scoped mutation lock (in-process always; durable cross-process lock on the real filesystem). Disjoint concurrent `applyPatch` / replace mutations no longer silently overwrite each other, and a commit-time content check rejects writers that observe a mid-flight change (#2900).
+- Concurrent edits to the same file path are serialized through a path-scoped mutation lock (in-process always; durable cross-process lock on the real filesystem). Disjoint concurrent `applyPatch` / replace mutations no longer silently overwrite each other, and a commit-time content check rejects writers that observe a mid-flight change. The production `executePatchSingle` / `LspFileSystem` path explicitly enables the durable lock rather than inferring it from FileSystem object identity (#2900).
+- Lean notification verbosity no longer floods remote clients with intermediate tool-turn `turn_stream` frames. Under `/lean`, the latest assistant answer is deferred until `agent_end` (idle); ask lead-ins still flush immediately before inline buttons, and `/verbose` keeps per-turn streaming (including opt-in live frames) (#2863).
+
+## [0.11.7] - 2026-07-22
 ### Added
 
 - `/btw` now opens an ephemeral multi-turn side chat: plain text continues the side thread until Esc returns to the main chat, while visible text-only context stays outside the main transcript and session observability/debug hooks and is scrubbed synchronously on close or abort.
@@ -11,9 +22,13 @@
 ### Fixed
 - Telegram `/session_recent` now retries one concurrently appended managed transcript and omits only candidates that remain unstable, preserving independently verified recent-session rows.
 - Repeated byte-identical stale SDK broker locks no longer cause startup to loop when a prior tombstone exists.
+- ConversationStore now tolerates only unsupported Windows parent-directory durability errors after preserving temporary-file fsync and atomic rename.
 - Ralplan no longer re-asks for execution approval when the user already explicitly named `ultragoal` or `team` in the current turn; that naming is the consent.
 
+- Cron guidance now routes silent recurring polling and event-driven PR/CI watchers to `monitor`, because every cron firing starts a normal assistant turn and prompt wording cannot reliably suppress its response.
 - Ordinary `ask` calls now normalize a provider-emitted `deepInterview: null` placeholder instead of misclassifying it as malformed Round-0 intent recovery data and rejecting it before coercion.
+- SDK event replay authorization now refreshes the negotiated capability cache synchronously from the native-sanitized replay snapshot before host filtering, preserving initial and repeated-hello capability updates without trusting client frame claims.
+
 - Documented that custom OpenAI-compatible models omit vision by default: when `input` is unset, GJC treats the model as text-only and strips images with `[image omitted: model does not support vision]`. Vision backends must set `input: [text, image]` in `models.yml`.
 - Restored `/models` preset landing navigation after the Image Generation row and made compaction/pruning regression fixtures use an explicit 200K context boundary instead of a mutable provider descriptor default.
 - Fixed Windows legacy session artifact migration by using native directory identity size, a traversable detached-path alias, and writable file handles for final durability sync.
@@ -22,8 +37,8 @@
 - Corrected Telegram's uncertain lifecycle guidance so create, close, and resume commands describe their own possible outcome; close and resume no longer display the create-only duplicate-start warning.
 - Telegram ask notifications now preserve the authoritative recommended choice from native asks and workflow gates, marking that option as `(Recommended)` in the message body without changing button indices or submitted answers.
 - Telegram `/session_close` now fails closed when tmux disappearance cannot be confirmed, and publishes the managed owner verdict before locked terminal-state preservation so normal close finalization is not delayed behind that state path.
+- Managed publication now fails closed on malformed, committed, or mutation-unknown native outcomes: it never retries or cleans a destination, and preserves bounded atomic-unavailable/durability diagnostics through managed startup (#2804).
 
-## [0.11.6] - 2026-07-21
 ## [0.11.5] - 2026-07-20
 ### Fixed
 

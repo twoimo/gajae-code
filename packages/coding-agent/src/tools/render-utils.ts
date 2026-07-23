@@ -571,7 +571,13 @@ export function truncateDiffByHunk(
 export function shortenPath(filePath: string, homeDir?: string): string {
 	if (typeof filePath !== "string") return "";
 	const home = homeDir ?? os.homedir();
-	if (home && filePath.startsWith(home)) {
+	if (!home) return filePath;
+	// Only abbreviate paths that are exactly home or genuinely inside it. A bare
+	// startsWith(home) also matches siblings that merely share the prefix
+	// (e.g. "/home/woodyx/notes.txt" for home "/home/woody"), which would corrupt
+	// them into "~x/notes.txt"; require a path-separator boundary after home.
+	const boundary = home.endsWith(path.sep) ? home : home + path.sep;
+	if (filePath === home || filePath.startsWith(boundary)) {
 		return `~${filePath.slice(home.length)}`;
 	}
 	return filePath;

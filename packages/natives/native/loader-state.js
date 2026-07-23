@@ -306,64 +306,56 @@ function resolveCpuVariant(override) {
 	return detectAvx2Support() ? "modern" : "baseline";
 }
 
-function selectEmbeddedAddonFile(selectedVariant) {
-	if (!embeddedAddon) return null;
-	const defaultFile = embeddedAddon.files.find(file => file.variant === "default") || null;
-	if (process.arch !== "x64") return defaultFile || embeddedAddon.files[0] || null;
-	if (selectedVariant === "modern") {
-		return (
-			embeddedAddon.files.find(file => file.variant === "modern") ||
-			embeddedAddon.files.find(file => file.variant === "baseline") ||
-			null
-		);
-	}
-	return embeddedAddon.files.find(file => file.variant === "baseline") || null;
+function embeddedAddonCandidates(selectedVariant) {
+	if (!embeddedAddon) return [];
+	const files = embeddedAddon.files;
+	const candidates = process.arch !== "x64"
+		? [files.find(file => file.variant === "default"), ...files]
+		: selectedVariant === "modern"
+			? [files.find(file => file.variant === "modern"), files.find(file => file.variant === "baseline")]
+			: [files.find(file => file.variant === "baseline")];
+	return [...new Set(candidates.filter(Boolean))];
 }
 
-function maybeExtractEmbeddedAddon(ctx, errors) {
-	if (!ctx.isCompiledBinary || !embeddedAddon) return null;
-	if (embeddedAddon.platformTag !== ctx.platformTag || embeddedAddon.version !== ctx.packageVersion) return null;
+function maybeExtractEmbeddedAddons(ctx, errors) {
+	if (!ctx.isCompiledBinary || !embeddedAddon) return [];
+	if (embeddedAddon.platformTag !== ctx.platformTag || embeddedAddon.version !== ctx.packageVersion) return [];
 
-	const selectedEmbeddedFile = selectEmbeddedAddonFile(ctx.selectedVariant);
-	if (!selectedEmbeddedFile) return null;
-	const targetPath = path.join(ctx.versionedDir, selectedEmbeddedFile.filename);
-	if (fs.existsSync(targetPath)) {
-		// Guard against intra-version drift: a cached extraction written by an earlier
-		// build of the same version carries the same version sentinel but can expose a
-		// different native surface (e.g. a symbol added mid-cycle). The embedded addon
-		// is the source of truth, so reuse the cached file only when it matches the
-		// embedded payload size and re-extract otherwise.
-		const sizeOf = candidate => {
-			try {
-				return fs.statSync(candidate).size;
-			} catch {
-				return null;
+	const extracted = [];
+	for (const embeddedFile of embeddedAddonCandidates(ctx.selectedVariant)) {
+		const targetPath = path.join(ctx.versionedDir, embeddedFile.filename);
+		if (fs.existsSync(targetPath)) {
+			// Guard against intra-version drift: a cached extraction written by an earlier
+			// build of the same version carries the same version sentinel but can expose a
+			// different native surface (e.g. a symbol added mid-cycle). The embedded addon
+			// is the source of truth, so reuse the cached file only when it matches the
+			// embedded payload size and re-extract otherwise.
+			const sizeOf = candidate => {
+				try {
+					return fs.statSync(candidate).size;
+				} catch {
+					return null;
+				}
+			};
+			if (cachedEmbeddedExtractionIsFresh({ targetPath, embeddedPath: embeddedFile.filePath, sizeOf })) {
+				extracted.push(targetPath);
+				continue;
 			}
-		};
-		if (cachedEmbeddedExtractionIsFresh({ targetPath, embeddedPath: selectedEmbeddedFile.filePath, sizeOf })) {
-			return targetPath;
+		}
+
+		try {
+			fs.mkdirSync(ctx.versionedDir, { recursive: true });
+			const buffer = fs.readFileSync(embeddedFile.filePath);
+			const tempPath = `${targetPath}.tmp.${process.pid}`;
+			fs.writeFileSync(tempPath, buffer);
+			fs.renameSync(tempPath, targetPath);
+			extracted.push(targetPath);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			errors.push(`embedded addon write (${embeddedFile.filename}): ${message}`);
 		}
 	}
-
-	try {
-		fs.mkdirSync(ctx.versionedDir, { recursive: true });
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		errors.push(`embedded addon dir: ${message}`);
-		return null;
-	}
-
-	try {
-		const buffer = fs.readFileSync(selectedEmbeddedFile.filePath);
-		const tempPath = `${targetPath}.tmp.${process.pid}`;
-		fs.writeFileSync(tempPath, buffer);
-		fs.renameSync(tempPath, targetPath);
-		return targetPath;
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		errors.push(`embedded addon write (${selectedEmbeddedFile.filename}): ${message}`);
-		return null;
-	}
+	return extracted;
 }
 
 /**
@@ -410,12 +402,22 @@ function maybeStageNodeModulesAddon(ctx, errors) {
 }
 
 function validateLoadedBindings(ctx, bindings, candidate) {
-	if (typeof bindings[ctx.versionSentinelExport] === "function") return;
-	throw new Error(
-		`Loaded ${candidate} but it does not expose the @gajae-code/natives@${ctx.packageVersion} ` +
-			`version sentinel \`${ctx.versionSentinelExport}\`. The .node file on disk is from a different ` +
-			"release than this loader — reinstall to re-sync.",
-	);
+	if (typeof bindings[ctx.versionSentinelExport] !== "function") {
+		throw new Error(
+			`Loaded ${candidate} but it does not expose the @gajae-code/natives@${ctx.packageVersion} ` +
+				`version sentinel \`${ctx.versionSentinelExport}\`. The .node file on disk is from a different ` +
+				"release than this loader — reinstall to re-sync.",
+		);
+	}
+	if (typeof bindings.__piNativesPublishOutcomeV1 !== "function") {
+		throw new Error(
+			`Loaded ${candidate} but it lacks retained-publish capability sentinel ` +
+			"`__piNativesPublishOutcomeV1`; trying the next compatible artifact.",
+		);
+	}
+	if (typeof bindings.renameNoReplacePath !== "function") {
+		throw new Error(`Loaded ${candidate} but it lacks required atomic publish capability \`renameNoReplacePath\`.`);
+	}
 }
 
 function buildHelpMessage(ctx) {
@@ -516,20 +518,30 @@ function initLoaderContext(require_) {
 	};
 }
 
-export function loadNative() {
-	const require_ = createRequire(import.meta.url);
-	const ctx = initLoaderContext(require_);
+/** Embedded standalone payloads are the complete trust boundary for their matching build. */
+export function embeddedAddonIsAuthoritative(ctx, addon = embeddedAddon) {
+	return (
+		ctx.isCompiledBinary && addon?.platformTag === ctx.platformTag && addon.version === ctx.packageVersion
+	);
+}
+
+export function loadNative(options = {}) {
+	const require_ = options.requireCandidate ? null : createRequire(import.meta.url);
+	const ctx = options.context ?? initLoaderContext(require_);
 
 	const errors = [];
-	const embeddedCandidate = maybeExtractEmbeddedAddon(ctx, errors);
-	const stagedCandidate = embeddedCandidate ? null : maybeStageNodeModulesAddon(ctx, errors);
-	const prepended = [embeddedCandidate, stagedCandidate].filter(c => typeof c === "string");
-	const runtimeCandidates = prepended.length > 0 ? [...prepended, ...ctx.candidates] : ctx.candidates;
-
+	const embeddedCandidates = (options.extractEmbeddedAddons ?? maybeExtractEmbeddedAddons)(ctx, errors);
+	const embeddedIsAuthoritative = embeddedAddonIsAuthoritative(ctx);
+	const stagedCandidate =
+		embeddedCandidates.length > 0 || embeddedIsAuthoritative
+			? null
+			: (options.stageNodeModulesAddon ?? maybeStageNodeModulesAddon)(ctx, errors);
+	const prepended = [...embeddedCandidates, stagedCandidate].filter(c => typeof c === "string");
+	const runtimeCandidates = embeddedIsAuthoritative ? prepended : prepended.length > 0 ? [...prepended, ...ctx.candidates] : ctx.candidates;
 	const loaded = loadFromCandidates({
 		candidates: runtimeCandidates,
-		requireCandidate: candidate => require_(candidate),
-		validateCandidate: (bindings, candidate) => validateLoadedBindings(ctx, bindings, candidate),
+		requireCandidate: options.requireCandidate ?? (candidate => require_(candidate)),
+		validateCandidate: options.validateCandidate ?? ((bindings, candidate) => validateLoadedBindings(ctx, bindings, candidate)),
 		describeCandidate: candidate => candidate,
 	});
 	if (loaded.bindings) return loaded.bindings;

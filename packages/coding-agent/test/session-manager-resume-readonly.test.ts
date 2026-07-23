@@ -174,6 +174,28 @@ class ReplaceDuringFinalAuthorityInspectionStorage extends FileSessionStorage {
 			fs.renameSync(this.replacementPath, this.sourcePath);
 	}
 }
+class ForeignDestinationAfterAbsenceStorage extends ReplaceDuringFinalAuthorityInspectionStorage {
+	#injected = false;
+
+	constructor(
+		replacementPath: string,
+		sourcePath: string,
+		private readonly destinationDir: string,
+		private readonly foreignFile: string,
+	) {
+		super(replacementPath, sourcePath);
+	}
+
+	override existsSync(filePath: string): boolean {
+		const exists = super.existsSync(filePath);
+		if (!this.#injected && path.resolve(filePath) === path.resolve(this.destinationDir) && !exists) {
+			this.#injected = true;
+			fs.mkdirSync(this.destinationDir);
+			fs.writeFileSync(path.join(this.destinationDir, this.foreignFile), "foreign");
+		}
+		return exists;
+	}
+}
 
 function expectStrictFailure(
 	result: StrictSessionOpenResult,
@@ -391,7 +413,7 @@ describe("SessionManager read-only resume", () => {
 		expect(storage.writes).toBe(0);
 		expect(fs.readFileSync(filePath, "utf-8")).toBe(replacement);
 	});
-	it("removes a newly created fork directory when final source authority changes", async () => {
+	it("removes its private fork staging directory when final source authority changes", async () => {
 		const root = makeTempDir();
 		const sourcePath = path.join(root, "source.jsonl");
 		const replacementPath = path.join(root, "replacement.jsonl");
@@ -400,6 +422,7 @@ describe("SessionManager read-only resume", () => {
 		fs.mkdirSync(targetCwd);
 		fs.writeFileSync(sourcePath, sessionText("session-a"));
 		fs.writeFileSync(replacementPath, sessionText("session-b"));
+
 		const storage = new ReplaceDuringFinalAuthorityInspectionStorage(replacementPath, sourcePath);
 		const captured = SessionManager.captureTranscriptStrict(sourcePath, storage);
 		if (captured.kind !== "captured") throw new Error("Expected strict transcript capture");
@@ -409,6 +432,151 @@ describe("SessionManager read-only resume", () => {
 			reason: "identity-mismatch",
 		});
 		expect(fs.existsSync(destinationDir)).toBe(false);
+	});
+	it("disposes staging resident history blobs before publishing an explicit strict fork", async () => {
+		const root = makeTempDir();
+		const sourcePath = path.join(root, "source.jsonl");
+		const destinationDir = path.join(root, "destination-sessions");
+		const targetCwd = path.join(root, "target");
+		const history = "x".repeat(1025);
+		fs.mkdirSync(targetCwd);
+		fs.writeFileSync(sourcePath, sessionText("session-a").replace("resume", history));
+
+		const captured = SessionManager.captureTranscriptStrict(sourcePath);
+		if (captured.kind !== "captured") throw new Error("Expected strict transcript capture");
+		const forked = await SessionManager.forkFromCaptured(captured.snapshot, targetCwd, destinationDir);
+		if (forked.kind !== "forked") throw new Error("Expected strict fork success");
+		const artifactsDir = forked.manager.getArtifactsDir();
+		if (!artifactsDir) throw new Error("Expected strict fork artifacts");
+		const residentCacheDir = path.join(artifactsDir, "resident-cache");
+
+		try {
+			expect(forked.manager.getSessionDir()).toBe(destinationDir);
+			expect(forked.manager.getEntries()).toMatchObject([
+				{ type: "message", message: { role: "user", content: history } },
+			]);
+			expect(fs.readdirSync(residentCacheDir)).toHaveLength(1);
+		} finally {
+			await forked.manager.close();
+		}
+		expect(fs.readdirSync(residentCacheDir)).toEqual([]);
+	});
+	it.skipIf(process.platform !== "linux")(
+		"does not publish a strict fork when staged tree durability fails",
+		async () => {
+			const root = makeTempDir();
+			const sourcePath = path.join(root, "source.jsonl");
+			const destinationDir = path.join(root, "destination-sessions");
+			const targetCwd = path.join(root, "target");
+			fs.mkdirSync(targetCwd);
+			fs.writeFileSync(sourcePath, sessionText("session-a"));
+			const fsync = fs.fsyncSync;
+			let stagedTreeSyncAttempted = false;
+			const failStagedTreeFsync = vi.spyOn(fs, "fsyncSync").mockImplementation(descriptor => {
+				const stagedDirectory = fs.fstatSync(descriptor).isDirectory();
+				const pathname = fs.readlinkSync(`/proc/self/fd/${descriptor}`);
+				if (stagedDirectory && pathname.includes(".fork-staging-")) {
+					stagedTreeSyncAttempted = true;
+					throw new Error("injected staged-tree fsync failure");
+				}
+				return fsync(descriptor);
+			});
+			try {
+				const captured = SessionManager.captureTranscriptStrict(sourcePath);
+				if (captured.kind !== "captured") throw new Error("Expected strict transcript capture");
+				await expect(SessionManager.forkFromCaptured(captured.snapshot, targetCwd, destinationDir)).rejects.toThrow(
+					"injected staged-tree fsync failure",
+				);
+				expect(stagedTreeSyncAttempted).toBe(true);
+				expect(fs.existsSync(destinationDir)).toBe(false);
+			} finally {
+				failStagedTreeFsync.mockRestore();
+			}
+		},
+	);
+	it("rejects a replaced strict-fork staging root without deleting committed evidence", async () => {
+		const root = makeTempDir();
+		const sourcePath = path.join(root, "source.jsonl");
+		const destinationDir = path.join(root, "destination-sessions");
+		const publishedEvidenceDir = path.join(root, "published-evidence");
+		const targetCwd = path.join(root, "target");
+		fs.mkdirSync(targetCwd);
+		fs.writeFileSync(sourcePath, sessionText("session-a"));
+		const renameNoReplacePath = native.renameNoReplacePath;
+		const rename = vi.spyOn(native, "renameNoReplacePath").mockImplementation((source, destination) => {
+			const result = renameNoReplacePath(source, destination);
+			if (result.ok && String(source).includes(".fork-staging-")) {
+				fs.renameSync(String(destination), publishedEvidenceDir);
+				fs.mkdirSync(String(destination));
+				fs.writeFileSync(path.join(String(destination), "foreign.txt"), "foreign");
+			}
+			return result;
+		});
+		try {
+			const captured = SessionManager.captureTranscriptStrict(sourcePath);
+			if (captured.kind !== "captured") throw new Error("Expected strict transcript capture");
+			await expect(SessionManager.forkFromCaptured(captured.snapshot, targetCwd, destinationDir)).rejects.toThrow(
+				"fork_destination_terminal_identity_changed",
+			);
+			expect(fs.readFileSync(path.join(destinationDir, "foreign.txt"), "utf8")).toBe("foreign");
+			expect(fs.readdirSync(publishedEvidenceDir).some(entry => entry.endsWith(".jsonl"))).toBe(true);
+		} finally {
+			rename.mockRestore();
+		}
+	});
+	it("preserves published strict-fork evidence when parent durability fails", async () => {
+		const root = makeTempDir();
+		const sourcePath = path.join(root, "source.jsonl");
+		const destinationDir = path.join(root, "destination-sessions");
+		const targetCwd = path.join(root, "target");
+		fs.mkdirSync(targetCwd);
+		fs.writeFileSync(sourcePath, sessionText("session-a"));
+		const open = fs.promises.open;
+		let durabilityAttempted = false;
+		fs.promises.open = (async (...args: Parameters<typeof fs.promises.open>) => {
+			if (String(args[0]) === path.dirname(destinationDir) && args[1] === "r") {
+				durabilityAttempted = true;
+				throw new Error("parent durability failed");
+			}
+			return await open(...args);
+		}) as typeof fs.promises.open;
+		try {
+			const captured = SessionManager.captureTranscriptStrict(sourcePath);
+			if (captured.kind !== "captured") throw new Error("Expected strict transcript capture");
+			await expect(SessionManager.forkFromCaptured(captured.snapshot, targetCwd, destinationDir)).rejects.toThrow(
+				"parent durability failed",
+			);
+			expect(durabilityAttempted).toBe(true);
+			expect(fs.readdirSync(destinationDir).some(entry => entry.endsWith(".jsonl"))).toBe(true);
+		} finally {
+			fs.promises.open = open;
+		}
+	});
+	it("preserves a foreign destination injected after absence observation when strict fork authority fails", async () => {
+		const root = makeTempDir();
+		const sourcePath = path.join(root, "source.jsonl");
+		const replacementPath = path.join(root, "replacement.jsonl");
+		const destinationDir = path.join(root, "destination-sessions");
+		const targetCwd = path.join(root, "target");
+		const foreignFile = "foreign.txt";
+		fs.mkdirSync(targetCwd);
+		fs.writeFileSync(sourcePath, sessionText("session-a"));
+		fs.writeFileSync(replacementPath, sessionText("session-b"));
+
+		const storage = new ForeignDestinationAfterAbsenceStorage(
+			replacementPath,
+			sourcePath,
+			destinationDir,
+			foreignFile,
+		);
+		const captured = SessionManager.captureTranscriptStrict(sourcePath, storage);
+		if (captured.kind !== "captured") throw new Error("Expected strict transcript capture");
+
+		expect(await SessionManager.forkFromCaptured(captured.snapshot, targetCwd, destinationDir)).toEqual({
+			kind: "error",
+			reason: "identity-mismatch",
+		});
+		expect(fs.readFileSync(path.join(destinationDir, foreignFile), "utf8")).toBe("foreign");
 	});
 
 	it("fails closed with typed reasons for replacement, malformed, deletion, and unstable reads", async () => {

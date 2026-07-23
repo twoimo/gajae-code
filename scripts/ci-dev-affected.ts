@@ -62,6 +62,7 @@ const NATIVE_BUILD_KEYS: ReadonlySet<string> = new Set(["native-build", "native-
 // replace, direct-basename test selection and owner fallback tasks.
 const BEHAVIORAL_OWNER_TESTS: Readonly<Record<string, readonly string[]>> = {
 	"artifacts/architecture-2383-eval.json": ["packages/ai/test/anthropic-cache-eval.integration.test.ts"],
+	"crates/pi-natives/src/path_identity.rs": ["packages/natives/test/path-identity-posix.test.ts"],
 	"packages/coding-agent/src/main.ts": ["packages/coding-agent/test/startup-update-contract.test.ts"],
 };
 
@@ -822,6 +823,9 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 		if (isRustPath(changedPath)) {
 			add(tasks, "rust-check", "Rust check", ["bun", "run", "check:rs"]);
 			add(tasks, "rust-test", "Rust tests", ["bun", "run", "test:rs"]);
+			for (const testFile of behavioralTestsFor(changedPath)) {
+				addTestFileTask(tasks, testFile);
+			}
 			continue;
 		}
 		if (isPythonPath(changedPath)) {

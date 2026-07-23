@@ -124,8 +124,13 @@ export class BlobStore {
 			},
 		};
 
-		await Bun.write(blobPath, data);
-		await fsp.chmod(blobPath, BLOB_FILE_MODE);
+		// Create the blob directory 0700 and the file 0600 at creation, mirroring
+		// putSync/putImmutableSync. The previous Bun.write let the parent dir be
+		// created with the process umask (e.g. 0755) and the file at 0644 before a
+		// follow-up chmod, violating the owner-only contract above and leaving a
+		// group/other-readable window a managed-tree snapshot fails closed on.
+		await fsp.mkdir(this.dir, { recursive: true, mode: BLOB_DIR_MODE });
+		await fsp.writeFile(blobPath, data, { mode: BLOB_FILE_MODE });
 		return result;
 	}
 

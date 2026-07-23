@@ -79,4 +79,28 @@ export interface CachedEmbeddedExtractionIsFreshInput {
 
 export function cachedEmbeddedExtractionIsFresh(input: CachedEmbeddedExtractionIsFreshInput): boolean;
 
-export function loadNative(): Record<string, unknown>;
+export interface LoaderContext {
+	isCompiledBinary: boolean;
+	platformTag: string;
+	packageVersion?: string;
+	addonLabel?: string;
+	addonFilenames?: string[];
+	versionedDir?: string;
+	candidates?: string[];
+	selectedVariant?: "modern" | "baseline" | null;
+}
+
+export function embeddedAddonIsAuthoritative(
+	ctx: LoaderContext,
+	addon?: EmbeddedAddon | null,
+): boolean;
+
+export interface LoadNativeOptions {
+	context?: LoaderContext;
+	extractEmbeddedAddons?: (ctx: LoaderContext) => string[];
+	stageNodeModulesAddon?: () => string | null;
+	requireCandidate?: (candidate: string) => Record<string, unknown>;
+	validateCandidate?: (bindings: Record<string, unknown>) => void;
+}
+
+export function loadNative(options?: LoadNativeOptions): Record<string, unknown>;

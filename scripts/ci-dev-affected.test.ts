@@ -1117,6 +1117,10 @@ test("tab-worker graph changes always include install-methods and are Darwin rel
 		expect(tasks[2]?.command).toEqual(["bun", "run", "ci:test:smoke"]);
 		expect(keys.filter(key => key === "native-linux-x64")).toHaveLength(1);
 	});
+	test("native path identity changes select the POSIX regression suite", () => {
+		const tasks = targeted(["crates/pi-natives/src/path_identity.rs"]);
+		expect(tasks.map(task => task.key)).toContain("test:packages/natives/test/path-identity-posix.test.ts");
+	});
 	test("cache-eval evidence artifact adds its focused AI test without bypassing root fallback coverage", () => {
 		const tasks = targeted(["artifacts/architecture-2383-eval.json"]);
 		expect(tasks.map(task => task.key)).toEqual([

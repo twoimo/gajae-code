@@ -8,6 +8,18 @@ import { TempDir } from "@gajae-code/utils";
 
 const UUID_V7_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+function publishFailure(code: string, reason: "io_failure" | "identity_violation") {
+	return {
+		ok: false,
+		code,
+		mutationState: "not_committed",
+		durabilityState: "not_attempted",
+		reason,
+		primitive: "renameat2_noreplace",
+		phase: "preflight",
+		diagnostic: { schemaVersion: 1, collectionState: "complete" },
+	} as const;
+}
 function expectUuidV7SessionId(session: SessionManager): string {
 	const sessionId = session.getSessionId();
 	expect(sessionId).toMatch(UUID_V7_RE);
@@ -103,7 +115,7 @@ describe("SessionManager session ids", () => {
 			expected,
 		) {
 			return source.includes(".fork-staging")
-				? { ok: false, code: "io_error" }
+				? publishFailure("io_error", "io_failure")
 				: realRename.call(this, source, destination, expected);
 		});
 		try {
@@ -147,7 +159,7 @@ describe("SessionManager session ids", () => {
 		if (!oldSessionFile) throw new Error("Expected session file");
 		const spy = vi
 			.spyOn(native.RecoveryFsRoot.prototype, "renameManagedTreeNoReplace")
-			.mockReturnValue({ ok: false, code: "identity_mismatch" });
+			.mockReturnValue(publishFailure("identity_mismatch", "identity_violation"));
 		try {
 			await expect(session.fork()).rejects.toThrow("identity_mismatch");
 			expect(session.getSessionFile()).toBe(oldSessionFile);
@@ -169,7 +181,7 @@ describe("SessionManager session ids", () => {
 		if (!oldSessionFile) throw new Error("Expected session file");
 		const spy = vi
 			.spyOn(native.RecoveryFsRoot.prototype, "renameManagedTreeNoReplace")
-			.mockReturnValue({ ok: false, code: "identity_mismatch" });
+			.mockReturnValue(publishFailure("identity_mismatch", "identity_violation"));
 		try {
 			await expect(session.fork()).rejects.toThrow("identity_mismatch");
 			expect(session.getSessionFile()).toBe(oldSessionFile);
@@ -263,7 +275,7 @@ describe("SessionManager session ids", () => {
 			expectedCtimeNs,
 			expectedSha256,
 		) {
-			if (destinationRelativePath.endsWith(".jsonl")) return { ok: false, code: "io_error" };
+			if (destinationRelativePath.endsWith(".jsonl")) return publishFailure("io_error", "io_failure");
 			return realRename.call(
 				this,
 				sourceRelativePath,
@@ -282,9 +294,11 @@ describe("SessionManager session ids", () => {
 			expect(session.getSessionId()).toBe(oldSessionId);
 			const entries = await fs.readdir(path.dirname(oldSessionFile));
 			expect(entries.filter(entry => entry.endsWith(".jsonl"))).toEqual([path.basename(oldSessionFile)]);
-			expect(entries.filter(entry => !entry.startsWith(".") && entry !== path.basename(oldSessionFile))).toEqual([
-				path.basename(oldSessionFile, ".jsonl"),
-			]);
+			const artifactDirectories = entries.filter(
+				entry => !entry.startsWith(".") && entry !== path.basename(oldSessionFile),
+			);
+			expect(artifactDirectories).toContain(path.basename(oldSessionFile, ".jsonl"));
+			expect(artifactDirectories).toHaveLength(1);
 		} finally {
 			spy.mockRestore();
 			await session.close();

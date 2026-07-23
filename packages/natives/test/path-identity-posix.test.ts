@@ -20,6 +20,19 @@ function sha256(contents: string): string {
 	return createHash("sha256").update(contents).digest("hex");
 }
 
+function expectDetachedCleanupPending(result: ReturnType<typeof exactUnlink>, detachedPath: string): void {
+	expect(result).toMatchObject({
+		ok: false,
+		code: "cleanup_pending",
+		detachedPath,
+		retainedPlaceholderPath: expect.stringMatching(/\.gjc-exact-unlink-placeholder-/),
+	});
+}
+
+function expectTreeCleanupPending(result: ReturnType<typeof exactRemoveDirectoryTree>, detachedPath: string): void {
+	expect(result).toEqual({ ok: false, code: "cleanup_pending", detachedPath });
+}
+
 function expectOwnerOnlySuccess(
 	result: ReturnType<typeof applyOwnerOnlyPathSecurity>,
 	kind: "directory" | "file",
@@ -190,7 +203,8 @@ describe.skipIf(process.platform === "win32")("POSIX native path identity", () =
 				directory: true,
 				quarantineName,
 			});
-			expect(result).toEqual({ ok: true, detachedPath: path.join(root, quarantineName) });
+			expectDetachedCleanupPending(result, path.join(root, quarantineName));
+
 			expect(
 				await fs.stat(directory).then(
 					() => true,
@@ -211,17 +225,17 @@ describe.skipIf(process.platform === "win32")("POSIX native path identity", () =
 			await fs.writeFile(original, contents);
 			const stat = await fs.stat(original, { bigint: true });
 
-			expect(
-				exactUnlink(original, {
-					dev: stat.dev,
-					ino: stat.ino,
-					size: stat.size,
-					mtimeNs: stat.mtimeNs,
-					sha256: sha256(contents),
-					quarantineName: path.basename(detached),
-					detachOnly: true,
-				}),
-			).toEqual({ ok: true, detachedPath: detached });
+			const result = exactUnlink(original, {
+				dev: stat.dev,
+				ino: stat.ino,
+				size: stat.size,
+				mtimeNs: stat.mtimeNs,
+				sha256: sha256(contents),
+				quarantineName: path.basename(detached),
+				detachOnly: true,
+			});
+			expectDetachedCleanupPending(result, detached);
+
 			expect(await fs.readFile(detached, "utf8")).toBe(contents);
 		},
 	);
@@ -271,7 +285,8 @@ describe.skipIf(process.platform === "win32")("POSIX native path identity", () =
 				detachOnly: true,
 			};
 
-			expect(exactUnlink(original, identity)).toEqual({ ok: true, detachedPath: detached });
+			expectDetachedCleanupPending(exactUnlink(original, identity), detached);
+
 			expect(exactRestore(detached, original, identity)).toEqual({ ok: true });
 			expect(await fs.readFile(original, "utf8")).toBe("authorized");
 		},
@@ -296,7 +311,8 @@ describe.skipIf(process.platform === "win32")("POSIX native path identity", () =
 				detachOnly: true,
 			};
 
-			expect(exactUnlink(original, identity)).toEqual({ ok: true, detachedPath: detached });
+			expectDetachedCleanupPending(exactUnlink(original, identity), detached);
+
 			await fs.writeFile(original, "replacement");
 			expect(exactRestore(detached, original, identity)).toEqual({ ok: false, code: "collision" });
 			expect(await fs.readFile(original, "utf8")).toBe("replacement");
@@ -323,7 +339,8 @@ describe.skipIf(process.platform === "win32")("POSIX native path identity", () =
 				detachOnly: true,
 			};
 
-			expect(exactUnlink(original, identity)).toEqual({ ok: true, detachedPath: detached });
+			expectDetachedCleanupPending(exactUnlink(original, identity), detached);
+
 			await fs.writeFile(detached, "replacement");
 			expect(exactRestore(detached, original, identity)).toEqual({ ok: false, code: "identity_mismatch" });
 			expect(await fs.readFile(detached, "utf8")).toBe("replacement");
@@ -473,7 +490,8 @@ describe.skipIf(process.platform === "win32")("POSIX native path identity", () =
 			if (!snapshot.ok || !snapshot.snapshot) throw new Error("missing tree snapshot");
 
 			await fs.rm(first);
-			expect(exactRemoveDirectoryTree(detached, snapshot.snapshot)).toEqual({ ok: true });
+			expectTreeCleanupPending(exactRemoveDirectoryTree(detached, snapshot.snapshot), `${detached}.removing`);
+
 			expect(
 				await fs.stat(detached).then(
 					() => true,
@@ -526,7 +544,7 @@ describe.skipIf(process.platform === "win32")("POSIX native path identity", () =
 			const quarantine = treeQuarantineName(entry);
 			expect(Buffer.byteLength(quarantine)).toBeLessThanOrEqual(255);
 			await fs.rename(child, path.join(detached, quarantine));
-			expect(exactRemoveDirectoryTree(detached, snapshot.snapshot)).toEqual({ ok: true });
+			expectTreeCleanupPending(exactRemoveDirectoryTree(detached, snapshot.snapshot), `${detached}.removing`);
 		},
 	);
 	it.skipIf(process.platform !== "darwin")(

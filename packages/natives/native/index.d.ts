@@ -398,7 +398,7 @@ export declare class RecoveryFsRoot {
    */
   appendManaged(relativePath: string, data: Uint8Array, expectedDev: string, expectedIno: string, expectedSize: string, expectedMtimeNs: string, expectedCtimeNs: string, expectedSha256: string): RecoveryFsResult
   /** Remove one exact managed regular file through retained authority. */
-  removeManaged(relativePath: string, expectedDev: string, expectedIno: string, expectedSize: string, expectedMtimeNs: string, expectedCtimeNs: string, expectedSha256: string): RecoveryFsResult
+  removeManaged(relativePath: string, expectedDev: string, expectedIno: string, expectedSize: string, expectedMtimeNs: string, expectedCtimeNs: string, expectedSha256: string): RecoveryFsRetainedCleanupResult
   /**
    * Create each absent directory component beneath the retained root with
    * owner-only security. Existing components are re-opened no-follow.
@@ -409,22 +409,22 @@ export declare class RecoveryFsRoot {
    * retained root. The source identity is rechecked after the no-replace
    * rename, and the move is rolled back on a mismatch.
    */
-  renameManagedFileNoReplace(sourceRelativePath: string, destinationRelativePath: string, expectedDev: string, expectedIno: string, expectedSize: string, expectedMtimeNs: string, expectedCtimeNs: string, expectedSha256: string): RecoveryFsResult
+  renameManagedFileNoReplace(sourceRelativePath: string, destinationRelativePath: string, expectedDev: string, expectedIno: string, expectedSize: string, expectedMtimeNs: string, expectedCtimeNs: string, expectedSha256: string): RecoveryFsPublishResult
   /** Snapshot a managed directory tree entirely through the retained root. */
   snapshotManagedTree(relativePath: string): NativeDirectoryTreeResult
   /**
    * Move an exact managed directory tree to an absent name through retained
    * authority.
    */
-  renameManagedTreeNoReplace(sourceRelativePath: string, destinationRelativePath: string, expected: NativeDirectoryTreeSnapshot): RecoveryFsResult
+  renameManagedTreeNoReplace(sourceRelativePath: string, destinationRelativePath: string, expected: NativeDirectoryTreeSnapshot): RecoveryFsPublishResult
   /** Remove an exact managed directory tree through retained authority. */
-  removeManagedTree(relativePath: string, expected: NativeDirectoryTreeSnapshot): RecoveryFsResult
+  removeManagedTree(relativePath: string, expected: NativeDirectoryTreeSnapshot): RecoveryFsRetainedCleanupResult
   /**
    * Atomically install an already-created regular file at an absent name.
    * Both names remain relative to this retained root and are never resolved
    * through a pathname after their parent descriptors are acquired.
    */
-  install(sourceRelativePath: string, destinationRelativePath: string): RecoveryFsResult
+  install(sourceRelativePath: string, destinationRelativePath: string): RecoveryFsPublishResult
   /**
    * Synchronize the retained root directory, making a preceding create or
    * install durable when the filesystem supports directory fsync.
@@ -465,6 +465,15 @@ export declare class Shell {
 }
 
 /**
+ * Publish-result wire-contract sentinel.
+ *
+ * The loader requires this in addition to the release sentinel, so a
+ * same-version modern artifact built before the retained-publish contract
+ * cannot be selected over a compatible baseline.
+ */
+export declare function __piNativesPublishOutcomeV1(): void
+
+/**
  * Version sentinel — exists solely so the JS loader can prove at load time
  * that the `.node` file on disk is from the same package release as the
  * `index.js` ESM wrapper invoking it.
@@ -482,7 +491,7 @@ export declare class Shell {
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV0_11_6(): void
+export declare function __piNativesV0_11_7(): void
 
 /**
  * Apply conservative pre-execution rewrites to a bash command.
@@ -1732,6 +1741,18 @@ export interface NativeExactUnlinkResult {
   retainedUnknownPath?: string
 }
 
+/** Dedicated result for an atomic no-replace namespace publication. */
+export interface NativeNoReplaceResult {
+  ok: boolean
+  code?: string
+  mutationState: string
+  durabilityState: string
+  reason: string
+  primitive: string
+  phase: string
+  diagnostic: NativePublishDiagnostic
+}
+
 /** Result of applying or checking owner-only path security. */
 export type NativeOwnerOnlySecurityResult =
 	| {
@@ -1962,6 +1983,38 @@ export interface RecoveryFsIdentity {
   sha256?: string
 }
 
+/** Bounded, path-free diagnostic evidence for one retained publication. */
+export interface RecoveryFsPublishDiagnostic {
+  schemaVersion: number
+  collectionState: string
+  osCode?: number
+  syncFailures?: Array<RecoveryFsPublishSyncFailure>
+}
+
+/**
+ * Explicit mutation and durability outcome for retained no-replace
+ * publication.
+ */
+export interface RecoveryFsPublishResult {
+  ok: boolean
+  code?: string
+  identity?: RecoveryFsIdentity
+  mutationState: string
+  durabilityState: string
+  reason: string
+  primitive: string
+  phase: string
+  diagnostic: RecoveryFsPublishDiagnostic
+}
+
+/** Bounded, path-free diagnostic evidence for one retained publication. */
+export interface RecoveryFsPublishSyncFailure {
+  phase: string
+  parentRole: string
+  osCode?: number
+  kind: string
+}
+
 export interface RecoveryFsResult {
   ok: boolean
   code?: string
@@ -1969,7 +2022,20 @@ export interface RecoveryFsResult {
   data?: Uint8Array
 }
 
-export declare function renameNoReplacePath(sourcePath: string, destinationPath: string): NativeExactUnlinkResult
+/**
+ * Fail-closed outcome for a removal whose detached object remains retained.
+ * `recovery_path` identifies evidence only; it grants no authority to replay
+ * or delete the retained object.
+ */
+export interface RecoveryFsRetainedCleanupResult {
+  ok: boolean
+  code?: string
+  recoveryPath?: string
+  identity?: RecoveryFsIdentity
+  treeSnapshot?: NativeDirectoryTreeSnapshot
+}
+
+export declare function renameNoReplacePath(sourcePath: string, destinationPath: string): NativeNoReplaceResult
 
 /**
  * Repair an owner-only ACL on a retained expected path.
@@ -2244,3 +2310,19 @@ export interface WorkProfile {
  * Returns UTF-16 lines with active SGR codes carried across line boundaries.
  */
 export declare function wrapTextWithAnsi(text: string, width: number, tabWidth: number): Array<string>
+
+/** Bounded, path-free evidence for a parent-directory durability failure. */
+export interface NativePublishSyncFailure {
+  phase: string
+  parentRole: string
+  osCode: number
+  kind: string
+}
+
+/** Bounded, path-free evidence for one atomic publication. */
+export interface NativePublishDiagnostic {
+  schemaVersion: number
+  collectionState: string
+  osCode?: number
+  syncFailures?: Array<NativePublishSyncFailure>
+}

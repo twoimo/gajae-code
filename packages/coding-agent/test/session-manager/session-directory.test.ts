@@ -11,7 +11,11 @@ import {
 	prepareManagedSessionScopeForWrite,
 	resolveManagedScope,
 } from "../../src/session/internal/managed-session-scope";
-import { publishManagedFileNoReplace } from "../../src/session/internal/managed-session-storage";
+import {
+	publishManagedFileNoReplace,
+	validateNativeSecurityResult,
+} from "../../src/session/internal/managed-session-storage";
+import { SessionManager } from "../../src/session/session-manager";
 import { FileSessionStorage } from "../../src/session/session-storage";
 
 const temporaryDirectories: string[] = [];
@@ -68,6 +72,167 @@ async function fixture() {
 	return { cwd, sessionsRoot, scope: resolved.scope };
 }
 
+describe.skipIf(process.platform !== "linux")("managed session scope shared sticky ancestry", () => {
+	async function sharedStickyFixture() {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-managed-shared-sticky-"));
+		temporaryDirectories.push(root);
+		const agentDir = path.join(root, "agent");
+		const cwd = path.join(root, "workspace");
+		await fs.mkdir(cwd);
+		return { agentDir, cwd, sessionsRoot: path.join(agentDir, "sessions") };
+	}
+
+	it("prepares the managed chain directly below the shared sticky temp directory", async () => {
+		expect((await fs.stat(os.tmpdir())).mode & 0o1000).toBe(0o1000);
+		const stickyRoot = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-managed-shared-sticky-root-"));
+		await fs.rm(stickyRoot, { recursive: true, force: true });
+		temporaryDirectories.push(stickyRoot);
+		const cwdRoot = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-managed-shared-sticky-workspace-"));
+		temporaryDirectories.push(cwdRoot);
+		const cwd = path.join(cwdRoot, "workspace");
+		await fs.mkdir(cwd);
+		const agentDir = stickyRoot;
+		const sessionsRoot = path.join(agentDir, "sessions");
+		const resolved = resolveManagedScope({ cwd, agentDir, sessionsRoot });
+		expect(resolved.kind).toBe("resolved");
+		if (resolved.kind !== "resolved") throw new Error(resolved.message);
+
+		expect(SessionManager.getDefaultSessionDir(cwd, agentDir)).toBe(resolved.scope.directoryPath);
+		expect((await prepareManagedSessionScopeForWrite(resolved.scope)).kind).toBe("resolved");
+		expect((await fs.stat(agentDir)).mode & 0o777).toBe(0o700);
+	});
+
+	it("rejects symlinked managed intermediates and leaves their targets untouched", async () => {
+		const { agentDir, cwd, sessionsRoot } = await sharedStickyFixture();
+		await fs.mkdir(agentDir, { recursive: true, mode: 0o700 });
+		const resolved = resolveManagedScope({ cwd, agentDir, sessionsRoot });
+		if (resolved.kind !== "resolved") throw new Error(resolved.message);
+		const external = path.join(path.dirname(agentDir), "external");
+		await fs.mkdir(external);
+		await fs.symlink(external, sessionsRoot);
+
+		await expect(prepareManagedSessionScopeForWrite(resolved.scope)).resolves.toMatchObject({ kind: "error" });
+		expect((await fs.lstat(sessionsRoot)).isSymbolicLink()).toBe(true);
+		expect(await fs.readdir(external)).toEqual([]);
+	});
+
+	it("retains only bounded startup diagnostics when managed preparation rejects a symlink", async () => {
+		const { agentDir, cwd, sessionsRoot } = await sharedStickyFixture();
+		await fs.mkdir(agentDir, { recursive: true, mode: 0o700 });
+		const external = path.join(path.dirname(agentDir), "startup-diagnostic-external");
+		await fs.mkdir(external);
+		await fs.symlink(external, sessionsRoot);
+
+		let failure: unknown;
+		try {
+			SessionManager.managedDestination(cwd, agentDir);
+		} catch (error) {
+			failure = error;
+		}
+		expect(failure).toBeInstanceOf(Error);
+		const startupError = failure as Error;
+		expect(startupError.message).toBe("Could not resolve managed session scope.");
+		expect(startupError.message).not.toContain(external);
+		expect(JSON.stringify(startupError.cause)).not.toContain(external);
+		expect(startupError.cause).toEqual({ classification: "sessions_root_unavailable" });
+	});
+
+	it("redacts startup scope failures from the default session-directory wrapper", async () => {
+		const { agentDir, cwd, sessionsRoot } = await sharedStickyFixture();
+		await fs.mkdir(agentDir, { recursive: true, mode: 0o700 });
+		const external = path.join(path.dirname(agentDir), "startup-default-diagnostic-external");
+		await fs.mkdir(external);
+		await fs.symlink(external, sessionsRoot);
+
+		expect(() => SessionManager.getDefaultSessionDir(cwd, agentDir)).toThrow(
+			"Could not resolve managed session scope.",
+		);
+		try {
+			SessionManager.getDefaultSessionDir(cwd, agentDir);
+		} catch (error) {
+			const startupError = error as Error;
+			expect(startupError.message).not.toContain(external);
+			expect(JSON.stringify(startupError.cause)).not.toContain(external);
+			expect(startupError.cause).toEqual({ classification: "sessions_root_unavailable" });
+		}
+	});
+
+	it("rejects a symlinked managed scope leaf without following it", async () => {
+		const { agentDir, cwd, sessionsRoot } = await sharedStickyFixture();
+		await fs.mkdir(sessionsRoot, { recursive: true, mode: 0o700 });
+		const resolved = resolveManagedScope({ cwd, agentDir, sessionsRoot });
+		if (resolved.kind !== "resolved") throw new Error(resolved.message);
+		const external = path.join(path.dirname(agentDir), "external-leaf");
+		await fs.mkdir(external);
+		await fs.symlink(external, resolved.scope.directoryPath);
+
+		await expect(prepareManagedSessionScopeForWrite(resolved.scope)).resolves.toMatchObject({ kind: "error" });
+		expect((await fs.lstat(resolved.scope.directoryPath)).isSymbolicLink()).toBe(true);
+		expect(await fs.readdir(external)).toEqual([]);
+	});
+
+	it.skipIf(process.getuid?.() !== 0)(
+		"fails closed for foreign-owned existing managed intermediates and leaves them unchanged",
+		async () => {
+			const { agentDir, cwd, sessionsRoot } = await sharedStickyFixture();
+			await fs.mkdir(agentDir, { recursive: true, mode: 0o700 });
+			await fs.mkdir(sessionsRoot, { mode: 0o700 });
+			const marker = path.join(sessionsRoot, "foreign-marker");
+			await fs.writeFile(marker, "do-not-touch");
+			await fs.chown(sessionsRoot, 65534, 65534);
+			const resolved = resolveManagedScope({ cwd, agentDir, sessionsRoot });
+			if (resolved.kind !== "resolved") throw new Error(resolved.message);
+
+			await expect(prepareManagedSessionScopeForWrite(resolved.scope)).resolves.toMatchObject({ kind: "error" });
+			expect(await fs.readFile(marker, "utf8")).toBe("do-not-touch");
+		},
+	);
+
+	it.skipIf(process.getuid?.() !== 0)(
+		"fails closed for a foreign-owned managed leaf without adopting it",
+		async () => {
+			const { agentDir, cwd, sessionsRoot } = await sharedStickyFixture();
+			await fs.mkdir(sessionsRoot, { recursive: true, mode: 0o700 });
+			const resolved = resolveManagedScope({ cwd, agentDir, sessionsRoot });
+			if (resolved.kind !== "resolved") throw new Error(resolved.message);
+			await fs.mkdir(resolved.scope.directoryPath, { mode: 0o700 });
+			const marker = path.join(resolved.scope.directoryPath, "foreign-marker");
+			await fs.writeFile(marker, "do-not-touch");
+			await fs.chown(resolved.scope.directoryPath, 65534, 65534);
+
+			await expect(prepareManagedSessionScopeForWrite(resolved.scope)).resolves.toMatchObject({ kind: "error" });
+			expect(await fs.readFile(marker, "utf8")).toBe("do-not-touch");
+		},
+	);
+
+	it("distinguishes ACL/default-ACL observation from repair failure evidence", () => {
+		const observation = { ok: false, code: "acl_present", operation: "query", attribute: "access" } as const;
+		const repair = { ok: false, code: "acl_denied", operation: "clear", attribute: "default" } as const;
+		expect(validateNativeSecurityResult(observation, "verify", "directory")).toEqual(observation);
+		expect(validateNativeSecurityResult(repair, "apply", "directory")).toEqual(repair);
+		expect(() => validateNativeSecurityResult(repair, "verify", "directory")).toThrow(
+			"Verify failure unexpectedly reports ACL mutation",
+		);
+	});
+
+	it("does not re-adopt a replaced managed leaf or write into its external replacement", async () => {
+		const { agentDir, cwd, sessionsRoot } = await sharedStickyFixture();
+		const resolved = resolveManagedScope({ cwd, agentDir, sessionsRoot });
+		if (resolved.kind !== "resolved") throw new Error(resolved.message);
+		expect((await prepareManagedSessionScopeForWrite(resolved.scope)).kind).toBe("resolved");
+		const external = path.join(path.dirname(agentDir), "external-replacement");
+		await fs.rename(resolved.scope.directoryPath, external);
+		await fs.mkdir(resolved.scope.directoryPath, { mode: 0o700 });
+		const sentinel = path.join(resolved.scope.directoryPath, "external-sentinel");
+		await fs.writeFile(sentinel, "do-not-touch");
+
+		await expect(prepareManagedSessionScopeForWrite(resolved.scope)).resolves.toMatchObject({ kind: "error" });
+		expect(await fs.readFile(sentinel, "utf8")).toBe("do-not-touch");
+		expect(await fs.readdir(resolved.scope.directoryPath)).toEqual(["external-sentinel"]);
+		expect((await fs.lstat(external)).isDirectory()).toBe(true);
+	});
+});
+
 describe("managed session write protocol", () => {
 	it("copy-retains a legacy candidate and coalesces it to its committed v2 transcript", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();
@@ -102,7 +267,11 @@ describe("managed session write protocol", () => {
 		const receipts = path.join(scope.directoryPath, ".gjc-managed-session-internal", "receipts");
 		const committedReceipt = path.join(
 			receipts,
-			(await fs.readdir(receipts)).find(name => name.endsWith(".json")) ?? "",
+			(await fs.readdir(receipts)).find(
+				name =>
+					name.endsWith(".json") &&
+					JSON.parse(syncFs.readFileSync(path.join(receipts, name), "utf8")).state === "committed",
+			) ?? "",
 		);
 		const receipt = JSON.parse(await fs.readFile(committedReceipt, "utf8")) as Record<string, unknown>;
 		expect(receipt).toMatchObject({
@@ -158,7 +327,11 @@ describe("managed session write protocol", () => {
 		const receipts = path.join(scope.directoryPath, ".gjc-managed-session-internal", "receipts");
 		const committedReceipt = path.join(
 			receipts,
-			(await fs.readdir(receipts)).find(name => name.endsWith(".json")) ?? "",
+			(await fs.readdir(receipts)).find(
+				name =>
+					name.endsWith(".json") &&
+					JSON.parse(syncFs.readFileSync(path.join(receipts, name), "utf8")).state === "committed",
+			) ?? "",
 		);
 		const receipt = JSON.parse(await fs.readFile(committedReceipt, "utf8")) as { artifactManifest?: unknown[] };
 		expect(receipt.artifactManifest).toEqual(
@@ -169,6 +342,93 @@ describe("managed session write protocol", () => {
 				expect.objectContaining({ kind: "file", path: "nested/payload.txt" }),
 			]),
 		);
+	});
+	it("retains cleanup-pending placeholder authority in the committed migration receipt", async () => {
+		if (process.platform === "win32") return;
+		const { cwd, sessionsRoot, scope } = await fixture();
+		const legacy = legacyDirectory(sessionsRoot, cwd);
+		const source = path.join(legacy, "committed-cleanup-pending.jsonl");
+		const artifacts = source.slice(0, -6);
+
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(path.join(artifacts, "payload.txt"), "payload");
+		await fs.writeFile(source, transcript("committed-cleanup-pending", cwd));
+		const listed = listManagedCandidates(scope);
+		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing legacy candidate");
+		await expect(openManagedCandidateForWrite(scope, listed.owned[0])).resolves.toMatchObject({ kind: "opened" });
+
+		const receipts = path.join(scope.directoryPath, ".gjc-managed-session-internal", "receipts");
+		const committed = (await fs.readdir(receipts)).find(
+			name => JSON.parse(syncFs.readFileSync(path.join(receipts, name), "utf8")).state === "committed",
+		);
+		if (!committed) throw new Error("Missing committed receipt");
+		const record = JSON.parse(await fs.readFile(path.join(receipts, committed), "utf8")) as {
+			sourceArtifactCleanup?: { retainedPath?: unknown };
+		};
+		expect(record).toMatchObject({
+			sourceArtifactCleanup: {
+				state: "cleanup_pending",
+				role: "exchange_placeholder",
+				retainedPath: expect.stringMatching(/\.gjc-exact-unlink-placeholder-/),
+			},
+		});
+	});
+	it("persists cleanup-pending placeholder authority and fails closed when it is replaced during replay", async () => {
+		if (process.platform === "win32") return;
+		const { cwd, sessionsRoot, scope } = await fixture();
+		const legacy = legacyDirectory(sessionsRoot, cwd);
+		const source = path.join(legacy, "cleanup-pending-artifact.jsonl");
+		const artifacts = source.slice(0, -6);
+
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(path.join(artifacts, "payload.txt"), "authoritative");
+		await fs.writeFile(source, transcript("cleanup-pending-artifact", cwd));
+		const listed = listManagedCandidates(scope);
+		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing legacy candidate");
+
+		const restore = vi.spyOn(native, "exactRestore").mockReturnValue({ ok: false, code: "io_error" });
+		try {
+			await expect(openManagedCandidateForWrite(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "error",
+				code: "durability_failed",
+			});
+		} finally {
+			restore.mockRestore();
+		}
+
+		const receipts = path.join(scope.directoryPath, ".gjc-managed-session-internal", "receipts");
+		const detachedReceipt = (await fs.readdir(receipts)).find(name => name.endsWith(".detached.json"));
+		if (!detachedReceipt) throw new Error("Missing detached receipt");
+		const record = JSON.parse(await fs.readFile(path.join(receipts, detachedReceipt), "utf8")) as Record<
+			string,
+			unknown
+		>;
+		const cleanup = record.sourceArtifactCleanup as { retainedPath?: unknown } | undefined;
+		if (!cleanup || typeof cleanup.retainedPath !== "string")
+			throw new Error("Missing retained placeholder authority");
+		const retainedPath = cleanup.retainedPath;
+		expect(record).toMatchObject({
+			state: "artifact_detached",
+			sourceArtifactCleanup: {
+				state: "cleanup_pending",
+				role: "exchange_placeholder",
+				retainedPath,
+			},
+		});
+		await fs.rm(retainedPath, { recursive: true });
+		await fs.mkdir(retainedPath);
+		await fs.writeFile(path.join(retainedPath, "foreign.txt"), "foreign");
+
+		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
+		if (restarted.kind !== "resolved") throw new Error(restarted.message);
+		const replay = await openManagedCandidateForWrite(restarted.scope, listed.owned[0]);
+		expect(replay).toMatchObject({ kind: "error", code: "durability_failed" });
+		expect(await fs.readFile(path.join(retainedPath, "foreign.txt"), "utf8")).toBe("foreign");
+		const detached = (await fs.readdir(legacy)).find(
+			name => name.startsWith(".gjc-migrate-") && name.endsWith("-artifacts"),
+		);
+		if (!detached) throw new Error("Missing retained detached artifact root");
+		expect(await fs.readFile(path.join(legacy, detached, "payload.txt"), "utf8")).toBe("authoritative");
 	});
 	it("retains a detached legacy artifact root when exact restoration collides", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();
@@ -266,7 +526,9 @@ describe("managed session write protocol", () => {
 		if (firstListing.kind !== "complete") throw new Error(firstListing.message);
 		const first = firstListing.owned.find(candidate => candidate.path === targetPath);
 		if (!first) throw new Error("Missing first v2 candidate");
-		expect(await deleteManagedSessionCandidate(scope, first)).toMatchObject({ kind: "deleted" });
+		const firstDelete = await deleteManagedSessionCandidate(scope, first);
+		expect(firstDelete).toMatchObject({ kind: "deleted" });
+		if (firstDelete.kind !== "deleted") throw new Error("Expected deleted");
 
 		await fs.writeFile(targetPath, content);
 		await fs.utimes(targetPath, new Date("2031-01-01T00:00:00.000Z"), new Date("2031-01-01T00:00:00.000Z"));
@@ -275,7 +537,11 @@ describe("managed session write protocol", () => {
 		const replacement = secondListing.owned.find(candidate => candidate.path === targetPath);
 		if (!replacement) throw new Error("Missing replacement v2 candidate");
 		expect(replacement.identity.mtimeNs).not.toBe(first.identity.mtimeNs);
-		expect(await deleteManagedSessionCandidate(scope, replacement)).toMatchObject({ kind: "deleted" });
+		const secondDelete = await deleteManagedSessionCandidate(scope, replacement);
+		expect(secondDelete).toMatchObject({ kind: "deleted" });
+		if (secondDelete.kind !== "deleted") throw new Error("Expected deleted");
+		expect(secondDelete.tombstonePath).not.toBe(firstDelete.tombstonePath);
+		await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
 
 		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
 		expect(
@@ -328,7 +594,10 @@ describe("managed session write protocol", () => {
 		const active = listed.owned.find(candidate => candidate.path === opened.path);
 		if (!active) throw new Error("Missing appended v2 candidate");
 
-		expect(await deleteManagedSessionCandidate(scope, active)).toMatchObject({ kind: "deleted" });
+		expect(await deleteManagedSessionCandidate(scope, active)).toMatchObject({
+			kind: "deleted",
+			tombstonePath: expect.stringContaining(".json"),
+		});
 		await expect(fs.access(source)).rejects.toMatchObject({ code: "ENOENT" });
 		await expect(fs.access(opened.path)).rejects.toMatchObject({ code: "ENOENT" });
 		await expect(fs.access(artifactRoot)).rejects.toMatchObject({ code: "ENOENT" });
@@ -383,7 +652,7 @@ describe("managed session write protocol", () => {
 		expect(fresh.kind).toBe("resolved");
 		if (fresh.kind !== "resolved") throw new Error(fresh.message);
 		const recovered = await deleteManagedSessionCandidate(fresh.scope, opened.candidate);
-		expect(recovered.kind).toBe("already_deleted");
+		expect(recovered).toMatchObject({ kind: "deleted", tombstonePath: expect.stringContaining(".json") });
 		expect(
 			await fs.access(source).then(
 				() => true,
@@ -455,7 +724,7 @@ describe("managed session write protocol", () => {
 		expect((await fs.lstat(destination)).isSymbolicLink()).toBe(true);
 	});
 	it.skipIf(process.platform !== "win32")(
-		"accepts a volume-form detached migration root only when it names the planned object and parent",
+		"accepts a detached Windows artifact root when native tree size diverges from Bun lstat and identity checks pass",
 		async () => {
 			const { cwd, sessionsRoot, scope } = await fixture();
 			const legacy = legacyDirectory(sessionsRoot, cwd);
@@ -466,6 +735,11 @@ describe("managed session write protocol", () => {
 			await fs.writeFile(source, transcript("volume-detach", cwd));
 			const listed = listManagedCandidates(scope);
 			if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+			const tree = native.snapshotDirectoryTree(artifacts);
+			const root = tree.snapshot?.entries.find(entry => entry.relativePath === "" && entry.kind === "directory");
+			expect(tree.ok).toBe(true);
+			expect(root).toBeDefined();
+			expect(BigInt(root!.size)).not.toBe(syncFs.lstatSync(artifacts, { bigint: true }).size);
 			const unlink = native.exactUnlink;
 			const aliased = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
 				const result = unlink(pathname, identity);
@@ -482,6 +756,41 @@ describe("managed session write protocol", () => {
 			}
 		},
 	);
+	it("refreshes the source snapshot after an authorized artifact detach advances only transcript ctime", async () => {
+		if (process.platform === "win32") return;
+		const { cwd, sessionsRoot, scope } = await fixture();
+		const legacy = legacyDirectory(sessionsRoot, cwd);
+		const source = path.join(legacy, "ctime-refresh.jsonl");
+		const artifacts = source.slice(0, -6);
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(path.join(artifacts, "artifact.txt"), "payload");
+		await fs.writeFile(source, transcript("ctime-refresh", cwd));
+		const sourceCtimeNs = syncFs.lstatSync(source, { bigint: true }).ctimeNs;
+		const listed = listManagedCandidates(scope);
+		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const unlink = native.exactUnlink;
+		const detached = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			const result = unlink(pathname, identity);
+			if (pathname === artifacts && identity.directory && identity.detachOnly) {
+				const mode = syncFs.lstatSync(source).mode & 0o777;
+				syncFs.chmodSync(source, mode);
+			}
+			return result;
+		});
+		try {
+			await expect(openManagedCandidateForWrite(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "opened",
+				migrated: true,
+			});
+		} finally {
+			detached.mockRestore();
+		}
+		expect(await fs.readFile(source, "utf8")).toBe(transcript("ctime-refresh", cwd));
+		expect(syncFs.lstatSync(source, { bigint: true }).ctimeNs).not.toBe(sourceCtimeNs);
+		expect(await fs.readFile(path.join(scope.directoryPath, path.basename(source)), "utf8")).toBe(
+			transcript("ctime-refresh", cwd),
+		);
+	});
 
 	it("rejects a substituted legacy source after candidate capture and preserves the replacement", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();
@@ -543,9 +852,13 @@ describe("managed session write protocol", () => {
 		if (!opened) return;
 		const deleted = await deleteManagedSessionCandidate(scope, opened.candidate);
 		expect(deleted.kind).toBe("deleted");
+		if (deleted.kind !== "deleted") throw new Error("Expected deleted");
+
 		const replay = await deleteManagedSessionCandidate(scope, opened.candidate);
-		expect(replay).toMatchObject({ kind: "already_deleted" });
-		expect(await fs.stat((deleted as { tombstonePath: string }).tombstonePath)).toBeDefined();
+		expect(replay.kind).toBe("already_deleted");
+		if (replay.kind !== "already_deleted") throw new Error("Expected already_deleted");
+		expect(replay.tombstonePath).toBe(deleted.tombstonePath);
+		expect(await fs.stat(deleted.tombstonePath)).toBeDefined();
 	});
 	it.skipIf(process.platform !== "linux")(
 		"does not publish cleanup completion when the deleted transcript parent cannot be fsynced",
@@ -846,20 +1159,30 @@ describe("managed session write protocol", () => {
 		await fs.writeFile(source, transcript("detached-artifact-restart", cwd));
 		const listed = listManagedCandidates(scope);
 		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const exactUnlink = native.exactUnlink;
+		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
+		});
 		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockReturnValueOnce({ ok: false, code: "io_error" });
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
-				kind: "error",
-				code: "durability_failed",
+				kind: "deleted",
+				tombstonePath: expect.stringContaining(".json"),
 			});
 		} finally {
 			remove.mockRestore();
+			unlink.mockRestore();
 		}
-		expect(await fs.stat(source)).toBeDefined();
+		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
 		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
 		if (restarted.kind !== "resolved") throw new Error(restarted.message);
 		expect((await prepareManagedSessionScopeForWrite(restarted.scope)).kind).toBe("resolved");
 		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
+
 		expect(listManagedCandidates(restarted.scope)).toMatchObject({ kind: "complete", owned: [] });
 	});
 
@@ -875,9 +1198,11 @@ describe("managed session write protocol", () => {
 		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
 		const exactUnlink = native.exactUnlink;
 		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
-			const result = exactUnlink(pathname, identity);
-			if (pathname === artifacts && identity.directory && result.ok) throw new Error("crash_after_detach");
-			return result;
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			throw new Error("crash_after_detach");
 		});
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
@@ -891,7 +1216,119 @@ describe("managed session write protocol", () => {
 		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
 		if (restarted.kind !== "resolved") throw new Error(restarted.message);
 		expect((await prepareManagedSessionScopeForWrite(restarted.scope)).kind).toBe("resolved");
-		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
+		expect(await fs.stat(source)).toBeDefined();
+	});
+	it("replays an unchanged retained deterministic .removing root from its artifact receipt", async () => {
+		const { cwd, sessionsRoot, scope } = await fixture();
+		const legacy = legacyDirectory(sessionsRoot, cwd);
+		const source = path.join(legacy, "retained-root-replay.jsonl");
+		const artifacts = source.slice(0, -6);
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(path.join(artifacts, "artifact.txt"), "payload");
+		await fs.writeFile(source, transcript("retained-root-replay", cwd));
+		const listed = listManagedCandidates(scope);
+		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const exactUnlink = native.exactUnlink;
+		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockImplementation(pathname => {
+			const retainedPath = `${pathname}.removing`;
+			syncFs.renameSync(pathname, retainedPath);
+			return { ok: false, code: "io_error", detachedPath: retainedPath };
+		});
+
+		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname === source) return { ok: false, code: "io_error" };
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
+		});
+		try {
+			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "cleanup_pending",
+				phase: "transcript",
+				tombstonePath: expect.stringContaining(".json"),
+				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+			});
+		} finally {
+			remove.mockRestore();
+			unlink.mockRestore();
+		}
+		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
+		if (restarted.kind !== "resolved") throw new Error(restarted.message);
+		expect(await prepareManagedSessionScopeForWrite(restarted.scope)).toMatchObject({ kind: "resolved" });
+		expect(await fs.stat(source)).toBeDefined();
+	});
+	it("rejects a replacement retained deterministic .removing root during replay", async () => {
+		const { cwd, sessionsRoot, scope } = await fixture();
+		const legacy = legacyDirectory(sessionsRoot, cwd);
+		const source = path.join(legacy, "retained-root-replacement.jsonl");
+		const artifacts = source.slice(0, -6);
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(path.join(artifacts, "artifact.txt"), "payload");
+		await fs.writeFile(source, transcript("retained-root-replacement", cwd));
+		const listed = listManagedCandidates(scope);
+		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const exactUnlink = native.exactUnlink;
+		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockImplementation(pathname => {
+			const retainedPath = `${pathname}.removing`;
+			syncFs.renameSync(pathname, retainedPath);
+			return { ok: false, code: "io_error", detachedPath: retainedPath };
+		});
+
+		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname === source) return { ok: false, code: "io_error" };
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
+		});
+		try {
+			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "cleanup_pending",
+				phase: "transcript",
+				tombstonePath: expect.stringContaining(".json"),
+				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+			});
+		} finally {
+			remove.mockRestore();
+			unlink.mockRestore();
+		}
+		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
+		const receiptName = (await fs.readdir(tombstones))
+			.filter(name => name.includes(".cleanup-pending-"))
+			.sort()
+			.at(-1);
+		if (!receiptName) throw new Error("Missing cleanup-pending receipt");
+		const receiptPath = path.join(tombstones, receiptName);
+		const receipt = JSON.parse(await fs.readFile(receiptPath, "utf8")) as {
+			detachedArtifactsPath?: unknown;
+			expectedArtifactsIdentity?: { sha256?: unknown };
+			expectedArtifactsTree?: unknown;
+		};
+		if (
+			typeof receipt.detachedArtifactsPath !== "string" ||
+			typeof receipt.expectedArtifactsIdentity?.sha256 !== "string" ||
+			receipt.expectedArtifactsTree === undefined
+		)
+			throw new Error("Missing retained artifact identity or tree evidence");
+
+		await fs.rm(receipt.detachedArtifactsPath, { recursive: true });
+
+		await fs.mkdir(receipt.detachedArtifactsPath);
+
+		await fs.writeFile(path.join(receipt.detachedArtifactsPath, "replacement.txt"), "replacement");
+
+		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
+		if (restarted.kind !== "resolved") throw new Error(restarted.message);
+		await expect(prepareManagedSessionScopeForWrite(restarted.scope)).resolves.toMatchObject({
+			kind: "error",
+			code: "binding_invalid",
+		});
+		expect(await fs.readFile(path.join(receipt.detachedArtifactsPath, "replacement.txt"), "utf8")).toBe(
+			"replacement",
+		);
 	});
 	it("reconciles partial tree removal from the deterministic .removing root after restart", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();
@@ -903,6 +1340,14 @@ describe("managed session write protocol", () => {
 		await fs.writeFile(source, transcript("partial-tree-removing", cwd));
 		const listed = listManagedCandidates(scope);
 		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const exactUnlink = native.exactUnlink;
+		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
+		});
 		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockImplementation(pathname => {
 			const removing = `${pathname}.removing`;
 			syncFs.renameSync(pathname, removing);
@@ -910,11 +1355,12 @@ describe("managed session write protocol", () => {
 		});
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
-				kind: "error",
-				code: "durability_failed",
+				kind: "deleted",
+				tombstonePath: expect.stringContaining(".json"),
 			});
 		} finally {
 			remove.mockRestore();
+			unlink.mockRestore();
 		}
 		expect(await fs.stat(artifacts).catch(() => undefined)).toBeUndefined();
 		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
@@ -933,33 +1379,48 @@ describe("managed session write protocol", () => {
 		await fs.writeFile(source, transcript("forged-cleanup-chain", cwd));
 		const listed = listManagedCandidates(scope);
 		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const exactUnlink = native.exactUnlink;
+		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname === source) return { ok: false, code: "io_error" };
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
+		});
 		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockReturnValueOnce({ ok: false, code: "io_error" });
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
-				kind: "error",
-				code: "durability_failed",
+				kind: "cleanup_pending",
+				phase: "transcript",
+				tombstonePath: expect.stringContaining(".json"),
+				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
 			});
 		} finally {
 			remove.mockRestore();
 		}
-		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
-		const firstName = (await fs.readdir(tombstones)).find(name => name.includes(".cleanup-pending-1"));
-		if (!firstName) throw new Error("Missing initial cleanup receipt");
-		const firstPath = path.join(tombstones, firstName);
-		const first = JSON.parse(await fs.readFile(firstPath, "utf8")) as Record<string, unknown>;
-		const forged = {
-			...first,
-			attempt: 2,
-			detachedArtifactsPath: path.join(path.dirname(source), ".gjc-delete-forged-artifacts"),
-			plannedArtifactsPath: path.join(path.dirname(source), ".gjc-delete-forged-next-artifacts"),
-			plannedTranscriptPath: path.join(path.dirname(source), ".gjc-delete-forged-next-transcript"),
-		};
-		await fs.writeFile(firstPath.replace("cleanup-pending-1", "cleanup-pending-2"), JSON.stringify(forged));
-		await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
-			kind: "error",
-			code: "durability_failed",
-		});
-		expect(await fs.stat(source)).toBeDefined();
+		try {
+			const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
+			const firstName = (await fs.readdir(tombstones)).find(name => name.includes(".cleanup-pending-1"));
+			if (!firstName) throw new Error("Missing initial cleanup receipt");
+			const firstPath = path.join(tombstones, firstName);
+			const first = JSON.parse(await fs.readFile(firstPath, "utf8")) as Record<string, unknown>;
+			const forged = {
+				...first,
+				attempt: 2,
+				detachedArtifactsPath: path.join(path.dirname(source), ".gjc-delete-forged-artifacts"),
+				plannedArtifactsPath: path.join(path.dirname(source), ".gjc-delete-forged-next-artifacts"),
+				plannedTranscriptPath: path.join(path.dirname(source), ".gjc-delete-forged-next-transcript"),
+			};
+			await fs.writeFile(firstPath.replace("cleanup-pending-1", "cleanup-pending-2"), JSON.stringify(forged));
+			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "error",
+				code: "durability_failed",
+			});
+			expect(await fs.stat(source)).toBeDefined();
+		} finally {
+			unlink.mockRestore();
+		}
 	});
 
 	it("reconciles transcript post-quarantine cleanup from a sidecar on a fresh scope", async () => {
@@ -996,20 +1457,41 @@ describe("managed session write protocol", () => {
 		await fs.writeFile(source, transcript("repeat-detach", cwd));
 		const listed = listManagedCandidates(scope);
 		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
+		const exactUnlink = native.exactUnlink;
+		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname === source) return { ok: false, code: "io_error" };
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
+		});
 		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockReturnValue({ ok: false, code: "io_error" });
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
-				kind: "error",
-				code: "durability_failed",
+				kind: "cleanup_pending",
+				phase: "transcript",
+				tombstonePath: expect.stringContaining(".json"),
+				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
 			});
+			const firstReceipts = await Promise.all(
+				(await fs.readdir(tombstones))
+					.filter(name => name.includes(".cleanup-pending-"))
+					.map(async name => [name, await fs.readFile(path.join(tombstones, name), "utf8")] as const),
+			);
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
-				kind: "error",
-				code: "durability_failed",
+				kind: "cleanup_pending",
+				phase: "transcript",
+				tombstonePath: expect.stringContaining(".json"),
+				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
 			});
+			for (const [name, content] of firstReceipts)
+				expect(await fs.readFile(path.join(tombstones, name), "utf8")).toBe(content);
 		} finally {
 			remove.mockRestore();
+			unlink.mockRestore();
 		}
-		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
 		const pending = (await fs.readdir(tombstones)).filter(name => name.includes(".cleanup-pending-"));
 		expect(pending.length).toBeGreaterThanOrEqual(3);
 		const records = await Promise.all(
@@ -1039,28 +1521,45 @@ describe("managed session write protocol", () => {
 		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
 		const exactUnlink = native.exactUnlink;
 		let detachedQ1: string | undefined;
+		let transcriptCrashInjected = false;
 		const crash = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
 			if (pathname !== source) return exactUnlink(pathname, identity);
 			detachedQ1 = path.join(path.dirname(source), identity.quarantineName!);
 			syncFs.renameSync(source, detachedQ1);
+			transcriptCrashInjected = true;
 			throw new Error("crash_after_transcript_detach");
 		});
 		try {
-			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({ kind: "error" });
+			let crashed = false;
+			for (let attempt = 0; attempt < 4; attempt++) {
+				const outcome = await deleteManagedSessionCandidate(scope, listed.owned[0]);
+				if (outcome.kind === "cleanup_pending" && outcome.phase === "artifacts") continue;
+				expect(outcome).toMatchObject({ kind: "error" });
+				crashed = true;
+				break;
+			}
+			if (!crashed)
+				throw new Error("Transcript crash injection was not reached after bounded artifact cleanup retries");
+			expect(transcriptCrashInjected).toBe(true);
 		} finally {
 			crash.mockRestore();
 		}
 		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
-		const firstName = (await fs.readdir(tombstones)).find(name => name.includes(".cleanup-pending-1"));
-		if (!firstName) throw new Error("Missing Q1 cleanup receipt");
-		const first = JSON.parse(await fs.readFile(path.join(tombstones, firstName), "utf8")) as Record<string, unknown>;
+		const pendingNames = (await fs.readdir(tombstones)).filter(name => name.includes(".cleanup-pending-"));
+		const pendingRecords = await Promise.all(
+			pendingNames.map(
+				async name => JSON.parse(await fs.readFile(path.join(tombstones, name), "utf8")) as Record<string, unknown>,
+			),
+		);
+		const first = pendingRecords.find(record => record.plannedTranscriptPath === detachedQ1);
+		if (!first) throw new Error("Missing transcript crash cleanup receipt");
 		const q1 = first.plannedTranscriptPath;
 		if (typeof q1 !== "string") throw new Error("Missing persisted Q1 transcript path");
 		expect(detachedQ1).toBe(q1);
 		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
 		expect(await fs.stat(q1)).toBeDefined();
-
 		let q2: string | undefined;
+
 		const deleteSessionVerified = FileSessionStorage.prototype.deleteSessionVerified;
 		const deleteReplay = vi.spyOn(FileSessionStorage.prototype, "deleteSessionVerified").mockImplementation(function (
 			this: FileSessionStorage,
@@ -1078,9 +1577,10 @@ describe("managed session write protocol", () => {
 				);
 				const latest = records.sort((left, right) => Number(right.attempt) - Number(left.attempt))[0];
 				q2 = latest?.plannedTranscriptPath as string | undefined;
-				expect(latest?.attempt).toBe(2);
+				expect(latest?.attempt).toBe(Number(first.attempt) + 1);
 				expect(q2).toEqual(expect.any(String));
 				expect(q2).not.toBe(q1);
+				expect(latest?.detachedTranscriptPath).toBe(q1);
 				expect((identity as { quarantineName?: string }).quarantineName).toBe(path.basename(q2!));
 			}
 			return exactUnlink(pathname, identity);
@@ -1096,10 +1596,11 @@ describe("managed session write protocol", () => {
 		}
 		expect(q2).toEqual(expect.any(String));
 		expect(await fs.stat(q1).catch(() => undefined)).toBeUndefined();
+		expect(await fs.stat(q2!)).toBeDefined();
 		expect(listManagedCandidates(scope)).toMatchObject({ kind: "complete", owned: [] });
 	});
 
-	it("reconciles a crash after durable artifact completion and successful transcript unlink", async () => {
+	it("retains artifacts-phase cleanup authority across a fresh-process replay", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();
 		const legacy = legacyDirectory(sessionsRoot, cwd);
 		const source = path.join(legacy, "phase-receipt-crash.jsonl");
@@ -1109,21 +1610,166 @@ describe("managed session write protocol", () => {
 		await fs.writeFile(source, transcript("phase-receipt-crash", cwd));
 		const listed = listManagedCandidates(scope);
 		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+
 		const exactUnlink = native.exactUnlink;
 		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
-			const result = exactUnlink(pathname, identity);
-			if (pathname === source && result.ok) throw new Error("crash_after_transcript_unlink");
-			return result;
+			if (pathname === source) return { ok: false, code: "io_error" };
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
 		});
+		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockReturnValue({ ok: false, code: "io_error" });
 		try {
-			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({ kind: "error" });
+			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "cleanup_pending",
+				phase: "transcript",
+				tombstonePath: expect.stringContaining(".json"),
+				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+			});
 		} finally {
+			remove.mockRestore();
 			unlink.mockRestore();
 		}
-		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
-		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
-		if (restarted.kind !== "resolved") throw new Error(restarted.message);
-		expect((await prepareManagedSessionScopeForWrite(restarted.scope)).kind).toBe("resolved");
-		expect(listManagedCandidates(restarted.scope)).toMatchObject({ kind: "complete", owned: [] });
+
+		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
+		const pendingReceipts = await Promise.all(
+			(await fs.readdir(tombstones))
+				.filter(name => name.includes(".cleanup-pending-"))
+				.map(async name => [name, await fs.readFile(path.join(tombstones, name), "utf8")] as const),
+		);
+		if (pendingReceipts.length === 0) throw new Error("Missing cleanup-pending receipt");
+		const latest = pendingReceipts
+			.map(
+				([, content]) =>
+					JSON.parse(content) as {
+						detachedArtifactsPath?: unknown;
+						retainedArtifactsSuccessorPath?: unknown;
+						retainedArtifactsPlaceholderPath?: unknown;
+						retainedArtifactsUnknownPath?: unknown;
+					},
+			)
+			.reverse()
+			.find(receipt =>
+				[
+					receipt.detachedArtifactsPath,
+					receipt.retainedArtifactsSuccessorPath,
+					receipt.retainedArtifactsPlaceholderPath,
+					receipt.retainedArtifactsUnknownPath,
+				].some(pathname => typeof pathname === "string"),
+			);
+		if (!latest) throw new Error("Missing retained artifact authority receipt");
+		const retainedArtifactAuthority = [
+			latest.detachedArtifactsPath,
+			latest.retainedArtifactsSuccessorPath,
+			latest.retainedArtifactsPlaceholderPath,
+			latest.retainedArtifactsUnknownPath,
+		].find((pathname): pathname is string => typeof pathname === "string");
+		if (!retainedArtifactAuthority) throw new Error("Missing retained artifact authority path");
+		expect(await fs.lstat(retainedArtifactAuthority)).toBeDefined();
+
+		const modulePath = path.resolve(import.meta.dir, "../../src/session/internal/managed-session-scope.ts");
+		const replayScript = `
+			const { prepareManagedSessionScopeForWrite, resolveManagedScope } = await import(${JSON.stringify(modulePath)});
+			const resolved = resolveManagedScope(${JSON.stringify({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot })});
+			const outcome = resolved.kind === "resolved"
+				? await prepareManagedSessionScopeForWrite(resolved.scope)
+				: resolved;
+			console.log(JSON.stringify({ kind: outcome.kind, message: outcome.kind === "error" ? outcome.message : null }));
+		`;
+		const replay = Bun.spawn([process.execPath, "--eval", replayScript], {
+			cwd: path.resolve(import.meta.dir, "../.."),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(replay.stdout).text(),
+			new Response(replay.stderr).text(),
+			replay.exited,
+		]);
+		expect(exitCode).toBe(0);
+		expect(stderr).toBe("");
+		expect(JSON.parse(stdout)).toEqual({ kind: "resolved", message: null });
+		for (const [name, content] of pendingReceipts)
+			expect(await fs.readFile(path.join(tombstones, name), "utf8")).toBe(content);
+		expect(await fs.lstat(retainedArtifactAuthority).catch(() => undefined)).toBeUndefined();
+		expect((await fs.readdir(tombstones)).some(name => name.includes(".cleanup-completed-"))).toBe(false);
+	});
+	it("rejects a dangling replacement at retained artifact authority during fresh replay", async () => {
+		const { cwd, sessionsRoot, scope } = await fixture();
+		const legacy = legacyDirectory(sessionsRoot, cwd);
+		const source = path.join(legacy, "phase-receipt-replacement.jsonl");
+		const artifacts = source.slice(0, -6);
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(path.join(artifacts, "artifact.txt"), "payload");
+		await fs.writeFile(source, transcript("phase-receipt-replacement", cwd));
+		const listed = listManagedCandidates(scope);
+		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+
+		const exactUnlink = native.exactUnlink;
+		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname === source) return { ok: false, code: "io_error" };
+			if (pathname !== artifacts) return exactUnlink(pathname, identity);
+			if (!identity.directory || !identity.quarantineName) throw new Error("Missing artifact quarantine identity");
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
+		});
+		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockReturnValue({ ok: false, code: "io_error" });
+		try {
+			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "cleanup_pending",
+				phase: "transcript",
+				tombstonePath: expect.stringContaining(".json"),
+				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+			});
+		} finally {
+			remove.mockRestore();
+			unlink.mockRestore();
+		}
+
+		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
+		const receiptName = (await fs.readdir(tombstones))
+			.filter(name => name.includes(".cleanup-pending-"))
+			.sort()
+			.at(-1);
+		if (!receiptName) throw new Error("Missing cleanup-pending receipt");
+		const receiptPath = path.join(tombstones, receiptName);
+		const receipt = await fs.readFile(receiptPath, "utf8");
+		const pending = JSON.parse(receipt) as { detachedArtifactsPath?: unknown };
+		if (typeof pending.detachedArtifactsPath !== "string")
+			throw new Error("Missing retained artifact authority path");
+		await fs.rm(pending.detachedArtifactsPath, { recursive: true });
+		const replacementTarget = path.join(path.dirname(source), "replacement-target-does-not-exist");
+		await fs.symlink(replacementTarget, pending.detachedArtifactsPath);
+
+		const modulePath = path.resolve(import.meta.dir, "../../src/session/internal/managed-session-scope.ts");
+		const replayScript = `
+			const { prepareManagedSessionScopeForWrite, resolveManagedScope } = await import(${JSON.stringify(modulePath)});
+			const resolved = resolveManagedScope(${JSON.stringify({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot })});
+			const outcome = resolved.kind === "resolved"
+				? await prepareManagedSessionScopeForWrite(resolved.scope)
+				: resolved;
+			console.log(JSON.stringify({ kind: outcome.kind, code: outcome.kind === "error" ? outcome.code : null }));
+		`;
+		const replay = Bun.spawn([process.execPath, "--eval", replayScript], {
+			cwd: path.resolve(import.meta.dir, "../.."),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(replay.stdout).text(),
+			new Response(replay.stderr).text(),
+			replay.exited,
+		]);
+		expect(exitCode).toBe(0);
+		expect(stderr).toBe("");
+		expect(JSON.parse(stdout)).toEqual({ kind: "error", code: "binding_invalid" });
+		expect(await fs.readFile(receiptPath, "utf8")).toBe(receipt);
+		expect((await fs.readdir(tombstones)).some(name => name.includes(".cleanup-completed-"))).toBe(false);
+		const replacement = await fs.lstat(pending.detachedArtifactsPath);
+		expect(replacement.isSymbolicLink()).toBe(true);
+		expect(await fs.readlink(pending.detachedArtifactsPath)).toBe(replacementTarget);
 	});
 });

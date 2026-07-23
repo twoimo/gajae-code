@@ -11,7 +11,6 @@ import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { ImageContent } from "@gajae-code/ai";
 import {
-	$env,
 	$pickenv,
 	getAgentDir,
 	getProjectDir,
@@ -1119,6 +1118,27 @@ export function resolveModelRoleOverrides(parsed: Pick<Args, "smol" | "slow" | "
 	if (plan) overrides.plan = plan;
 	return overrides;
 }
+
+/**
+ * Apply the `--no-pty` / `--no-title` terminal-control flags to the environment.
+ *
+ * Sets the canonical `GJC_*` name (so an explicit flag wins over a user-set
+ * `GJC_*` value under the GJC-first resolver — CLI authority) and the legacy
+ * `PI_*` name for backward compatibility. `--acp` mode implies `--no-title`.
+ */
+export function applyTerminalControlFlagsToEnv(
+	parsed: Pick<Args, "noPty" | "noTitle" | "mode">,
+	env: NodeJS.ProcessEnv = Bun.env,
+): void {
+	if (parsed.noPty) {
+		env.GJC_NO_PTY = "1";
+		env.PI_NO_PTY = "1";
+	}
+	if (parsed.noTitle || parsed.mode === "acp") {
+		env.GJC_NO_TITLE = "1";
+		env.PI_NO_TITLE = "1";
+	}
+}
 export async function runRootCommand(
 	parsed: Args,
 	rawArgs: string[],
@@ -1258,12 +1278,7 @@ export async function runRootCommand(
 		applyAcpDefaultSettingOverrides(settingsInstance);
 	}
 	modelRegistry.applyConfiguredModelBindings(settingsInstance);
-	if (parsedArgs.noPty) {
-		Bun.env.PI_NO_PTY = "1";
-	}
-	if (parsedArgs.noTitle || parsedArgs.mode === "acp") {
-		Bun.env.PI_NO_TITLE = "1";
-	}
+	applyTerminalControlFlagsToEnv(parsedArgs);
 	const hasPreparedInput = parsedArgs.messages.length > 0 || parsedArgs.fileArgs.length > 0;
 	const { pipedInput, fileText, fileImages } = await logger.time("prepareInitialMessage", async () => {
 		const pipedInput =
@@ -1613,9 +1628,9 @@ export async function runRootCommand(
 					process.stdout.write(`${chalk.dim(`Model scope: ${modelList} ${chalk.gray("(Alt+N to cycle)")}`)}\n`);
 				}
 
-				if ($env.PI_TIMING) {
+				if ($pickenv("GJC_TIMING", "PI_TIMING")) {
 					logger.printTimings();
-					exitForTiming = $env.PI_TIMING === "x";
+					exitForTiming = $pickenv("GJC_TIMING", "PI_TIMING") === "x";
 				}
 
 				if (!exitForTiming) {
@@ -1660,7 +1675,7 @@ export async function runRootCommand(
 					initialImages,
 					suppressProcessExit: deps.suppressProcessExit,
 				});
-				if ($env.PI_TIMING) {
+				if ($pickenv("GJC_TIMING", "PI_TIMING")) {
 					logger.printTimings();
 				}
 			} finally {

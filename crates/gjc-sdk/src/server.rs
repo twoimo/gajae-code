@@ -2082,6 +2082,28 @@ mod tests {
 		assert_eq!(frame["capabilities"], serde_json::json!([capabilities::TOOL_ACTIVITY_V1]));
 		handle.stop();
 	}
+	#[tokio::test]
+	async fn event_replay_forwards_authoritative_capabilities_after_repeated_hello() {
+		let handle = start(ServerConfig::new("s", "secret")).await.unwrap();
+		let mut frames = handle.take_frame_receiver().expect("frame receiver");
+		let mut ws = connect(&handle, "secret").await;
+		next_server_hello(&mut ws).await;
+		send_hello(&mut ws, vec![]).await;
+		send_hello(&mut ws, vec![capabilities::TOOL_ACTIVITY_V1.into()]).await;
+		ws.send(Message::Text(
+			r#"{"type":"event_replay","id":"replay-forged","capabilities":["forged"]}"#.into(),
+		))
+		.await
+		.unwrap();
+
+		let (_, frame) = tokio::time::timeout(Duration::from_secs(2), frames.recv())
+			.await
+			.expect("timed out waiting for replay frame")
+			.expect("frame receiver closed");
+		let frame: serde_json::Value = serde_json::from_str(&frame).unwrap();
+		assert_eq!(frame["capabilities"], serde_json::json!([capabilities::TOOL_ACTIVITY_V1]));
+		handle.stop();
+	}
 
 	#[tokio::test]
 	async fn tool_activity_is_sent_only_to_capable_clients() {

@@ -64,7 +64,7 @@ import {
 import type { NotificationSessionStatus } from "../../sdk/bus/session-control";
 import {
 	ensureTelegramDaemonRunningDetailed,
-	readDaemonState,
+	resolveTelegramSetupPreflight,
 	unregisterNotificationRoot,
 } from "../../sdk/bus/telegram-daemon";
 import { TelegramDaemonController } from "../../sdk/bus/telegram-daemon-control";
@@ -226,6 +226,7 @@ export interface NotificationsEditorOperationDependencies {
 	sanitizeDiagnostic: typeof sanitizeDiagnostic;
 	ensureTelegramDaemonRunningDetailed: typeof ensureTelegramDaemonRunningDetailed;
 	runTelegramSetup: typeof runTelegramSetup;
+	resolveTelegramSetupPreflight: typeof resolveTelegramSetupPreflight;
 	proposedTelegramIdentity: typeof proposedTelegramIdentity;
 	reconcileCommittedTelegramConfiguration: typeof reconcileCommittedTelegramConfiguration;
 	saveTelegramInactive: typeof saveTelegramInactive;
@@ -250,6 +251,7 @@ const notificationEditorOperationDependencies: NotificationsEditorOperationDepen
 	sanitizeDiagnostic,
 	ensureTelegramDaemonRunningDetailed,
 	runTelegramSetup,
+	resolveTelegramSetupPreflight,
 	proposedTelegramIdentity,
 	reconcileCommittedTelegramConfiguration,
 	saveTelegramInactive,
@@ -306,33 +308,8 @@ export function createNotificationsEditorOperations(
 			cwd: ctx.sessionManager.getCwd(),
 			sessionId: ctx.sessionManager.getSessionId(),
 		});
-	const telegramSetupPreflight = async (): Promise<TelegramSetupPreflight> => {
-		const storedChatId = services.getNotificationConfig(ctx.settings).chatId;
-		try {
-			const state = await readDaemonState(ctx.settings);
-			const validPid = Number.isSafeInteger(state?.pid) && (state?.pid ?? 0) > 0;
-			if (!state || !validPid) return { storedChatId };
-			let live = false;
-			try {
-				process.kill(state.pid, 0);
-				live = true;
-			} catch (error) {
-				live = (error as NodeJS.ErrnoException).code === "EPERM";
-			}
-			return live
-				? {
-						storedChatId,
-						daemon: {
-							live,
-							tokenFingerprint: typeof state.tokenFingerprint === "string" ? state.tokenFingerprint : undefined,
-							chatId: typeof state.chatId === "string" && state.chatId.trim() ? state.chatId.trim() : undefined,
-						},
-					}
-				: { storedChatId };
-		} catch {
-			return { storedChatId };
-		}
-	};
+	const telegramSetupPreflight = async (): Promise<TelegramSetupPreflight> =>
+		await services.resolveTelegramSetupPreflight(ctx.settings);
 
 	return {
 		loadState: async () => {
