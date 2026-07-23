@@ -24,6 +24,7 @@ import {
 	MCP_MAX_SSE_REQUEST_MESSAGES,
 	readMCPResponseText,
 } from "../content-limits";
+import { fetchPluginMcpRequest, isPluginMcpPublicNetworkBound } from "../plugin-network-boundary";
 
 /**
  * HTTP transport for MCP servers.
@@ -62,6 +63,12 @@ export class HttpTransport implements MCPTransport {
 		this.#connected = true;
 	}
 
+	#fetch(init: BunFetchRequestInit): Promise<Response> {
+		return isPluginMcpPublicNetworkBound(this.config)
+			? fetchPluginMcpRequest(this.config.url, init)
+			: fetch(this.config.url, init);
+	}
+
 	#trackReader(promise: Promise<void>, controller?: AbortController): void {
 		if (controller) this.#streamControllers.add(controller);
 		this.#streamReaders.add(promise);
@@ -96,7 +103,7 @@ export class HttpTransport implements MCPTransport {
 
 		let response: Response;
 		try {
-			response = await fetch(this.config.url, {
+			response = await this.#fetch({
 				method: "GET",
 				headers,
 				signal: AbortSignal.any([sseConnection.signal, headerController.signal]),
@@ -227,7 +234,7 @@ export class HttpTransport implements MCPTransport {
 			: abortController.signal;
 
 		try {
-			const response = await fetch(this.config.url, {
+			const response = await this.#fetch({
 				method: "POST",
 				headers,
 				body: JSON.stringify(body),
@@ -423,7 +430,7 @@ export class HttpTransport implements MCPTransport {
 			headers["Mcp-Session-Id"] = this.#sessionId;
 		}
 		try {
-			const resp = await fetch(this.config.url, {
+			const resp = await this.#fetch({
 				method: "POST",
 				headers,
 				body: JSON.stringify(body),
@@ -437,7 +444,7 @@ export class HttpTransport implements MCPTransport {
 					this.config.headers ??= {};
 					Object.assign(this.config.headers, newHeaders);
 					Object.assign(headers, newHeaders);
-					const retry = await fetch(this.config.url, {
+					const retry = await this.#fetch({
 						method: "POST",
 						headers,
 						body: JSON.stringify(body),
@@ -480,7 +487,7 @@ export class HttpTransport implements MCPTransport {
 		const timeoutId = setTimeout(() => abortController.abort(), timeout);
 
 		try {
-			const response = await fetch(this.config.url, {
+			const response = await this.#fetch({
 				method: "POST",
 				headers,
 				body: JSON.stringify(body),
@@ -542,7 +549,7 @@ export class HttpTransport implements MCPTransport {
 					"Mcp-Session-Id": this.#sessionId,
 				};
 
-				await fetch(this.config.url, {
+				await this.#fetch({
 					method: "DELETE",
 					headers,
 					signal: AbortSignal.timeout(timeout),

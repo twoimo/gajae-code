@@ -2217,9 +2217,11 @@ describe("telegram daemon", () => {
 			}),
 		);
 	}
-	test("keeps wire protocol 3 while typed retained exact-unlink cleanup authority uses generation 24", () => {
+	test("keeps wire protocol 3 while startup dead-root prune + leak-artifact self-heal uses generation 25", () => {
 		expect(NOTIFICATION_PROTOCOL_VERSION).toBe(3);
-		expect(DAEMON_GENERATION).toBe(24);
+		// Production generation advanced to 25 via #2958/#2956 (startup dead-root
+		// prune + leak-artifact self-heal); see DAEMON_GENERATION contract history.
+		expect(DAEMON_GENERATION).toBe(25);
 	});
 
 	test("#2028 reloads a fully-provenanced owner without a generation", async () => {

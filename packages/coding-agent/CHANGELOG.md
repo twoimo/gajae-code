@@ -30,6 +30,7 @@
 - Ordinary `ask` calls now normalize a provider-emitted `deepInterview: null` placeholder instead of misclassifying it as malformed Round-0 intent recovery data and rejecting it before coercion.
 - SDK event replay authorization now refreshes the negotiated capability cache synchronously from the native-sanitized replay snapshot before host filtering, preserving initial and repeated-hello capability updates without trusting client frame claims.
 
+- Plugin-bundle HTTP and SSE MCP requests now bind every connection to a validated public address and revalidate bounded redirects before following them.
 - Documented that custom OpenAI-compatible models omit vision by default: when `input` is unset, GJC treats the model as text-only and strips images with `[image omitted: model does not support vision]`. Vision backends must set `input: [text, image]` in `models.yml`.
 - Restored `/models` preset landing navigation after the Image Generation row and made compaction/pruning regression fixtures use an explicit 200K context boundary instead of a mutable provider descriptor default.
 - Fixed Windows legacy session artifact migration by using native directory identity size, a traversable detached-path alias, and writable file handles for final durability sync.
@@ -59,6 +60,7 @@
 - Shell environment snapshots now use one process-private temporary root with exclusive private files, trusted cache validation, and whole-root shutdown cleanup instead of a predictable shared directory.
 - Python kernel startup now materializes its bundled runner in one process-private temporary directory with exclusive file creation instead of consulting a predictable shared cache path.
 - SSH command construction and discovery now reject malformed destinations with unsafe prefixes or control characters while preserving normal host, address, username, and alias forms.
+- Bounded MCP resource URI and template matching now skips oversized templates and uses deterministic literal-segment matching instead of dynamically constructed regular expressions.
 - Fixed the `subagent` tool's `resume` action silently swallowing manager failures. Resume outcomes other than `context_unavailable`/`not_found` (`no_runner`, `resume_failed`, `owner_shutdown_in_progress`, …) were dropped and the stale terminal subagent snapshot was returned as if the resume had succeeded, so ralplan's re-review loop believed the persisted Planner had resumed when it had not and never fell back correctly. The resume action now surfaces every non-ok reason (matching the `steer` branch), and the task resume runner marks a resumed subprocess that aborted or exited non-zero as a `failed` job (carrying its rendered failure summary) instead of reporting it `completed`.
 - Daemon timeout flags now reject missing, malformed, non-positive, fractional, whitespace-containing, and unsafe integer values before daemon command side effects instead of partially parsing them.
 - Hardened standalone HTML session exports so session identifiers, provider/model labels, and embedded raster images remain confined to their intended HTML contexts; malformed image payloads are omitted.

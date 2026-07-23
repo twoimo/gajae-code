@@ -244,8 +244,10 @@ export async function guardedPublicFetch(
 		logicalUrl.protocol === "https:"
 			? { rejectUnauthorized: true, ...(net.isIP(hostname) === 0 ? { serverName: hostname } : {}) }
 			: undefined;
+	const method = (init.method ?? "GET").toUpperCase();
+	const addresses = method === "GET" || method === "HEAD" ? guard.addresses : guard.addresses.slice(0, 1);
 	let lastError: unknown;
-	for (const address of guard.addresses) {
+	for (const address of addresses) {
 		if (hasConfiguredProxy(process.env)) {
 			return { ok: false, reason: "proxy routing appeared during resolution", logicalUrl: rawUrl };
 		}
