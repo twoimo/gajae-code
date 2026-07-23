@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "compiled-tui-dogfood-report",
-  "pr": 2967,
+  "headRole": "product-source",
   "head": "1293711405de6c8a297e183f174ba2f907db12e6",
   "buildCommand": [
     "bun",
@@ -36,5 +36,5 @@
   },
   "excerpt": "⌃L model · ⇧⇥ reasoning · ⇥ complete · ⌃J newline | ⌃C clear",
   "result": "passed",
-  "evidenceCommitNote": "Product source, binary build, and PTY capture correspond to this report head; the following commit updates only immutable evidence bytes/report."
+  "evidenceCommitNote": "The head field names the exact product-source commit used for the binary build and PTY capture. The containing commit is an evidence-only descendant; PR identity is intentionally excluded so replacement PRs cannot stale immutable product evidence."
 }
