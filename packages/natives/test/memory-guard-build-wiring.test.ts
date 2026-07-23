@@ -12,14 +12,14 @@ describe("memory-guard native build wiring", () => {
 	});
 
 	it("rejects native addons that omit the Windows memory probe", () => {
-		expect(missingRequiredFunctions({ nativeBuildInfo: () => ({}) }, ["nativeBuildInfo", "probeWindowsJobMemory"])).toEqual([
-			"probeWindowsJobMemory",
-		]);
 		expect(
-			missingRequiredFunctions(
-				{ nativeBuildInfo: () => ({}), probeWindowsJobMemory: () => ({}) },
-				["nativeBuildInfo", "probeWindowsJobMemory"],
-			),
+			missingRequiredFunctions({ nativeBuildInfo: () => ({}) }, ["nativeBuildInfo", "probeWindowsJobMemory"]),
+		).toEqual(["probeWindowsJobMemory"]);
+		expect(
+			missingRequiredFunctions({ nativeBuildInfo: () => ({}), probeWindowsJobMemory: () => ({}) }, [
+				"nativeBuildInfo",
+				"probeWindowsJobMemory",
+			]),
 		).toEqual([]);
 	});
 });

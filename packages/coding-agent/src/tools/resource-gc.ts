@@ -157,12 +157,7 @@ export interface MemoryPressureSnapshot {
 	hardCapBytes: number;
 	totalUsageBytes: number;
 	parentBytes: number;
-	source:
-		| "host"
-		| "linux_cgroup_v2"
-		| "linux_cgroup_v1"
-		| "windows_job"
-		| "windows_process_job_limit";
+	source: "host" | "linux_cgroup_v2" | "linux_cgroup_v1" | "windows_job" | "windows_process_job_limit";
 }
 
 function decodeMountInfoPath(value: string): string {
@@ -296,8 +291,7 @@ function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryP
 	);
 	if (candidates.length === 0) return null;
 	const pressured = candidates.reduce((selected, candidate) =>
-		candidate.usage / Math.min(hostBytes, candidate.limit) >
-		selected.usage / Math.min(hostBytes, selected.limit)
+		candidate.usage / Math.min(hostBytes, candidate.limit) > selected.usage / Math.min(hostBytes, selected.limit)
 			? candidate
 			: selected,
 	);
