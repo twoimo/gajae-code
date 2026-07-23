@@ -565,6 +565,24 @@ describe("resource GC monotonic scheduler", () => {
 		expectSchedulerStopped();
 	});
 
+	it("reschedules an active session after live memory-guard cadence changes", () => {
+		controlledScheduler();
+		const settings = gcSettings(30_000);
+		const unregister = registerResourceGcSession({ sessionId: "live-policy", settings });
+		expect(__getResourceGcStateForTest().pendingDeadline).toBe(31_000);
+
+		settings.set("memoryGuard.enabled", true);
+		settings.set("memoryGuard.checkIntervalMs", 5_000);
+
+		expect(__getResourceGcStateForTest()).toMatchObject({
+			pendingDeadline: 6_000,
+			timerActive: true,
+		});
+		expect(vi.getTimerCount()).toBe(1);
+		unregister();
+		expectSchedulerStopped();
+	});
+
 	it("C: unregistering the shortest session never postpones pending work", async () => {
 		const clock = controlledScheduler();
 		const releaseTab = vi.fn(async () => true);

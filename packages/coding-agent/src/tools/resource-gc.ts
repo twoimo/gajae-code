@@ -103,6 +103,13 @@ export interface ResourceGcRegistration {
 	settings: Settings;
 }
 
+function resolveSessionSweepIntervalMs(settings: Settings): number {
+	const memoryPolicy = resolveMemoryGuardPolicy(settings);
+	return memoryPolicy.enabled
+		? Math.min(resolveSweepIntervalMs(settings), memoryPolicy.checkIntervalMs)
+		: resolveSweepIntervalMs(settings);
+}
+
 /**
  * Register a session with the resource GC. Starts the single shared timer on the first
  * registration. Returns an idempotent unregister function; the timer stops only when the last
@@ -110,12 +117,18 @@ export interface ResourceGcRegistration {
  */
 export function registerResourceGcSession(reg: ResourceGcRegistration): () => void {
 	activeSessions.set(reg.sessionId, reg.settings);
-	const memoryPolicy = resolveMemoryGuardPolicy(reg.settings);
 	const unregisterSchedule = scheduler.register({
 		ownerId: reg.sessionId,
-		intervalMs: memoryPolicy.enabled
-			? Math.min(resolveSweepIntervalMs(reg.settings), memoryPolicy.checkIntervalMs)
-			: resolveSweepIntervalMs(reg.settings),
+		intervalMs: resolveSessionSweepIntervalMs(reg.settings),
+	});
+	const unregisterSettings = reg.settings.onChanged(path => {
+		if (
+			path === "memoryGuard.enabled" ||
+			path === "memoryGuard.checkIntervalMs" ||
+			path === "resourceGc.sweepIntervalMs"
+		) {
+			scheduler.updateInterval(reg.sessionId, resolveSessionSweepIntervalMs(reg.settings));
+		}
 	});
 	let unregistered = false;
 	return () => {
@@ -126,6 +139,7 @@ export function registerResourceGcSession(reg: ResourceGcRegistration): () => vo
 		memoryGuardRestartAboveSince.delete(reg.sessionId);
 		memoryGuardRestartCooldownUntil.delete(reg.sessionId);
 		unregisterSchedule();
+		unregisterSettings();
 	};
 }
 
@@ -276,7 +290,7 @@ function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryP
 	);
 	return {
 		hardCapBytes: Math.min(hostBytes, pressured.limit),
-		totalUsageBytes: Math.max(parentBytes, pressured.usage),
+		totalUsageBytes: pressured.usage,
 		parentBytes,
 		source: "windows_job",
 	};
