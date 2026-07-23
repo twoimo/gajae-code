@@ -2,8 +2,6 @@
 
 ## [Unreleased]
 
-## [0.11.8] - 2026-07-23
-
 ### Fixed
 
 - Restricted the local dashboard API to its exact loopback authority and same-origin browser requests, with POST-only bounded session sync.

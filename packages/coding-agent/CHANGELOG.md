@@ -1,8 +1,6 @@
 # Changelog
 
 ## [Unreleased]
-
-## [0.11.8] - 2026-07-23
 ### Added
 
 - Keybinding configuration now keeps portable canonical text while runtime shortcut labels render platform-native, including concise MacBook glyphs in inline surfaces and glyph-plus-text accessibility labels in `/hotkeys` and `/help`; `/hotkeys` remains authoritative for effective remapped bindings.
