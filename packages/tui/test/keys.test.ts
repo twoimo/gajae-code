@@ -201,6 +201,10 @@ describe("KeyId grammar", () => {
 		expect(isKeyId("CTRL+C")).toBe(false);
 		expect(isKeyId("ctrl+plus")).toBe(false);
 		expect(isKeyId(" Ctrl + C ")).toBe(false);
+		expect(isKeyId("pageUp")).toBe(true);
+		expect(isKeyId("pageDown")).toBe(true);
+		expect(isKeyId("pageup")).toBe(false);
+		expect(isKeyId("pagedown")).toBe(false);
 	});
 
 	it("accepts literal plus keys and rejects malformed plus chains", () => {

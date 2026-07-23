@@ -29,6 +29,13 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 	const displayAppKey = (action: AppKeybinding): string => formatHotkeyMarkdownCode(appKey(bindings, action));
 	const displayKeys = (...labels: string[]): string => formatHotkeyMarkdownCode(labels.join("/"));
 	const formatFixedKey = (key: string): string => bindings.keybindings.formatKeyHint(key);
+	const displayKeyWithFixed = (action: Keybinding, fixedKey: string): string => {
+		const configured = key(bindings, action);
+		const fixed = formatFixedKey(fixedKey);
+		const labels = configured.split("/");
+		if (!labels.includes(fixed)) labels.push(fixed);
+		return displayKeys(...labels);
+	};
 
 	return [
 		"**Navigation**",
@@ -36,8 +43,8 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		"|-----|--------|",
 		`| ${displayKeys(key(bindings, "tui.editor.cursorUp"), key(bindings, "tui.editor.cursorDown"))} | Move cursor / browse history (Up when empty) |`,
 		`| ${displayKeys(key(bindings, "tui.editor.cursorWordLeft"), key(bindings, "tui.editor.cursorWordRight"))} | Move by word |`,
-		`| ${displayKey("tui.editor.cursorLineStart")} | Start of line |`,
-		`| ${displayKey("tui.editor.cursorLineEnd")} | End of line |`,
+		`| ${displayKeyWithFixed("tui.editor.cursorLineStart", "ctrl+a")} | Start of line |`,
+		`| ${displayKeyWithFixed("tui.editor.cursorLineEnd", "ctrl+e")} | End of line |`,
 		"",
 		"**Editing**",
 		"| Key | Action |",

@@ -3,11 +3,10 @@ import {
 	type AutocompleteProvider,
 	CombinedAutocompleteProvider,
 	extractSlashCommandTokenPrefix,
-	getKeybindings,
 	getSlashCommandMatchRank,
 	type SlashCommand,
 } from "@gajae-code/tui";
-import { formatKeyHints, type KeybindingsManager } from "../config/keybindings";
+import type { KeybindingsManager } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { applyEmojiCompletion, getEmojiSuggestions, isEmojiPrefix, tryEmojiInlineReplace } from "./emoji-autocomplete";
 
@@ -398,7 +397,6 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 export function createPromptActionAutocompleteProvider(
 	options: PromptActionAutocompleteOptions,
 ): PromptActionAutocompleteProvider {
-	const editorKeybindings = getKeybindings();
 	const actions: PromptActionDefinition[] = [
 		{
 			id: "new-session",
@@ -445,7 +443,7 @@ export function createPromptActionAutocompleteProvider(
 		{
 			id: "undo",
 			label: "Undo",
-			description: formatKeyHints(editorKeybindings.getKeys("tui.editor.undo")),
+			description: options.keybindings.getDisplayString("tui.editor.undo"),
 			keywords: ["undo", "revert", "edit", "history"],
 			execute: options.undo,
 		},
@@ -466,14 +464,14 @@ export function createPromptActionAutocompleteProvider(
 		{
 			id: "cursor-line-start",
 			label: "Move cursor to beginning of line",
-			description: formatKeyHints(editorKeybindings.getKeys("tui.editor.cursorLineStart")),
+			description: options.keybindings.getDisplayString("tui.editor.cursorLineStart"),
 			keywords: ["move", "cursor", "line", "start", "beginning", "home"],
 			execute: options.moveCursorToLineStart,
 		},
 		{
 			id: "cursor-line-end",
 			label: "Move cursor to end of line",
-			description: formatKeyHints(editorKeybindings.getKeys("tui.editor.cursorLineEnd")),
+			description: options.keybindings.getDisplayString("tui.editor.cursorLineEnd"),
 			keywords: ["move", "cursor", "line", "end"],
 			execute: options.moveCursorToLineEnd,
 		},

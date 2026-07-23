@@ -84,6 +84,26 @@ describe("buildHotkeysMarkdown", () => {
 		expect(render("Alt+Enter")).toContain(`| \`Alt+Enter/${formatKeyHint("ctrl+j")}\` | New line |`);
 		expect(render("")).toContain(`| \`Disabled/${formatKeyHint("ctrl+j")}\` | New line |`);
 	});
+	it("keeps fixed editor line navigation chords after remapping or unbinding without duplicate labels", () => {
+		const defaults = KeybindingsManager.inMemory();
+		defaults.setDisplayContext({ platform: "darwin" });
+		const defaultMarkdown = buildHotkeysMarkdown({ keybindings: defaults });
+
+		expect(defaultMarkdown).toContain("| `Home/⌃A` | Start of line |");
+		expect(defaultMarkdown).toContain("| `End/⌃E` | End of line |");
+		expect(defaultMarkdown).not.toContain("Home/⌃A/⌃A");
+		expect(defaultMarkdown).not.toContain("End/⌃E/⌃E");
+
+		const customized = KeybindingsManager.inMemory({
+			"tui.editor.cursorLineStart": "alt+a",
+			"tui.editor.cursorLineEnd": [],
+		});
+		customized.setDisplayContext({ platform: "darwin" });
+		const customizedMarkdown = buildHotkeysMarkdown({ keybindings: customized });
+
+		expect(customizedMarkdown).toContain("| `⌥A/⌃A` | Start of line |");
+		expect(customizedMarkdown).toContain("| `Disabled/⌃E` | End of line |");
+	});
 
 	it("uses injected Darwin labels while keeping fixed editor delete chords after remapping", () => {
 		const keybindings = KeybindingsManager.inMemory({
