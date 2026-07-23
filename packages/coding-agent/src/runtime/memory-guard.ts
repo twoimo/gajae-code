@@ -148,6 +148,16 @@ export class MemoryGuardHost {
 		};
 	}
 
+	updateInterval(ownerId: string, intervalMs: number): void {
+		if (!this.#registrations.has(ownerId)) return;
+		const normalized = normalizePositiveIntervalMs(intervalMs);
+		if (this.#registrations.get(ownerId) === normalized) return;
+		this.#registrations.set(ownerId, normalized);
+		if (this.#inProgressOwner) return;
+		this.#clearPendingSchedule();
+		this.#reconcileCurrentSchedule();
+	}
+
 	async runTick(generation = this.#generation, source: WorkOwner["source"] = "external"): Promise<void> {
 		if (this.#inProgressOwner || this.#registrations.size === 0) return;
 		const owner: WorkOwner = { generation, source };
