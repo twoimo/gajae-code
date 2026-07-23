@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "compiled-tui-dogfood-report",
   "pr": 2967,
-  "head": "3984ef66d0295afde4fc44a83f55af9bab90c8f3",
+  "head": "3984ef66cc38f67117c594177e09f35b4a0aadbc",
   "buildCommand": [
     "bun",
     "--cwd=packages/coding-agent",
