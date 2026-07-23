@@ -1,6 +1,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { type BuildSidecar, type CandidateAddon, verifyDefaultLanguageSet } from "./embed-guard";
+import {
+	type BuildSidecar,
+	type CandidateAddon,
+	missingRequiredFunctions,
+	verifyDefaultLanguageSet,
+} from "./embed-guard";
 
 export type EmbeddedAddonVariant = CandidateAddon["variant"];
 
@@ -35,8 +40,8 @@ export const embeddedAddon = null;
 
 const requiredAddonExports = ["nativeBuildInfo", "probeWindowsJobMemory"] as const;
 
-function missingRequiredAddonExports(bindings: Record<string, unknown>): string[] {
-	return requiredAddonExports.filter(symbol => typeof bindings[symbol] !== "function");
+export function missingRequiredAddonExports(bindings: Record<string, unknown>): string[] {
+	return missingRequiredFunctions(bindings, requiredAddonExports);
 }
 
 export function parseEmbedVariants(value: string | undefined): Set<EmbeddedAddonVariant> | null {
@@ -125,7 +130,8 @@ async function embedNative(): Promise<void> {
 	for (const candidate of candidates) {
 		const candidatePath = path.join(nativeDir, candidate.filename);
 		if (await fileExists(candidatePath)) {
-			const nativeBindings = require(candidatePath) as Record<string, unknown>;
+			const nativeBindings =
+				platformTag === hostPlatformTag ? (require(candidatePath) as Record<string, unknown>) : undefined;
 			await verifyDefaultLanguageSet(candidate, candidatePath, {
 				platformTag,
 				hostPlatformTag,
@@ -133,11 +139,13 @@ async function embedNative(): Promise<void> {
 				loadNativeAddon: () => nativeBindings as { nativeBuildInfo?: () => { languageSet?: string } },
 				warn: message => console.warn(message),
 			});
-			const missingExports = missingRequiredAddonExports(nativeBindings);
-			if (missingExports.length > 0) {
-				throw new Error(
-					`Embedded addon candidate ${candidate.filename} is missing required exports: ${missingExports.join(", ")}`,
-				);
+			if (nativeBindings) {
+				const missingExports = missingRequiredAddonExports(nativeBindings);
+				if (missingExports.length > 0) {
+					throw new Error(
+						`Embedded addon candidate ${candidate.filename} is missing required exports: ${missingExports.join(", ")}`,
+					);
+				}
 			}
 			available.push(candidate);
 		}
