@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "compiled-tui-dogfood-report",
   "pr": 2967,
-  "head": "5aa42562c02ecbc5255cfe99b16ae25190f1f121",
+  "head": "c4b7dd394d8bd8270aea19de8a5ebd5eb605d171",
   "buildCommand": [
     "bun",
     "--cwd=packages/coding-agent",
@@ -20,10 +20,10 @@
     ]
   ],
   "dogfoodInvocation": "compiled packages/coding-agent/dist/gjc in a 120x36 xterm-256color PTY for 8 seconds, then Ctrl-C shutdown",
-  "binarySha256": "955142c26b537f7cb55457dd52ba9b064cf2c3055c18e682d955eeeaf343e18d",
+  "binarySha256": "3aca5d62326bed65fd231b1a187d3afa81b56eae35fec1f88b60f1715037c73b",
   "rawAnsiArtifact": "packages/coding-agent/test/fixtures/tui/evidence/platform-shortcuts-real-product-dogfood.ansi.gz",
-  "rawAnsiSha256": "bd3c0f90074de8bb8f6fb36933a674fb4777a79f3b2ee87c384c508f2bc9b1ba",
-  "rawAnsiBytes": 504763,
+  "rawAnsiSha256": "9c575cc7bd980f79c28e835d06934e4c66d2ab2b4782657432049c7395c34535",
+  "rawAnsiBytes": 531722,
   "observations": {
     "composerPlaceholder": true,
     "flowPanel": true,
@@ -35,5 +35,5 @@
   },
   "excerpt": "⌃L model · ⇧⇥ reasoning · ⇥ complete · ⌃J newline | ⌃C clear",
   "result": "passed",
-  "evidenceCommitNote": "Product source and built binary correspond to source head 5aa42562; later commits only add or relocate immutable evidence files."
+  "evidenceCommitNote": "Product source, binary build, and PTY capture correspond to this report head; the following commit updates only immutable evidence bytes/report."
 }
