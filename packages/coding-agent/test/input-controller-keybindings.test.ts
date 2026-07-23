@@ -335,6 +335,9 @@ describe("InputController keybinding setup", () => {
 		expect(controller.actionRegistry.isAvailable("app.thinking.cycle")).toBe(true);
 		expect(controller.actionRegistry.isAvailable("app.model.cycleForward")).toBe(true);
 
+		expect(controller.actionRegistry.isAvailable("app.message.queue")).toBe(false);
+		ctx.editor.setText("queue this");
+		await Promise.resolve();
 		expect(controller.actionRegistry.isAvailable("app.message.queue")).toBe(true);
 	});
 

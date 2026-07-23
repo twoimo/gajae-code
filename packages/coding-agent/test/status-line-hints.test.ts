@@ -105,16 +105,16 @@ describe("status line action hints", () => {
 		streaming = true;
 		await Promise.resolve();
 		const streamingHints = getAvailableActionHints(registry, () => keybindings, 120, "composer");
-		expect(streamingHints.map(hint => hint.id)).toEqual(["app.message.sendNow"]);
+		expect(streamingHints.map(hint => hint.id)).toEqual(["app.message.sendNow", "app.message.queue"]);
 		expect(streamingHints[0]?.content).toContain(keybindings.getDisplayString("app.message.sendNow"));
 		expect(streamingHints.map(hint => hint.id)).not.toContain("app.commandPalette.open");
-		expect(streamingHints.map(hint => hint.id)).not.toContain("app.message.queue");
+		expect(streamingHints.map(hint => hint.id)).toContain("app.message.queue");
 		expect(streamingHints.map(hint => hint.id)).not.toContain("app.thinking.cycle");
 		expect(streamingHints.map(hint => hint.id)).not.toContain("app.model.select");
 		expect(streamingHints.map(hint => hint.id)).not.toContain("app.history.search");
 		const streamingStatus = component.render(120).join("\n");
 		expect(streamingStatus).toContain("Send message now");
-		expect(streamingStatus).not.toContain("Queue message");
+		expect(streamingStatus).toContain("Queue message");
 		expect(streamingStatus).not.toContain("Open command palette");
 		expect(visibleWidth(streamingStatus)).toBeLessThanOrEqual(120);
 	});
@@ -145,7 +145,7 @@ describe("status line action hints", () => {
 			getAvailableActionHints(registry, () => keybindings, firstHintWidth - 1, "composer", { platform: "darwin" }),
 		).toEqual([]);
 	});
-	it("always excludes composer-placeholder actions while preserving unrelated status actions", () => {
+	it("keeps persistent placeholder actions out of status while allowing an actionable queue hint", () => {
 		const registry = new ActionRegistry<void>({ context: undefined, showError: () => {} });
 		registerAction(registry, "app.message.queue", () => true);
 		registerAction(registry, "app.thinking.cycle", () => true);
@@ -156,7 +156,7 @@ describe("status line action hints", () => {
 		const hints = getAvailableActionHints(registry, () => KeybindingsManager.inMemory(), 240, "composer", {
 			platform: "darwin",
 		});
-		expect(hints.map(hint => hint.id)).toEqual(["app.plan.toggle"]);
+		expect(hints.map(hint => hint.id)).toEqual(["app.message.queue", "app.plan.toggle"]);
 	});
 
 	it("hides contextual hints without suppressing configured status segments", () => {

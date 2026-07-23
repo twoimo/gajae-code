@@ -151,12 +151,19 @@ export class InputController {
 			case "app.editor.external":
 				return Boolean(getEditorCommand());
 			case "app.message.followUp":
-			case "app.message.queue":
 				return (
 					this.ctx.session.isStreaming ||
 					this.ctx.session.isCompacting ||
 					this.ctx.session.isBashRunning ||
 					this.ctx.session.isEvalRunning
+				);
+			case "app.message.queue":
+				return (
+					this.ctx.editor.getText().trim().length > 0 &&
+					(this.ctx.session.isStreaming ||
+						this.ctx.session.isCompacting ||
+						this.ctx.session.isBashRunning ||
+						this.ctx.session.isEvalRunning)
 				);
 			case "app.message.dequeue":
 				return (
