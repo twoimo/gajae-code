@@ -5,6 +5,7 @@
 ### Fixed
 
 - Telegram notification topics now fence malformed successful `createForumTopic` responses per session endpoint, preventing repeated ambiguous topic creation while keeping explicit Bot API failures retryable.
+- macOS queue controls are now discoverable and platform-native throughout the composer, status/help surfaces, and queue editor: Option+Q queues while busy, Option+Up/Down selects queued messages, and the queue pane documents edit/remove/reorder controls. Added Windows-to-macOS default-shortcut parity coverage and terminal guidance for Option-as-Meta, enhanced protocols, and Control-key remaps.
 
 ## [0.11.8] - 2026-07-23
 ### Added

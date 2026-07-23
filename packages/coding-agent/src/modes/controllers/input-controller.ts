@@ -159,7 +159,9 @@ export class InputController {
 					this.ctx.session.isEvalRunning
 				);
 			case "app.message.dequeue":
-				return this.ctx.session.queuedMessageCount > 0;
+				return (
+					this.ctx.session.getQueuedMessageEntries().length > 0 || this.ctx.compactionQueuedMessages.length > 0
+				);
 			case "app.clipboard.copyPrompt":
 				return this.ctx.editor.getText().length > 0;
 			case "app.session.tree":
@@ -1037,6 +1039,14 @@ export class InputController {
 		};
 		const pane = new QueuePaneComponent(entries, {
 			selectedIndex,
+			formatKeyHint: key => this.ctx.keybindings.formatKeyHint(key),
+			onSelect: entry => {
+				const restored = this.#restoreQueuedMessageToEditor(entry);
+				close();
+				this.ctx.showStatus(
+					restored === 0 ? "Queued message is no longer available" : "Restored queued message to editor",
+				);
+			},
 			onDelete: (entry, index) => {
 				const deleted = this.ctx.session.removeQueuedMessageForEditing(entry.id) !== undefined;
 				const remaining = this.ctx.session.getQueuedMessageEntries();
@@ -1209,7 +1219,7 @@ export class InputController {
 				this.#restoreEditorFocus();
 				this.ctx.ui.requestRender();
 			},
-			{ selectedIndex },
+			{ selectedIndex, formatKeyHint: key => this.ctx.keybindings.formatKeyHint(key) },
 		);
 		this.ctx.editorContainer.clear();
 		this.ctx.editorContainer.addChild(selector);

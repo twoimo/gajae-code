@@ -1,4 +1,5 @@
 import { Container, matchesKey, type SelectItem, SelectList, Spacer, Text } from "@gajae-code/tui";
+import { formatKeyHint } from "../../config/keybindings";
 import type { QueuedMessageEditEntry } from "../../session/agent-session";
 import { getSelectListTheme, theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
@@ -23,7 +24,7 @@ export class QueuedMessageSelectorComponent extends Container {
 		onDelete: (entry: QueuedMessageEditEntry, selectedIndex: number) => void,
 		onMove: (entry: QueuedMessageEditEntry, selectedIndex: number, direction: QueuedMessageMoveDirection) => void,
 		onCancel: () => void,
-		options?: { selectedIndex?: number },
+		options?: { selectedIndex?: number; formatKeyHint?: (key: string) => string },
 	) {
 		super();
 
@@ -32,16 +33,24 @@ export class QueuedMessageSelectorComponent extends Container {
 		const byId = new Map(entries.map(entry => [entry.id, entry]));
 		this.#selectedIndex = Math.max(0, Math.min(options?.selectedIndex ?? 0, entries.length - 1));
 		this.#selectedEntry = entries[this.#selectedIndex];
+		const displayKey = options?.formatKeyHint ?? formatKeyHint;
+		const selectKeys = `${displayKey("alt+up")}/${displayKey("alt+down")}`;
+		const editKey = displayKey("enter");
+		const deleteKey = displayKey("delete");
+		const moveKeys = `${displayKey("ctrl+up")}/${displayKey("ctrl+down")}`;
+		const cancelKey = displayKey("escape");
+		const itemHint = `${editKey} edit · ${deleteKey} remove · ${moveKeys} move`;
+		const controlsHint = `${selectKeys} select · ${itemHint} · ${cancelKey} cancel`;
 		const items: SelectItem[] = entries.map((entry, index) => ({
 			value: entry.id,
 			label: `${entry.label} ${index + 1}`,
 			description: entry.text,
-			hint: "Enter edit · Del remove · Ctrl+↑/↓ move",
+			hint: itemHint,
 		}));
 
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.bold("Queued messages"), 1, 0));
-		this.addChild(new Text(theme.fg("muted", "Enter edit · Del remove · Ctrl+↑/↓ move · Esc cancel"), 1, 0));
+		this.addChild(new Text(theme.fg("muted", controlsHint), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 

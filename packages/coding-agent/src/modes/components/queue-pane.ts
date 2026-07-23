@@ -1,4 +1,5 @@
 import { Container, matchesKey, type SelectItem, SelectList, Spacer, Text } from "@gajae-code/tui";
+import { formatKeyHint } from "../../config/keybindings";
 import type { QueuedMessageEditEntry } from "../../session/agent-session";
 import { getSelectListTheme, theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
@@ -13,11 +14,14 @@ export class QueuePaneComponent extends Container {
 	#selectedIndex: number;
 	#onDelete: (entry: QueuedMessageEditEntry, index: number) => void;
 	#onMove: (entry: QueuedMessageEditEntry, index: number, direction: "up" | "down") => void;
+	#onSelect: (entry: QueuedMessageEditEntry) => void;
 
 	constructor(
 		entries: QueuedMessageEditEntry[],
 		options: {
 			selectedIndex?: number;
+			formatKeyHint?: (key: string) => string;
+			onSelect: (entry: QueuedMessageEditEntry) => void;
 			onDelete: (entry: QueuedMessageEditEntry, index: number) => void;
 			onMove: (entry: QueuedMessageEditEntry, index: number, direction: "up" | "down") => void;
 			onClose: () => void;
@@ -25,23 +29,36 @@ export class QueuePaneComponent extends Container {
 	) {
 		super();
 		this.#onDelete = options.onDelete;
+		this.#onSelect = options.onSelect;
 		this.#onMove = options.onMove;
 		this.#selectedIndex = Math.max(0, Math.min(options.selectedIndex ?? 0, entries.length - 1));
 		this.#selectedEntry = entries[this.#selectedIndex];
 		const byId = new Map(entries.map(entry => [entry.id, entry]));
+		const displayKey = options.formatKeyHint ?? formatKeyHint;
+		const selectKeys = `${displayKey("alt+up")}/${displayKey("alt+down")}`;
+		const editKey = displayKey("enter");
+		const deleteKey = displayKey("delete");
+		const moveKeys = `${displayKey("ctrl+up")}/${displayKey("ctrl+down")}`;
+		const closeKey = displayKey("escape");
+		const itemHint = `${editKey} edit · ${deleteKey} remove · ${moveKeys} move`;
+		const controlsHint = `${selectKeys} select · ${itemHint} · ${closeKey} close`;
 		const items: SelectItem[] = entries.map((entry, index) => ({
 			value: entry.id,
 			label: `${entry.label} ${index + 1}`,
 			description: entry.text,
-			hint: "Del remove · Ctrl+↑/↓ move",
+			hint: itemHint,
 		}));
 
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.bold("Message queue"), 1, 0));
-		this.addChild(new Text(theme.fg("muted", "Del remove · Ctrl+↑/↓ move · Esc close"), 1, 0));
+		this.addChild(new Text(theme.fg("muted", controlsHint), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.#selectList = new SelectList(items, MAX_VISIBLE_QUEUE_MESSAGES, getSelectListTheme());
+		this.#selectList.onSelect = item => {
+			const entry = byId.get(item.value);
+			if (entry) this.#onSelect(entry);
+		};
 		this.#selectList.onSelectionChange = item => {
 			const index = entries.findIndex(entry => entry.id === item.value);
 			this.#selectedIndex = index === -1 ? this.#selectedIndex : index;

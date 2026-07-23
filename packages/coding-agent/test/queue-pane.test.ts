@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from "bun:test";
+import { formatKeyHint } from "@gajae-code/coding-agent/config/keybindings";
 import { QueuePaneComponent } from "@gajae-code/coding-agent/modes/components/queue-pane";
 import { initTheme } from "@gajae-code/coding-agent/modes/theme/theme";
 
@@ -7,25 +8,61 @@ beforeAll(async () => {
 });
 
 describe("QueuePaneComponent", () => {
-	it("lists steering and follow-up entries and forwards reorder/remove controls", () => {
+	it("renders Darwin controls and forwards selection, edit, remove, move, and close", () => {
 		const deleted: string[] = [];
+		const edited: string[] = [];
 		const moved: Array<{ id: string; direction: string }> = [];
+		let closed = false;
 		const pane = new QueuePaneComponent(
 			[
 				{ id: "steer:1", text: "interrupt", mode: "steer", label: "Steer" },
 				{ id: "followUp:2", text: "later", mode: "followUp", label: "Queued" },
 			],
 			{
+				formatKeyHint: key => formatKeyHint(key, { platform: "darwin" }),
+				onSelect: entry => edited.push(entry.id),
 				onDelete: entry => deleted.push(entry.id),
 				onMove: (entry, _index, direction) => moved.push({ id: entry.id, direction }),
-				onClose: () => {},
+				onClose: () => {
+					closed = true;
+				},
 			},
 		);
 
-		expect(pane.render(80).join("\n")).toContain("Message queue");
-		pane.handleInput("\x1b[1;5B");
+		const rendered = pane.render(160).join("\n");
+		expect(rendered).toContain("Message queue");
+		expect(rendered).toContain("⌥↑/⌥↓ select");
+		expect(rendered).toContain("↩ edit");
+		expect(rendered).toContain("⌦ remove");
+		expect(rendered).toContain("⌃↑/⌃↓ move");
+		expect(rendered).toContain("⎋ close");
+
+		pane.handleInput("\x1b[1;3B");
+		pane.handleInput("\x1b[1;5A");
+		pane.handleInput("\n");
 		pane.handleInput("\x1b[3~");
-		expect(moved).toEqual([{ id: "steer:1", direction: "down" }]);
-		expect(deleted).toEqual(["steer:1"]);
+		pane.handleInput("\x1b");
+
+		expect(moved).toEqual([{ id: "followUp:2", direction: "up" }]);
+		expect(edited).toEqual(["followUp:2"]);
+		expect(deleted).toEqual(["followUp:2"]);
+		expect(closed).toBe(true);
+	});
+
+	it("renders textual controls off Darwin", () => {
+		const pane = new QueuePaneComponent([{ id: "steer:1", text: "interrupt", mode: "steer", label: "Steer" }], {
+			formatKeyHint: key => formatKeyHint(key, { platform: "linux" }),
+			onSelect: () => {},
+			onDelete: () => {},
+			onMove: () => {},
+			onClose: () => {},
+		});
+
+		const rendered = pane.render(160).join("\n");
+		expect(rendered).toContain("Alt+Up/Alt+Down select");
+		expect(rendered).toContain("Enter edit");
+		expect(rendered).toContain("Delete remove");
+		expect(rendered).toContain("Ctrl+Up/Ctrl+Down move");
+		expect(rendered).toContain("Esc close");
 	});
 });
