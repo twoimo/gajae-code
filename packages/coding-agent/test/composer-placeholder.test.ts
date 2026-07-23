@@ -11,12 +11,15 @@ describe("composer placeholder", () => {
 		],
 		[
 			"linux",
-			"Alt+Q: Queue (busy) · Shift+Tab: Thinking · Ctrl+L: Model · Ctrl+R: History · Shift+Enter/Ctrl+J: New line · Ctrl+C: Clear",
+			"Alt+Enter: Queue (busy) · Shift+Tab: Thinking · Ctrl+L: Model · Ctrl+R: History · Shift+Enter/Ctrl+J: New line · Ctrl+C: Clear",
 		],
 	] as const)("formats canonical idle shortcuts for %s", (platform, expected) => {
-		expect(
-			getComposerPlaceholder(KeybindingsManager.inMemory(), { platform }, { busy: false, busyPromptMode: "steer" }),
-		).toBe(`Type your message... ${expected}`);
+		const keybindings = KeybindingsManager.inMemory({
+			"app.message.queue": platform === "win32" || platform === "darwin" ? "alt+q" : "alt+enter",
+		});
+		expect(getComposerPlaceholder(keybindings, { platform }, { busy: false, busyPromptMode: "steer" })).toBe(
+			`Type your message... ${expected}`,
+		);
 	});
 
 	it("uses effective remapped discovery bindings", () => {

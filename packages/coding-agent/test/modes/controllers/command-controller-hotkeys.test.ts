@@ -105,7 +105,7 @@ describe("buildHotkeysMarkdown", () => {
 		expect(customizedMarkdown).toContain("| `Disabled/⌃E (Control+E)` | End of line |");
 	});
 	it("shows accessible Darwin queue controls from effective bindings", () => {
-		const defaults = KeybindingsManager.inMemory();
+		const defaults = KeybindingsManager.inMemory({ "app.message.queue": "alt+q" });
 		defaults.setDisplayContext({ platform: "darwin" });
 
 		const defaultMarkdown = buildHotkeysMarkdown({ keybindings: defaults });
@@ -231,7 +231,7 @@ describe("buildHelpMarkdown", () => {
 		expect(markdown).toContain("then use `⌃L (Control+L)/⇧⇥ (Shift+Tab)/↓ (Down)` and `↩ (Enter)/⇥ (Tab)`.");
 	});
 	it("exposes accessible Darwin queue controls from effective bindings", () => {
-		const defaults = KeybindingsManager.inMemory();
+		const defaults = KeybindingsManager.inMemory({ "app.message.queue": "alt+q" });
 		defaults.setDisplayContext({ platform: "darwin" });
 
 		const defaultMarkdown = buildHelpMarkdown(defaults);
