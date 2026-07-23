@@ -33,6 +33,12 @@ const stubContent = `
 export const embeddedAddon = null;
 `;
 
+const requiredAddonExports = ["nativeBuildInfo", "probeWindowsJobMemory"] as const;
+
+function missingRequiredAddonExports(bindings: Record<string, unknown>): string[] {
+	return requiredAddonExports.filter(symbol => typeof bindings[symbol] !== "function");
+}
+
 export function parseEmbedVariants(value: string | undefined): Set<EmbeddedAddonVariant> | null {
 	if (!value) {
 		return null;
@@ -119,14 +125,20 @@ async function embedNative(): Promise<void> {
 	for (const candidate of candidates) {
 		const candidatePath = path.join(nativeDir, candidate.filename);
 		if (await fileExists(candidatePath)) {
+			const nativeBindings = require(candidatePath) as Record<string, unknown>;
 			await verifyDefaultLanguageSet(candidate, candidatePath, {
 				platformTag,
 				hostPlatformTag,
 				readBuildSidecar,
-				loadNativeAddon: candidatePath =>
-					require(candidatePath) as { nativeBuildInfo?: () => { languageSet?: string } },
+				loadNativeAddon: () => nativeBindings as { nativeBuildInfo?: () => { languageSet?: string } },
 				warn: message => console.warn(message),
 			});
+			const missingExports = missingRequiredAddonExports(nativeBindings);
+			if (missingExports.length > 0) {
+				throw new Error(
+					`Embedded addon candidate ${candidate.filename} is missing required exports: ${missingExports.join(", ")}`,
+				);
+			}
 			available.push(candidate);
 		}
 	}

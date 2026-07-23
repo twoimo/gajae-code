@@ -279,10 +279,31 @@ jobs:
               pattern: pi-natives-${{ matrix.platform }}-${{ matrix.arch }}*
               path: packages/natives/native
               merge-multiple: true
+         - name: Verify memory-guard native loader export
+           run: bun test packages/natives/test/memory-guard-native.test.ts
+
          - name: Build release binary
            env:
               RELEASE_TARGETS: ${{ matrix.target_id }}
            run: bun run ci:release:build-binaries
+         - name: Smoke memory-guard native route (Windows)
+           if: runner.os == 'Windows'
+           shell: pwsh
+           run: |
+              $json = & "${{ matrix.binary_path }}" internal memory-guard-native-smoke --json
+              $data = $json | ConvertFrom-Json
+              if ($data.api -ne "memory_guard_windows_job_probe_v1") {
+                 throw "unexpected api: $($data.api)"
+              }
+              if ($data.source -ne "pi_natives") {
+                 throw "unexpected source: $($data.source)"
+              }
+              if ($data.result.platform -ne "win32") {
+                 throw "unexpected platform: $($data.result.platform)"
+              }
+              if (@("job_snapshot", "not_in_job", "api_error") -notcontains $data.result.kind) {
+                 throw "unexpected result kind: $($data.result.kind)"
+              }
          - name: Smoke release binary
            if: runner.os != 'Windows'
            run: |

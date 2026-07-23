@@ -2653,6 +2653,45 @@ export const SETTINGS_SCHEMA = {
 			description: "How often the resource GC sweeps browser tabs and stale screenshot directories.",
 		},
 	},
+	"memoryGuard.enabled": {
+		type: "boolean",
+		default: false,
+	},
+	"memoryGuard.checkIntervalMs": {
+		type: "number",
+		default: 30_000,
+		validate: (value: number) => Number.isFinite(value) && value > 0,
+	},
+	"memoryGuard.gcThresholdPercent": {
+		type: "number",
+		default: 70,
+		validate: (value: number) => Number.isFinite(value) && value >= 0 && value <= 100,
+	},
+	"memoryGuard.restartThresholdPercent": {
+		type: "number",
+		default: 85,
+		validate: (value: number) => Number.isFinite(value) && value >= 0 && value <= 100,
+	},
+	"memoryGuard.restartThresholdWindowMs": {
+		type: "number",
+		default: 90_000,
+		validate: (value: number) => Number.isFinite(value) && value > 0,
+	},
+	"memoryGuard.cooldownMs": {
+		type: "number",
+		default: 600_000,
+		validate: (value: number) => Number.isFinite(value) && value >= 0,
+	},
+	"memoryGuard.parentReserveMb": {
+		type: "number",
+		default: 1024,
+		validate: (value: number) => Number.isFinite(value) && value >= 0,
+	},
+	"memoryGuard.policyLimitMb": {
+		type: "number",
+		default: 0,
+		validate: (value: number) => Number.isFinite(value) && value >= 0,
+	},
 
 	"computer.enabled": {
 		type: "boolean",
@@ -3844,6 +3883,17 @@ export interface ShellMinimizerSettings {
 	maxCaptureBytes: number;
 }
 
+export interface MemoryGuardSettings {
+	enabled: boolean;
+	checkIntervalMs: number;
+	gcThresholdPercent: number;
+	restartThresholdPercent: number;
+	restartThresholdWindowMs: number;
+	cooldownMs: number;
+	parentReserveMb: number;
+	policyLimitMb: number;
+}
+
 export interface NotificationsSettings {
 	enabled: boolean;
 	telegram: {
@@ -3902,6 +3952,7 @@ export interface GroupTypeMap {
 	statusLine: StatusLineSettings;
 	thinkingBudgets: ThinkingBudgetsSettings;
 	stt: SttSettings;
+	memoryGuard: MemoryGuardSettings;
 	modelRoles: Record<string, ModelSelectorValue>;
 	modelTags: ModelTagsSettings;
 	cycleOrder: string[];

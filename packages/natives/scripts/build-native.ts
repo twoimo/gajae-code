@@ -171,20 +171,23 @@ export interface NativePublishDiagnostic {
 	await Bun.write(declarationPath, `${bindings.trimEnd()}\n${declaration}`);
 }
 
-async function validateRecoveryFsBindings(): Promise<void> {
+const requiredGeneratedBindingSymbols = [
+	"RecoveryFsRoot",
+	"RecoveryFsIdentity",
+	"RecoveryFsResult",
+	"NativePublishDiagnostic",
+	"NativePublishSyncFailure",
+	"openRecoveryFsRoot",
+	"repairOwnerOnlyPathSecurityExpected",
+	"verifyOwnerOnlyPathSecurityExpected",
+	"probeWindowsJobMemory",
+] as const;
+
+async function validateGeneratedBindings(): Promise<void> {
 	const bindings = await Bun.file(path.join(nativeDir, "index.d.ts")).text();
-	for (const symbol of [
-		"RecoveryFsRoot",
-		"RecoveryFsIdentity",
-		"RecoveryFsResult",
-		"NativePublishDiagnostic",
-		"NativePublishSyncFailure",
-		"openRecoveryFsRoot",
-		"repairOwnerOnlyPathSecurityExpected",
-		"verifyOwnerOnlyPathSecurityExpected",
-	]) {
+	for (const symbol of requiredGeneratedBindingSymbols) {
 		if (!bindings.includes(symbol)) {
-			throw new Error(`napi build did not generate the required recovery filesystem binding: ${symbol}`);
+			throw new Error(`napi build did not generate the required binding: ${symbol}`);
 		}
 	}
 }
@@ -282,7 +285,7 @@ try {
 
 	await generateEnumExports();
 	await ensurePublishDiagnosticDeclaration();
-	await validateRecoveryFsBindings();
+	await validateGeneratedBindings();
 
 	console.log("Build complete.");
 } finally {

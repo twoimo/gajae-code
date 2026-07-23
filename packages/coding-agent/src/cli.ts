@@ -7,6 +7,7 @@
 import "@gajae-code/utils/postmortem";
 import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
+import { loadNative as loadNativeBindings } from "../../natives/native/loader-state.js";
 import { runFixtureReport } from "./cli/fixture-report";
 import { admitManagedOwnerBeforeCli, completeManagedOwnerRecovery } from "./gjc-runtime/managed-owner-admission";
 import {
@@ -142,6 +143,46 @@ async function runChatDaemonInternalFastPath(argv: string[]): Promise<void> {
 	}
 	const { runChatDaemonInternal } = await import("./sdk/bus/chat-daemon-cli");
 	await runChatDaemonInternal(action === "discord-internal" ? "discord" : "slack", argv.slice(2));
+}
+
+type MemoryGuardNativeSmokeLoad = () => Record<string, unknown>;
+type WindowsJobMemoryProbeResult = Record<string, unknown> & { kind: string };
+type MemoryGuardNativeSmokeReceipt = {
+	api: "memory_guard_windows_job_probe_v1";
+	source: "pi_natives";
+	result: WindowsJobMemoryProbeResult;
+};
+
+export function isMemoryGuardNativeSmokeFastPath(argv: readonly string[]): boolean {
+	return (
+		argv.length === 3 && argv[0] === "internal" && argv[1] === "memory-guard-native-smoke" && argv[2] === "--json"
+	);
+}
+
+function parseWindowsJobMemoryProbeResult(value: unknown): WindowsJobMemoryProbeResult {
+	if (!value || typeof value !== "object") {
+		throw new Error("memory-guard-native-smoke: native probe returned a non-object result");
+	}
+	const result = value as Record<string, unknown>;
+	if (typeof result.kind !== "string") {
+		throw new Error("memory-guard-native-smoke: native probe result is missing a string kind tag");
+	}
+	return result as WindowsJobMemoryProbeResult;
+}
+
+export function runMemoryGuardNativeSmokeFastPath(
+	options: { loadNative?: MemoryGuardNativeSmokeLoad; writeStdout?: (text: string) => void } = {},
+): void {
+	const probe = (options.loadNative ?? loadNativeBindings)().probeWindowsJobMemory;
+	if (typeof probe !== "function") {
+		throw new Error("memory-guard-native-smoke: probeWindowsJobMemory export missing from native addon");
+	}
+	const receipt: MemoryGuardNativeSmokeReceipt = {
+		api: "memory_guard_windows_job_probe_v1",
+		source: "pi_natives",
+		result: parseWindowsJobMemoryProbeResult((probe as () => unknown)()),
+	};
+	(options.writeStdout ?? (text => process.stdout.write(text)))(`${JSON.stringify(receipt)}\n`);
 }
 
 function rootFixtureArg(argv: string[]): { present: boolean; id: string | undefined } {
@@ -351,6 +392,10 @@ export async function runCli(argv: string[]): Promise<void> {
 			return;
 		}
 		// Re-exec could not be spawned; fall through and run in this process.
+	}
+	if (isMemoryGuardNativeSmokeFastPath(argv)) {
+		runMemoryGuardNativeSmokeFastPath();
+		return;
 	}
 	if (isTmuxOwnerIsolationCliArgv(argv)) {
 		await runTmuxOwnerIsolationCliFromStdin();
