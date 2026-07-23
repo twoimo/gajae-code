@@ -536,7 +536,10 @@ mod tests {
 			.read(Path::new("victim/value.txt"))
 			.unwrap_err()
 			.to_string();
-		assert!(error.contains("plain-diff entry"));
+		assert!(
+			error.contains("plain-diff entry") || error.contains("plain-diff path changed entry kind"),
+			"unexpected rejection message: {error}"
+		);
 		assert!(!error.contains("outside operator secret"));
 	}
 

@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+
+- Keybinding configuration now keeps portable canonical text while runtime shortcut labels render platform-native, including concise MacBook glyphs in inline surfaces and glyph-plus-text accessibility labels in `/hotkeys` and `/help`; `/hotkeys` remains authoritative for effective remapped bindings.
 
 ## [0.11.8] - 2026-07-23
 
@@ -21,6 +24,12 @@
 - Ultragoal `complete-goals` no longer reports contradictory next actions when every incomplete story is `blocked` or `review_blocked`. Text and JSON now agree on `next-action=resolve-blockers` with blocked goal IDs/status; failed-only schedules surface `retry-failed`; `execute-goal` always includes a `goal_id` (#2903).
 - Bound each Python tool bridge bearer capability to one active session registration, reject non-canonical or empty bearer credentials before lookup, and rotate authority whenever a retained session replaces its kernel.
 - Deep Interview now scopes provider-facing `ask` metadata to the persisted workflow stage, including after durable session resume: Round 0 advertises only the locked `intent_contract` branch, later rounds advertise ordinary and `intent_review` branches, foreign workflow gates cannot seed recorder state, and wire-valid empty positive-round reviews reach canonical Zod diagnostics while malformed authority remains fail-closed.
+- Bounded docs.rs rustdoc downloads, legacy cache reads, and gzip expansion before parsing or caching; transport-level content encoding is disabled and rejected so Bun cannot decompress outside the explicit output guard.
+
+### Added
+
+- Added SDK v3 prompt reconciliation through `turn.prompt_status` with caller-supplied `clientRef` correlation, bounded live-session lifecycle retention, reconnect-safe lookup, and explicit ordered non-replay semantics for `turn.prompt` (#2930).
+- Added `models.profiles.list` discovery of the effective built-in plus `models.yml` profile catalog, exact-ID pre-spawn validation that reloads host configuration for each lifecycle request, and structured `unknown_model_profile` / `model_profile_registry_error` details across lifecycle startup failures (#2931).
 
 ## [0.11.7] - 2026-07-22
 ### Added
@@ -28,6 +37,7 @@
 - `/btw` now opens an ephemeral multi-turn side chat: plain text continues the side thread until Esc returns to the main chat, while visible text-only context stays outside the main transcript and session observability/debug hooks and is scrubbed synchronously on close or abort.
 - Added `statusLine.showActionHints` (default: `true`) to hide contextual action hints while retaining configured status-line segments.
 - `skill_discovery` empty results now carry a `notice` when discovery config caused the emptiness — naming the exact disabled setting (`skills.enabled`, `skills.enablePiProject`, or `skills.enablePiUser`) and the `gjc config set` command to enable it. Previously a disabled config was indistinguishable from "no skills exist", silently hiding freshly written user/project skills.
+- `generate_image` now supports Alibaba Bailian (Token Plan) `wan2.7-image` as an image provider: set `providers.image` to `alibaba` (or let auto-detect find `ALIBABA_TOKEN_PLAN_API_KEY` / a registered `alibaba-token-plan` key), override the model with `providers.imageModel` (e.g. `wan2.7-image-pro`). Short-lived OSS result URLs are downloaded immediately, and image editing works via input images.
 
 ### Fixed
 - Telegram `/session_recent` now retries one concurrently appended managed transcript and omits only candidates that remain unstable, preserving independently verified recent-session rows.
