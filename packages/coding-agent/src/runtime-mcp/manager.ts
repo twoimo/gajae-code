@@ -6,12 +6,12 @@
  */
 import * as path from "node:path";
 import * as url from "node:url";
-import type { TSchema } from "@gajae-code/ai";
+import { isCanonicalMCPOAuthBinding, resolveMCPOAuthResourceOrigin, type TSchema } from "@gajae-code/ai";
 import { logger } from "@gajae-code/utils";
 import type { SourceMeta } from "../capability/types";
 import * as configValue from "../config/resolve-config-value";
 import type { CustomTool } from "../extensibility/custom-tools/types";
-import type { AuthStorage } from "../session/auth-storage";
+import type { AuthStorage, OAuthCredential } from "../session/auth-storage";
 import {
 	connectToServer,
 	disconnectServer,
@@ -27,7 +27,6 @@ import {
 	unsubscribeFromResources,
 } from "./client";
 import { loadAllMCPConfigs, validateServerConfig } from "./config";
-import { refreshMCPOAuthToken } from "./oauth-flow";
 import type { MCPToolDetails } from "./tool-bridge";
 import { DeferredMCPTool, MCPTool } from "./tool-bridge";
 import type { MCPToolCache } from "./tool-cache";
@@ -1469,64 +1468,63 @@ export class MCPManager {
 		let resolved: MCPServerConfig = { ...config };
 
 		const auth = config.auth;
-		if (auth?.type === "oauth" && auth.credentialId && this.#authStorage) {
+		if (auth?.type === "oauth") {
+			if (!auth.credentialId || !this.#authStorage || (config.type !== "http" && config.type !== "sse")) {
+				throw new MCPExpectedFailure();
+			}
 			const credentialId = auth.credentialId;
 			let credential = this.#authStorage.get(credentialId);
-			if (credential?.type === "oauth") {
-				// Proactive refresh: 5-minute buffer before expiry
-				// Force refresh: on 401/403 auth errors (revoked tokens, clock skew, missing expires)
-				const REFRESH_BUFFER_MS = 5 * 60_000;
-				const shouldRefresh =
-					forceRefresh || (credential.expires && Date.now() >= credential.expires - REFRESH_BUFFER_MS);
-				let refreshedCredential:
-					| {
-							type: "oauth";
-							access: string;
-							refresh: string;
-							expires: number;
-					  }
-					| undefined;
-				if (shouldRefresh && credential.refresh && auth.tokenUrl) {
-					try {
-						const refreshed = await refreshMCPOAuthToken(
-							auth.tokenUrl,
-							credential.refresh,
-							auth.clientId,
-							auth.clientSecret,
-						);
-						refreshedCredential = { type: "oauth", ...refreshed };
-					} catch (error) {
-						if (!(error instanceof MCPExpectedFailure)) throw error;
-						if (this.#toolsOnly) {
-							logger.debug("MCP OAuth refresh failed");
-						} else {
-							logger.warn("MCP OAuth refresh failed, using existing token");
-						}
+			const binding = credential?.type === "oauth" ? credential.mcpBinding : undefined;
+			const endpointOrigin = resolveMCPOAuthResourceOrigin(config.url);
+			if (
+				credential?.type !== "oauth" ||
+				!binding ||
+				!isCanonicalMCPOAuthBinding(binding) ||
+				binding.resourceOrigin !== endpointOrigin ||
+				(auth.tokenUrl !== undefined && auth.tokenUrl !== binding.tokenEndpoint)
+			) {
+				throw new MCPExpectedFailure();
+			}
+
+			// Proactive refresh: 5-minute buffer before expiry
+			// Force refresh: on 401/403 auth errors (revoked tokens, clock skew, missing expires)
+			const REFRESH_BUFFER_MS = 5 * 60_000;
+			const shouldRefresh =
+				forceRefresh || (credential.expires && Date.now() >= credential.expires - REFRESH_BUFFER_MS);
+			if (shouldRefresh && credential.refresh) {
+				let refreshedCredential: OAuthCredential | undefined;
+				try {
+					refreshedCredential = await this.#authStorage.forceRefreshOAuthCredential(credentialId, credential, {
+						clientId: auth.clientId,
+						clientSecret: auth.clientSecret,
+					});
+				} catch {
+					if (forceRefresh) throw new MCPExpectedFailure();
+					if (this.#toolsOnly) {
+						logger.debug("MCP OAuth refresh failed");
+					} else {
+						logger.warn("MCP OAuth refresh failed, using existing token");
 					}
 				}
 				if (refreshedCredential) {
-					await this.#authStorage.set(credentialId, refreshedCredential);
+					const refreshedBinding = refreshedCredential.mcpBinding;
+					if (
+						!refreshedBinding ||
+						refreshedBinding.resourceOrigin !== binding.resourceOrigin ||
+						refreshedBinding.tokenEndpoint !== binding.tokenEndpoint
+					) {
+						throw new MCPExpectedFailure();
+					}
 					credential = refreshedCredential;
 				}
-
-				if (resolved.type === "http" || resolved.type === "sse") {
-					resolved = {
-						...resolved,
-						headers: {
-							...resolved.headers,
-							Authorization: `Bearer ${credential.access}`,
-						},
-					};
-				} else {
-					resolved = {
-						...resolved,
-						env: {
-							...resolved.env,
-							OAUTH_ACCESS_TOKEN: credential.access,
-						},
-					};
-				}
 			}
+			resolved = {
+				...config,
+				headers: {
+					...config.headers,
+					Authorization: `Bearer ${credential.access}`,
+				},
+			};
 		}
 		if (this.#toolsOnly && resolved.type === "stdio") {
 			resolved = { ...resolved, noInheritEnv: true };
