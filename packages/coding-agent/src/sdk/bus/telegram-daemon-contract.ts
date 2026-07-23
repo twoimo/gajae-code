@@ -38,5 +38,7 @@ export const NOTIFICATION_PROTOCOL_VERSION = 3;
  * Generation 25 adds startup dead-root prune + leak-artifact self-heal
  * on TelegramNotificationDaemon.run (#2958). Generation 26 adds bounded reload
  * cooldown and lazy Telegram topic lifecycle safeguards (#2956, #2960, #2984).
+ * Generation 27 makes Telegram tool-activity delivery explicitly opt-in and
+ * reloads live predecessors that still carry the former default-on policy.
  */
-export const DAEMON_GENERATION = 26;
+export const DAEMON_GENERATION = 27;

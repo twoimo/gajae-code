@@ -2217,11 +2217,10 @@ describe("telegram daemon", () => {
 			}),
 		);
 	}
-	test("keeps wire protocol 3 while generation 26 adds bounded reload and lazy topic lifecycle safeguards", () => {
+	test("keeps wire protocol 3 while generation 27 adds opt-in tool activity", () => {
 		expect(NOTIFICATION_PROTOCOL_VERSION).toBe(3);
-		// Generation 25 preserves #2958 startup dead-root prune + leak-artifact
-		// self-heal; generation 26 adds #2956/#2960 bounded reload and lazy topics.
-		expect(DAEMON_GENERATION).toBe(26);
+		// Generation 27 reloads live predecessors that retain default-on tool activity.
+		expect(DAEMON_GENERATION).toBe(27);
 	});
 
 	test("#2028 reloads a fully-provenanced owner without a generation", async () => {
@@ -8537,6 +8536,7 @@ function recoveryDaemon(
 		chatId,
 		botApi: bot,
 		WebSocketImpl: FakeWs as any,
+		toolActivity: { enabled: true },
 		fs: fsImpl,
 	});
 }
@@ -12771,6 +12771,154 @@ describe("Telegram tool activity capability and routing", () => {
 		expect(threadedFrames.has("tool_activity")).toBe(true);
 		expect(threadedFrames.has("reasoning_summary")).toBe(true);
 	});
+	test("omitted daemon option is fail-closed for tool activity", async () => {
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: settings(tempAgentDir()),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+		});
+		const session = richSession();
+		await daemon.handleSessionMessage(session, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "important-session",
+			branch: "main",
+		});
+		expect(bot.calls.some(call => JSON.stringify(call.body).includes("important-session"))).toBe(true);
+		const importantCallCount = bot.calls.length;
+
+		await daemon.handleSessionMessage(session, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "omitted-option",
+			toolName: "bash",
+			phase: "started",
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "omitted-option",
+			toolName: "bash",
+			phase: "completed",
+		});
+
+		await daemon.handleSessionMessage(session, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "malformed-omitted-option",
+		});
+		expect(bot.calls).toHaveLength(importantCallCount);
+	});
+	test("rejects malformed tool activity even when activity is enabled", async () => {
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: settings(tempAgentDir()),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			toolActivity: { enabled: true },
+		});
+		const session = richSession();
+		await daemon.handleSessionMessage(session, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "important-session",
+			branch: "main",
+		});
+		const importantCallCount = bot.calls.length;
+
+		await daemon.handleSessionMessage(session, {
+			type: "tool_activity",
+			sessionId: "S",
+			toolCallId: "malformed-enabled",
+		});
+
+		expect(bot.calls).toHaveLength(importantCallCount);
+	});
+	test("explicit off suppresses all noisy tool bubbles without suppressing session, assistant, or ask notifications", async () => {
+		const agentDir = tempAgentDir();
+		const bot = new FakeBotApi();
+		const daemon = new TelegramNotificationDaemon({
+			settings: settings(agentDir),
+			ownerId: "owner",
+			botToken: "tok",
+			chatId: "42",
+			botApi: bot,
+			toolActivity: { enabled: false },
+		});
+		const session = richSession();
+		await daemon.handleSessionMessage(session, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "important-session",
+			branch: "main",
+		});
+		expect(
+			bot.calls.some(call => call.method === "sendMessage" && String(call.body.text).includes("important-session")),
+		).toBe(true);
+
+		const callsBeforeTools = bot.calls.length;
+		for (const toolName of ["bash", "read", "task", "subagent"]) {
+			await daemon.handleSessionMessage(session, {
+				type: "tool_activity",
+				sessionId: "S",
+				toolCallId: `disabled-${toolName}`,
+				toolName,
+				phase: "started",
+			});
+			await daemon.handleSessionMessage(session, {
+				type: "tool_activity",
+				sessionId: "S",
+				toolCallId: `disabled-${toolName}`,
+				toolName,
+				phase: "completed",
+			});
+			await daemon.handleSessionMessage(session, {
+				type: "tool_activity",
+				sessionId: "S",
+				toolCallId: `disabled-failed-${toolName}`,
+				toolName,
+				phase: "failed",
+			});
+		}
+		expect(bot.calls).toHaveLength(callsBeforeTools);
+
+		await daemon.handleSessionMessage(session, {
+			type: "turn_stream",
+			sessionId: "S",
+			phase: "live",
+			text: "Important assistant",
+			messageRef: "important-answer",
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "turn_stream",
+			sessionId: "S",
+			phase: "finalized",
+			finalAnswer: true,
+			text: "Important assistant answer",
+			messageRef: "important-answer",
+		});
+		await daemon.handleSessionMessage(session, {
+			type: "action_needed",
+			sessionId: "S",
+			kind: "ask",
+			id: "important-ask",
+			question: "Important choice?",
+			options: ["Continue"],
+		});
+		expect(
+			bot.calls.some(
+				call =>
+					(call.method === "sendMessage" || call.method === "editMessageText") &&
+					String(call.body.text).includes("Important assistant"),
+			),
+		).toBe(true);
+		expect(bot.calls.some(call => JSON.stringify(call.body).includes("Important choice?"))).toBe(true);
+	});
 	test("/toolactivity off persists, suppresses new tools, and still terminalizes a visible start", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
@@ -12906,9 +13054,10 @@ describe("Telegram tool activity capability and routing", () => {
 		).toBe(true);
 	});
 
-	test("/toolactivity fails closed for trailing input and foreign bot suffixes", async () => {
+	test("/toolactivity rejects invalid input and foreign suffixes while addressed on/off persists and reports status", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(settings(agentDir), agentDir);
+		s.set("notifications.telegram.toolActivity.enabled", true);
 		const bot = new FakeBotApi();
 		const daemon = new TelegramNotificationDaemon({
 			settings: s,
@@ -12934,6 +13083,29 @@ describe("Telegram tool activity capability and routing", () => {
 		});
 		expect(s.get("notifications.telegram.toolActivity.enabled")).toBe(true);
 		expect(bot.calls).toHaveLength(0);
+
+		await daemon.handleTelegramUpdate({
+			update_id: 963,
+			message: {
+				chat: { id: 42, type: "private" },
+				text: "/toolactivity@GajaeCodeBot off",
+				message_id: 3,
+			},
+		});
+		expect(s.get("notifications.telegram.toolActivity.enabled")).toBe(false);
+		expect(bot.calls.some(call => call.body.text === "Tool activity: off")).toBe(true);
+
+		bot.calls = [];
+		await daemon.handleTelegramUpdate({
+			update_id: 964,
+			message: {
+				chat: { id: 42, type: "private" },
+				text: "/TOOLACTIVITY@GAJAECODEBOT ON",
+				message_id: 4,
+			},
+		});
+		expect(s.get("notifications.telegram.toolActivity.enabled")).toBe(true);
+		expect(bot.calls.some(call => call.body.text === "Tool activity: on")).toBe(true);
 	});
 
 	test("/toolactivity off removes pending-topic and rate-limited tool starts", async () => {
@@ -13089,6 +13261,7 @@ describe("Telegram tool activity capability and routing", () => {
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
+			toolActivity: { enabled: true },
 			WebSocketImpl: FakeWs as any,
 		});
 		const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
@@ -13192,6 +13365,7 @@ describe("Telegram tool activity capability and routing", () => {
 			botToken: "tok",
 			chatId: "42",
 			botApi: bot,
+			toolActivity: { enabled: true },
 			WebSocketImpl: FakeWs as any,
 		});
 		const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
