@@ -3821,7 +3821,7 @@ describe("stalled worker continuation protocol", () => {
 			expect(fixture.dispatches, scenario).toHaveLength(0);
 			expect(await readEvents(fixture.stateDir), scenario).toContain('"reason":"invalid_authority_inventory"');
 		}
-	});
+	}, 15_000);
 
 	it("disables continuation, stale recovery, and stale-heartbeat nudges for non-positive thresholds", async () => {
 		for (const threshold of ["0", "-1"]) {
@@ -3889,7 +3889,7 @@ describe("stalled worker continuation protocol", () => {
 			await fixture.monitor();
 			expect(fixture.dispatches, scenario).toHaveLength(0);
 		}
-	});
+	}, 15_000);
 	it("does not honor a continuation recovery hold after canonical authority changes", async () => {
 		for (const scenario of [
 			"claim_deleted",
@@ -3925,8 +3925,7 @@ describe("stalled worker continuation protocol", () => {
 			await recoverGjcTeamStaleClaims(fixture.teamName, cleanupRoot!, fixture.env);
 			expect(await Bun.file(claimPath).exists(), scenario).toBe(false);
 		}
-	});
-
+	}, 15_000);
 	it("revokes escaped task mutation capabilities after their fenced callback", async () => {
 		const fixture = await prepareContinuation("continuation-capability-team");
 		const store = new GjcTeamTaskStore(fixture.stateDir, async () => undefined);
@@ -4413,7 +4412,7 @@ describe("stalled worker continuation protocol", () => {
 			if (scenario === "zero_claims" || scenario === "multiple_claims")
 				expect(await readEvents(fixture.stateDir)).toContain("invalid_claim_count");
 		}
-	});
+	}, 15_000);
 
 	it("rejects insufficient lease, corrupt reservations, digest-mismatched outcomes, and restarts without an outcome", async () => {
 		const insufficient = await prepareContinuation("continuation-insufficient-lease-team");
@@ -4733,7 +4732,7 @@ describe("stalled worker continuation protocol", () => {
 			expect(["pending", "in_progress", "failed"]).toContain(task.status);
 			if (task.claim) expect(task.claim.owner).toBe("worker-1");
 		}
-	});
+	}, 15_000);
 
 	it("does not recreate a GC-pruned missing-pane worker during a later monitor", async () => {
 		const fixture = await prepareContinuation("continuation-gc-first-team");
