@@ -180,35 +180,34 @@ async function readMemoryCounter(file: string): Promise<number | null> {
 	}
 }
 
-async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): Promise<MemoryPressureSnapshot | null> {
-	let cgroup: string;
-	let mountInfo: string;
-	try {
-		[cgroup, mountInfo] = await Promise.all([
-			fs.readFile("/proc/self/cgroup", "utf8"),
-			fs.readFile("/proc/self/mountinfo", "utf8"),
-		]);
-	} catch {
-		return null;
-	}
+function parseCgroupEntry(line: string): [string, string, string] | null {
+	const first = line.indexOf(":");
+	const second = first < 0 ? -1 : line.indexOf(":", first + 1);
+	if (first < 0 || second < 0) return null;
+	return [line.slice(0, first), line.slice(first + 1, second), line.slice(second + 1)];
+}
 
-	const entries = cgroup.split("\n").map(line => line.split(":"));
-	const v2Membership = entries.find(parts => parts[0] === "0" && parts[1] === "")?.[2];
-	const v1Membership = entries.find(parts => parts[1]?.split(",").includes("memory"))?.[2];
-	const fsType = v2Membership ? "cgroup2" : v1Membership ? "cgroup" : null;
-	const membership = v2Membership ?? v1Membership;
-	if (!fsType || !membership) return null;
+async function sampleLinuxCgroupHierarchy(
+	mountInfo: string,
+	membership: string,
+	fsType: "cgroup" | "cgroup2",
+	hostBytes: number,
+	parentBytes: number,
+): Promise<MemoryPressureSnapshot | null> {
 	const directory = resolveCgroupDirectory(mountInfo, membership, fsType);
 	if (!directory) return null;
-
 	const limitName = fsType === "cgroup2" ? "memory.max" : "memory.limit_in_bytes";
 	const usageName = fsType === "cgroup2" ? "memory.current" : "memory.usage_in_bytes";
+	const initialUsage = await readMemoryCounter(path.join(directory, usageName));
+	const initialLimit = await readMemoryCounter(path.join(directory, limitName));
+	if (initialUsage === null && initialLimit === null) return null;
+
 	let hardCapBytes = hostBytes;
-	let totalUsageBytes = (await readMemoryCounter(path.join(directory, usageName))) ?? parentBytes;
+	let totalUsageBytes = initialUsage ?? parentBytes;
 	let current = directory;
 	while (true) {
 		const candidate = await readMemoryCounter(path.join(current, limitName));
-		if (candidate !== null && candidate < hardCapBytes) {
+		if (candidate !== null && candidate <= hardCapBytes) {
 			hardCapBytes = candidate;
 			totalUsageBytes = (await readMemoryCounter(path.join(current, usageName))) ?? totalUsageBytes;
 		}
@@ -224,15 +223,60 @@ async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): 
 	};
 }
 
+async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): Promise<MemoryPressureSnapshot | null> {
+	let cgroup: string;
+	let mountInfo: string;
+	try {
+		[cgroup, mountInfo] = await Promise.all([
+			fs.readFile("/proc/self/cgroup", "utf8"),
+			fs.readFile("/proc/self/mountinfo", "utf8"),
+		]);
+	} catch {
+		return null;
+	}
+
+	const entries = cgroup
+		.split("\n")
+		.map(parseCgroupEntry)
+		.filter((entry): entry is [string, string, string] => entry !== null);
+	const v2Membership = entries.find(parts => parts[0] === "0" && parts[1] === "")?.[2];
+	const v1Membership = entries.find(parts => parts[1].split(",").includes("memory"))?.[2];
+	if (v2Membership) {
+		const snapshot = await sampleLinuxCgroupHierarchy(mountInfo, v2Membership, "cgroup2", hostBytes, parentBytes);
+		if (snapshot) return snapshot;
+	}
+	if (v1Membership) {
+		return sampleLinuxCgroupHierarchy(mountInfo, v1Membership, "cgroup", hostBytes, parentBytes);
+	}
+	return null;
+}
+
 function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryPressureSnapshot | null {
 	const result = probeWindowsJobMemory();
 	if (result.kind !== "job_snapshot") return null;
-	const limit = Number(result.jobMemoryLimitBytes);
-	const usage = Number(result.jobMemoryUsedBytes);
-	if (!Number.isSafeInteger(limit) || limit <= 0 || !Number.isSafeInteger(usage) || usage < 0) return null;
+	const candidates = [
+		{
+			limit: Number(result.jobMemoryLimitBytes),
+			usage: Number(result.jobMemoryUsedBytes),
+		},
+		{
+			limit: Number(result.processMemoryLimitBytes),
+			usage: Number(result.processPrivateUsageBytes),
+		},
+	].filter(
+		(candidate): candidate is { limit: number; usage: number } =>
+			Number.isSafeInteger(candidate.limit) &&
+			candidate.limit > 0 &&
+			Number.isSafeInteger(candidate.usage) &&
+			candidate.usage >= 0,
+	);
+	if (candidates.length === 0) return null;
+	const pressured = candidates.reduce((selected, candidate) =>
+		candidate.usage / candidate.limit > selected.usage / selected.limit ? candidate : selected,
+	);
 	return {
-		hardCapBytes: Math.min(hostBytes, limit),
-		totalUsageBytes: Math.max(parentBytes, usage),
+		hardCapBytes: Math.min(hostBytes, pressured.limit),
+		totalUsageBytes: Math.max(parentBytes, pressured.usage),
 		parentBytes,
 		source: "windows_job",
 	};
