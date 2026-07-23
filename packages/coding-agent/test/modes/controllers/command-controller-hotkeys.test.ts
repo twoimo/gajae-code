@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { formatKeyHint, KeybindingsManager } from "../../../src/config/keybindings";
+import { formatAccessibleKeyHint, KeybindingsManager } from "../../../src/config/keybindings";
 import { buildHelpMarkdown } from "../../../src/modes/controllers/command-controller";
 import { buildHotkeysMarkdown, formatHotkeyMarkdownCode } from "../../../src/modes/utils/hotkeys-markdown";
 
-const formatFixedKey = (key: string): string => formatKeyHint(key);
+const formatFixedKey = (key: string): string => formatAccessibleKeyHint(key);
 
 describe("buildHotkeysMarkdown", () => {
 	it("emits flush-left markdown and uses the configured temporary selector hint", () => {
@@ -44,8 +44,8 @@ describe("buildHotkeysMarkdown", () => {
 		};
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
-				formatKeyHint: formatFixedKey,
-				getDisplayString(action) {
+				formatAccessibleKeyHint: formatFixedKey,
+				getAccessibleDisplayString(action) {
 					return displayStrings[action] ?? "Disabled";
 				},
 			},
@@ -56,7 +56,7 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `⌃⇧P` | Copy whole prompt |");
 		expect(markdown).toContain("| `↩` | Send / queue while busy |");
 		expect(markdown).toContain("| `⌥↩` | Queue message for next turn |");
-		expect(markdown).toContain(`| \`⇧↩/${formatKeyHint("ctrl+j")}\` | New line |`);
+		expect(markdown).toContain(`| \`⇧↩/${formatFixedKey("ctrl+j")}\` | New line |`);
 		expect(markdown).toContain("| `⌃⇧L` | Select model (temporary) |");
 		expect(markdown).toContain("| `⌃L` | Select default model |");
 		expect(markdown).toContain("| `⌥M` | Toggle plan mode |");
@@ -74,25 +74,25 @@ describe("buildHotkeysMarkdown", () => {
 		const render = (newLine: string): string =>
 			buildHotkeysMarkdown({
 				keybindings: {
-					formatKeyHint: formatFixedKey,
-					getDisplayString(action) {
+					formatAccessibleKeyHint: formatFixedKey,
+					getAccessibleDisplayString(action) {
 						return action === "tui.input.newLine" ? newLine : "Ctrl+K";
 					},
 				},
 			});
 
-		expect(render("Alt+Enter")).toContain(`| \`Alt+Enter/${formatKeyHint("ctrl+j")}\` | New line |`);
-		expect(render("")).toContain(`| \`Disabled/${formatKeyHint("ctrl+j")}\` | New line |`);
+		expect(render("Alt+Enter")).toContain(`| \`Alt+Enter/${formatFixedKey("ctrl+j")}\` | New line |`);
+		expect(render("")).toContain(`| \`Disabled/${formatFixedKey("ctrl+j")}\` | New line |`);
 	});
 	it("keeps fixed editor line navigation chords after remapping or unbinding without duplicate labels", () => {
 		const defaults = KeybindingsManager.inMemory();
 		defaults.setDisplayContext({ platform: "darwin" });
 		const defaultMarkdown = buildHotkeysMarkdown({ keybindings: defaults });
 
-		expect(defaultMarkdown).toContain("| `Home/⌃A` | Start of line |");
-		expect(defaultMarkdown).toContain("| `End/⌃E` | End of line |");
-		expect(defaultMarkdown).not.toContain("Home/⌃A/⌃A");
-		expect(defaultMarkdown).not.toContain("End/⌃E/⌃E");
+		expect(defaultMarkdown).toContain("| `Home/⌃A (Control+A)` | Start of line |");
+		expect(defaultMarkdown).toContain("| `End/⌃E (Control+E)` | End of line |");
+		expect(defaultMarkdown).not.toContain("⌃A (Control+A)/⌃A (Control+A)");
+		expect(defaultMarkdown).not.toContain("⌃E (Control+E)/⌃E (Control+E)");
 
 		const customized = KeybindingsManager.inMemory({
 			"tui.editor.cursorLineStart": "alt+a",
@@ -101,8 +101,8 @@ describe("buildHotkeysMarkdown", () => {
 		customized.setDisplayContext({ platform: "darwin" });
 		const customizedMarkdown = buildHotkeysMarkdown({ keybindings: customized });
 
-		expect(customizedMarkdown).toContain("| `⌥A/⌃A` | Start of line |");
-		expect(customizedMarkdown).toContain("| `Disabled/⌃E` | End of line |");
+		expect(customizedMarkdown).toContain("| `⌥A (Option+A)/⌃A (Control+A)` | Start of line |");
+		expect(customizedMarkdown).toContain("| `Disabled/⌃E (Control+E)` | End of line |");
 	});
 
 	it("uses injected Darwin labels while keeping fixed editor delete chords after remapping", () => {
@@ -115,19 +115,31 @@ describe("buildHotkeysMarkdown", () => {
 
 		const markdown = buildHotkeysMarkdown({ keybindings });
 
-		expect(markdown).toContain("| `⇧↩/⌃J` | New line |");
-		expect(markdown).toContain("| `⌃W/⌥⌫` | Delete word backwards |");
-		expect(markdown).toContain("| `⌃U` | Delete to start of line |");
-		expect(markdown).toContain("| `⌃K` | Delete to end of line |");
-		expect(markdown).not.toContain("| `⌃X` | Delete word backwards |");
-		expect(markdown).not.toContain("| `⌃Y` | Delete to start of line |");
-		expect(markdown).not.toContain("| `⌃Z` | Delete to end of line |");
+		expect(markdown).toContain("| `⇧↩ (Shift+Enter)/⌃J (Control+J)` | New line |");
+		expect(markdown).toContain("| `⌃W (Control+W)/⌥⌫ (Option+Backspace)` | Delete word backwards |");
+		expect(markdown).toContain("| `⌃U (Control+U)` | Delete to start of line |");
+		expect(markdown).toContain("| `⌃K (Control+K)` | Delete to end of line |");
+		expect(markdown).not.toContain("| `⌃X (Control+X)` | Delete word backwards |");
+		expect(markdown).not.toContain("| `⌃Y (Control+Y)` | Delete to start of line |");
+		expect(markdown).not.toContain("| `⌃Z (Control+Z)` | Delete to end of line |");
+	});
+	it("renders configured and fixed Darwin chords with accessible dual labels", () => {
+		const keybindings = KeybindingsManager.inMemory({
+			"app.model.select": ["ctrl+l", "shift+tab"],
+		});
+		keybindings.setDisplayContext({ platform: "darwin" });
+
+		const markdown = buildHotkeysMarkdown({ keybindings });
+
+		expect(markdown).toContain("| `⌃L (Control+L)/⇧⇥ (Shift+Tab)` | Select default model |");
+		expect(markdown).toContain("| `⇧↩ (Shift+Enter)/⌃J (Control+J)` | New line |");
+		expect(markdown).toContain("| `⌃W (Control+W)/⌥⌫ (Option+Backspace)` | Delete word backwards |");
 	});
 	it("escapes Markdown metacharacters in dynamic table labels", () => {
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
-				formatKeyHint: formatFixedKey,
-				getDisplayString(action) {
+				formatAccessibleKeyHint: formatFixedKey,
+				getAccessibleDisplayString(action) {
 					if (action === "tui.input.submit") return "Ctrl+|";
 					if (action === "app.message.queue") return "`";
 					if (action === "app.message.dequeue") return "\\";
@@ -145,8 +157,8 @@ describe("buildHotkeysMarkdown", () => {
 	it("renders the temporary selector row as disabled when no display string is configured", () => {
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
-				formatKeyHint: formatFixedKey,
-				getDisplayString(action) {
+				formatAccessibleKeyHint: formatFixedKey,
+				getAccessibleDisplayString(action) {
 					if (action === "app.model.selectTemporary") {
 						return "";
 					}
@@ -167,7 +179,7 @@ describe("buildHelpMarkdown", () => {
 	it("advertises effective submit and tab bindings for autocomplete confirmation", () => {
 		const requestedActions: string[] = [];
 		const markdown = buildHelpMarkdown({
-			getDisplayString(action) {
+			getAccessibleDisplayString(action) {
 				requestedActions.push(action);
 				if (action === "tui.input.submit") return "Ctrl+Enter";
 				if (action === "tui.input.tab") return "";
@@ -181,5 +193,19 @@ describe("buildHelpMarkdown", () => {
 		expect(markdown).toContain("then use `Ctrl+|/\\` and `Ctrl+Enter/Disabled`.");
 		expect(markdown).toContain("| Start a fresh session | `` Alt+` `` or `/new` |");
 		expect(requestedActions).not.toContain("tui.select.confirm");
+	});
+	it("uses accessible Darwin labels for help shortcuts", () => {
+		const keybindings = KeybindingsManager.inMemory({
+			"app.session.new": "shift+tab",
+			"app.model.select": "ctrl+l",
+			"tui.select.up": ["ctrl+l", "shift+tab"],
+		});
+		keybindings.setDisplayContext({ platform: "darwin" });
+
+		const markdown = buildHelpMarkdown(keybindings);
+
+		expect(markdown).toContain("| Start a fresh session | `⇧⇥ (Shift+Tab)` or `/new` |");
+		expect(markdown).toContain("| Select a model | `/model` or `⌃L (Control+L)` |");
+		expect(markdown).toContain("then use `⌃L (Control+L)/⇧⇥ (Shift+Tab)/↓ (Down)` and `↩ (Enter)/⇥ (Tab)`.");
 	});
 });

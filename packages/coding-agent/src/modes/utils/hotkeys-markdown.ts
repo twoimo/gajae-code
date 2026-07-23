@@ -2,11 +2,11 @@ import type { Keybinding } from "@gajae-code/tui";
 import type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 
 export interface HotkeysMarkdownBindings {
-	keybindings: Pick<KeybindingsManager, "formatKeyHint" | "getDisplayString">;
+	keybindings: Pick<KeybindingsManager, "formatAccessibleKeyHint" | "getAccessibleDisplayString">;
 }
 
 function key(bindings: HotkeysMarkdownBindings, action: Keybinding): string {
-	return bindings.keybindings.getDisplayString(action) || "Disabled";
+	return bindings.keybindings.getAccessibleDisplayString(action) || "Disabled";
 }
 
 function appKey(bindings: HotkeysMarkdownBindings, action: AppKeybinding): string {
@@ -28,7 +28,7 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 	const displayKey = (action: Keybinding): string => formatHotkeyMarkdownCode(key(bindings, action));
 	const displayAppKey = (action: AppKeybinding): string => formatHotkeyMarkdownCode(appKey(bindings, action));
 	const displayKeys = (...labels: string[]): string => formatHotkeyMarkdownCode(labels.join("/"));
-	const formatFixedKey = (key: string): string => bindings.keybindings.formatKeyHint(key);
+	const formatFixedKey = (key: string): string => bindings.keybindings.formatAccessibleKeyHint(key);
 	const displayKeyWithFixed = (action: Keybinding, fixedKey: string): string => {
 		const configured = key(bindings, action);
 		const fixed = formatFixedKey(fixedKey);

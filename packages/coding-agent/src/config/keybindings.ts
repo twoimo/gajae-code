@@ -543,10 +543,24 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		return formatKeyHints(keys, context);
 	}
 	/**
+	 * Get an accessibility-oriented display string for help surfaces.
+	 * Darwin chords include both the concise glyphs and expanded key names.
+	 */
+	getAccessibleDisplayString(keybinding: Keybinding, context: KeyDisplayContext = this.#displayContext): string {
+		const keys = this.getKeys(keybinding);
+		return formatAccessibleKeyHints(keys, context);
+	}
+	/**
 	 * Format a fixed key chord using this manager's display context.
 	 */
 	formatKeyHint(key: string): string {
 		return formatKeyHint(key, this.#displayContext);
+	}
+	/**
+	 * Format a fixed key chord for accessibility-oriented help surfaces.
+	 */
+	formatAccessibleKeyHint(key: string): string {
+		return formatAccessibleKeyHint(key, this.#displayContext);
 	}
 
 	/**
@@ -615,6 +629,20 @@ const DARWIN_KEY_LABELS: Record<string, string> = {
 	left: "←",
 	right: "→",
 };
+const DARWIN_ACCESSIBLE_MODIFIER_LABELS: Record<string, string> = {
+	ctrl: "Control",
+	alt: "Option",
+	shift: "Shift",
+	super: "Command",
+};
+
+const DARWIN_ACCESSIBLE_KEY_LABELS: Record<string, string> = {
+	...TEXTUAL_KEY_LABELS,
+	esc: "Escape",
+	escape: "Escape",
+	pageUp: "Page Up",
+	pageDown: "Page Down",
+};
 
 const DISPLAY_MODIFIER_ORDER = ["ctrl", "alt", "shift", "super"] as const;
 const INVALID_KEYBINDING_DISPLAY = "Invalid keybinding";
@@ -640,12 +668,33 @@ export function formatKeyHint(key: string, context: KeyDisplayContext = runtimeK
 	return parts.join(darwin ? "" : "+");
 }
 
+export function formatAccessibleKeyHint(key: string, context: KeyDisplayContext = runtimeKeyDisplayContext): string {
+	const concise = formatKeyHint(key, context);
+	if (context.platform !== "darwin" || concise === INVALID_KEYBINDING_DISPLAY) return concise;
+
+	const parsed = parseKeyId(key);
+	if (!parsed) return INVALID_KEYBINDING_DISPLAY;
+	const modifiers = DISPLAY_MODIFIER_ORDER.filter(modifier => parsed.modifiers.includes(modifier)).map(
+		modifier => DARWIN_ACCESSIBLE_MODIFIER_LABELS[modifier],
+	);
+	const expanded = [...modifiers, formatBaseKey(parsed.baseKey, DARWIN_ACCESSIBLE_KEY_LABELS)].join("+");
+	return concise === expanded ? concise : `${concise} (${expanded})`;
+}
+
 export function formatKeyHints(
 	keys: string | readonly string[],
 	context: KeyDisplayContext = runtimeKeyDisplayContext,
 ): string {
 	const list: readonly string[] = typeof keys === "string" ? [keys] : keys;
 	return list.map(key => formatKeyHint(key, context)).join("/");
+}
+
+export function formatAccessibleKeyHints(
+	keys: string | readonly string[],
+	context: KeyDisplayContext = runtimeKeyDisplayContext,
+): string {
+	const list: readonly string[] = typeof keys === "string" ? [keys] : keys;
+	return list.map(key => formatAccessibleKeyHint(key, context)).join("/");
 }
 
 export type { Keybinding, KeybindingsConfig, KeyId };

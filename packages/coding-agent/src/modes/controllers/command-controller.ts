@@ -62,8 +62,8 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 	ctx.ui.requestRender();
 }
 
-export function buildHelpMarkdown(keybindings: Pick<KeybindingsManager, "getDisplayString">): string {
-	const displayKey = (action: Keybinding): string => keybindings.getDisplayString(action) || "Disabled";
+export function buildHelpMarkdown(keybindings: Pick<KeybindingsManager, "getAccessibleDisplayString">): string {
+	const displayKey = (action: Keybinding): string => keybindings.getAccessibleDisplayString(action) || "Disabled";
 	const sessionNewKey = formatHotkeyMarkdownCode(displayKey("app.session.new"));
 	const selectModelKey = formatHotkeyMarkdownCode(displayKey("app.model.select"));
 	const autocompleteNavigationKeys = formatHotkeyMarkdownCode(

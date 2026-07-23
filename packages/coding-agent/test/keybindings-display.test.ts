@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
 	defaultMessageQueueKeysForPlatform,
+	formatAccessibleKeyHint,
+	formatAccessibleKeyHints,
 	formatKeyHint,
 	formatKeyHints,
 	KeybindingsManager,
@@ -35,6 +37,34 @@ describe("KeybindingsManager.getDisplayString", () => {
 			"app.clipboard.copyPrompt": [],
 		});
 		expect(keybindings.getDisplayString("app.clipboard.copyPrompt")).toBe("");
+	});
+});
+
+describe("accessibility-oriented key hint formatting", () => {
+	it("expands Darwin glyph chords without changing concise display strings", () => {
+		const keybindings = KeybindingsManager.inMemory({
+			"app.model.select": "ctrl+l",
+			"app.thinking.cycle": "shift+tab",
+		});
+		keybindings.setDisplayContext({ platform: "darwin" });
+
+		expect(formatAccessibleKeyHint("ctrl+l", { platform: "darwin" })).toBe("⌃L (Control+L)");
+		expect(formatAccessibleKeyHint("shift+tab", { platform: "darwin" })).toBe("⇧⇥ (Shift+Tab)");
+		expect(formatAccessibleKeyHint("ctrl+alt+shift+super+enter", { platform: "darwin" })).toBe(
+			"⌃⌥⇧⌘↩ (Control+Option+Shift+Command+Enter)",
+		);
+		expect(formatAccessibleKeyHint("alt+backspace", { platform: "darwin" })).toBe("⌥⌫ (Option+Backspace)");
+		expect(keybindings.getAccessibleDisplayString("app.model.select")).toBe("⌃L (Control+L)");
+		expect(keybindings.getAccessibleDisplayString("app.thinking.cycle")).toBe("⇧⇥ (Shift+Tab)");
+		expect(keybindings.getDisplayString("app.model.select")).toBe("⌃L");
+	});
+
+	it("keeps multiple bindings delimited and non-Darwin labels concise", () => {
+		expect(formatAccessibleKeyHints(["ctrl+l", "shift+tab"], { platform: "darwin" })).toBe(
+			"⌃L (Control+L)/⇧⇥ (Shift+Tab)",
+		);
+		expect(formatAccessibleKeyHint("ctrl+l", { platform: "linux" })).toBe("Ctrl+L");
+		expect(formatAccessibleKeyHints(["ctrl+l", "shift+tab"], { platform: "win32" })).toBe("Ctrl+L/Shift+Tab");
 	});
 });
 
