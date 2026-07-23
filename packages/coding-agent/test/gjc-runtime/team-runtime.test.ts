@@ -3890,6 +3890,7 @@ describe("stalled worker continuation protocol", () => {
 			expect(fixture.dispatches, scenario).toHaveLength(0);
 		}
 	}, 15_000);
+
 	it("does not honor a continuation recovery hold after canonical authority changes", async () => {
 		for (const scenario of [
 			"claim_deleted",
@@ -3926,6 +3927,7 @@ describe("stalled worker continuation protocol", () => {
 			expect(await Bun.file(claimPath).exists(), scenario).toBe(false);
 		}
 	}, 15_000);
+
 	it("revokes escaped task mutation capabilities after their fenced callback", async () => {
 		const fixture = await prepareContinuation("continuation-capability-team");
 		const store = new GjcTeamTaskStore(fixture.stateDir, async () => undefined);
