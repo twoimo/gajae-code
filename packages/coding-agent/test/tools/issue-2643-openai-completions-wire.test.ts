@@ -145,7 +145,7 @@ describe("issue #2643 — OpenAI completions AskTool wire contract", () => {
 	});
 
 	it("locally corrects the bounded Round-0 pair and returns exact rejection codes for stripped constraints", async () => {
-		const tool = await askTool();
+		const tool = await askTool("topology");
 		const validateRaw = tool.rawArgumentValidation;
 		if (!validateRaw) throw new Error("AskTool omitted raw argument validation");
 		const contract = {
