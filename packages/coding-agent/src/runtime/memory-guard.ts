@@ -26,7 +26,7 @@ export interface MemoryGuardHostOptions {
 }
 
 function normalizePositiveIntervalMs(intervalMs: number): number {
-	if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) throw new Error("invalid_interval_ms");
+	if (!Number.isFinite(intervalMs) || intervalMs <= 0) throw new Error("invalid_interval_ms");
 	return intervalMs;
 }
 

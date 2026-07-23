@@ -33,8 +33,9 @@ export function computeMemoryGuardDomain(input: MemoryGuardDomainInput): MemoryG
 	const parentReserveBytes = assertNonNegativeSafeInteger("parent_reserve_bytes", input.parentReserveBytes);
 	const totalWorkerBytes = sumWorkerBytes(input.workers);
 	const acceptedWorkers = input.workers.filter(worker => worker.accepted !== false);
+	const acceptedWorkerBytes = sumWorkerBytes(acceptedWorkers);
 	const acceptedWorkerCount = acceptedWorkers.length;
-	const unmanagedBytes = Math.max(0, totalUsageBytes - parentBytes - totalWorkerBytes);
+	const unmanagedBytes = Math.max(0, totalUsageBytes - parentBytes - acceptedWorkerBytes);
 	const headroomBytes = Math.max(0, effectiveLimitBytes - totalUsageBytes);
 	const workerBudgetBytes = Math.max(0, effectiveLimitBytes - unmanagedBytes - parentReserveBytes);
 	const perWorkerAllowanceBytes = acceptedWorkerCount === 0 ? 0 : workerBudgetBytes / acceptedWorkerCount;
