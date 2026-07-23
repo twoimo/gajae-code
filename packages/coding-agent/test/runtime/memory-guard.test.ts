@@ -22,6 +22,17 @@ describe("resolveMemoryGuardPolicy", () => {
 			policyLimitBytes: null,
 		});
 	});
+
+	it("rounds fractional megabyte settings to integer bytes", () => {
+		const policy = resolveMemoryGuardPolicy(
+			Settings.isolated({
+				"memoryGuard.policyLimitMb": 100.1,
+				"memoryGuard.parentReserveMb": 10.25,
+			}),
+		);
+		expect(policy.policyLimitBytes).toBe(Math.round(100.1 * 1024 * 1024));
+		expect(policy.parentReserveBytes).toBe(Math.round(10.25 * 1024 * 1024));
+	});
 });
 
 describe("memory guard arbitration", () => {

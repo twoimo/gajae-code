@@ -13,8 +13,8 @@ import {
  * The comm field is wrapped in parentheses and may itself contain spaces/parens;
  * the parser must anchor on the *last* `)`.
  */
-function procStat(comm: string, field22: string, ttyDevice = "0", extraAfterClose = ""): string {
-	const fields = ["S", "0", "0", "0", ttyDevice, ...Array.from({ length: 14 }, () => "0"), field22];
+function procStat(comm: string, field22: string, ttyDevice = "0", extraAfterClose = "", state = "S"): string {
+	const fields = [state, "0", "0", "0", ttyDevice, ...Array.from({ length: 14 }, () => "0"), field22];
 	return `1 (${comm}) ${fields.join(" ")}${extraAfterClose}`;
 }
 
@@ -54,7 +54,7 @@ describe("parseLinuxProcStartTime", () => {
 	it("rejects malformed record boundaries and fields", () => {
 		expect(parseLinuxProcStartTime(`x${procStat("owner", "1234")}`)).toBeNull();
 		expect(parseLinuxProcStartTime(procStat("owner", "1234").replace(") ", ")"))).toBeNull();
-		expect(parseLinuxProcStartTime(procStat("owner", "1234").replace(") S", ") Q"))).toBeNull();
+		expect(parseLinuxProcStartTime(procStat("owner", "1234").replace(") S", ") 1"))).toBeNull();
 		expect(parseLinuxProcStartTime(`${procStat("owner", "1234")}\nsecond record`)).toBeNull();
 		expect(parseLinuxProcStartTime(`${procStat("owner", "1234")}\0`)).toBeNull();
 	});
@@ -65,6 +65,12 @@ describe("parseLinuxProcStartTime", () => {
 
 	it("parses a large numeric start time", () => {
 		expect(parseLinuxProcStartTime(procStat("tmux", "18446744073709551615"))).toBe("18446744073709551615");
+	});
+
+	it("accepts every single-letter Linux process state code", () => {
+		for (const state of ["K", "W", "x"]) {
+			expect(parseLinuxProcStartTime(procStat("owner", "1234", "0", "", state))).toBe("1234");
+		}
 	});
 });
 
