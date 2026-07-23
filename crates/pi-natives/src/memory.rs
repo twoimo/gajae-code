@@ -10,8 +10,9 @@ use windows_sys::Win32::{
 	Foundation::GetLastError,
 	System::{
 		JobObjects::{
-			IsProcessInJob, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-			QueryInformationJobObject,
+			IsProcessInJob, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+			JOBOBJECT_LIMIT_VIOLATION_INFORMATION, JobObjectExtendedLimitInformation,
+			JobObjectLimitViolationInformation, QueryInformationJobObject,
 		},
 		ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX},
 		Threading::GetCurrentProcess,
@@ -99,6 +100,7 @@ impl WindowsJobMemoryProbeResult {
 	#[cfg(target_os = "windows")]
 	fn snapshot(
 		limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+		usage: JOBOBJECT_LIMIT_VIOLATION_INFORMATION,
 		counters: PROCESS_MEMORY_COUNTERS_EX,
 	) -> Self {
 		Self {
@@ -106,7 +108,7 @@ impl WindowsJobMemoryProbeResult {
 			platform: current_platform_tag().to_string(),
 			is_in_job: Some(true),
 			job_memory_limit_bytes: Some(limits.JobMemoryLimit.to_string()),
-			job_memory_used_bytes: Some(limits.JobMemoryUsed.to_string()),
+			job_memory_used_bytes: Some(usage.JobMemory.to_string()),
 			peak_job_memory_used_bytes: Some(limits.PeakJobMemoryUsed.to_string()),
 			process_memory_limit_bytes: Some(limits.ProcessMemoryLimit.to_string()),
 			process_private_usage_bytes: Some(counters.PrivateUsage.to_string()),
@@ -168,6 +170,23 @@ pub fn probe_windows_job_memory() -> WindowsJobMemoryProbeResult {
 			});
 		}
 
+		let mut usage = MaybeUninit::<JOBOBJECT_LIMIT_VIOLATION_INFORMATION>::zeroed();
+		if unsafe {
+			QueryInformationJobObject(
+				std::ptr::null_mut(),
+				JobObjectLimitViolationInformation,
+				usage.as_mut_ptr().cast::<c_void>(),
+				size_of::<JOBOBJECT_LIMIT_VIOLATION_INFORMATION>() as u32,
+				std::ptr::null_mut(),
+			)
+		} == 0
+		{
+			return WindowsJobMemoryProbeResult::api_error(
+				"QueryInformationJobObject(memory usage)",
+				unsafe { GetLastError() },
+			);
+		}
+
 		let mut counters = MaybeUninit::<PROCESS_MEMORY_COUNTERS_EX>::zeroed();
 		unsafe {
 			(*counters.as_mut_ptr()).cb = size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
@@ -185,9 +204,11 @@ pub fn probe_windows_job_memory() -> WindowsJobMemoryProbeResult {
 			});
 		}
 
-		return WindowsJobMemoryProbeResult::snapshot(unsafe { limits.assume_init() }, unsafe {
-			counters.assume_init()
-		});
+		return WindowsJobMemoryProbeResult::snapshot(
+			unsafe { limits.assume_init() },
+			unsafe { usage.assume_init() },
+			unsafe { counters.assume_init() },
+		);
 	}
 
 	#[cfg(not(target_os = "windows"))]
