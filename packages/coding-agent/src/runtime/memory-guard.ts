@@ -154,8 +154,7 @@ export class MemoryGuardHost {
 		if (this.#registrations.get(ownerId) === normalized) return;
 		this.#registrations.set(ownerId, normalized);
 		if (this.#inProgressOwner) return;
-		this.#clearPendingSchedule();
-		this.#reconcileCurrentSchedule();
+		this.#requestSchedule(this.#schedulerNow() + this.#currentSweepIntervalMs());
 	}
 
 	async runTick(generation = this.#generation, source: WorkOwner["source"] = "external"): Promise<void> {
