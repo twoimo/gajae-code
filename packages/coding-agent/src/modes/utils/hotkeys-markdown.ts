@@ -1,8 +1,8 @@
 import type { Keybinding } from "@gajae-code/tui";
-import { type AppKeybinding, formatKeyHint, type KeybindingsManager } from "../../config/keybindings";
+import type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 
 export interface HotkeysMarkdownBindings {
-	keybindings: Pick<KeybindingsManager, "getDisplayString">;
+	keybindings: Pick<KeybindingsManager, "formatKeyHint" | "getDisplayString">;
 }
 
 function key(bindings: HotkeysMarkdownBindings, action: Keybinding): string {
@@ -28,6 +28,7 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 	const displayKey = (action: Keybinding): string => formatHotkeyMarkdownCode(key(bindings, action));
 	const displayAppKey = (action: AppKeybinding): string => formatHotkeyMarkdownCode(appKey(bindings, action));
 	const displayKeys = (...labels: string[]): string => formatHotkeyMarkdownCode(labels.join("/"));
+	const formatFixedKey = (key: string): string => bindings.keybindings.formatKeyHint(key);
 
 	return [
 		"**Navigation**",
@@ -44,10 +45,10 @@ export function buildHotkeysMarkdown(bindings: HotkeysMarkdownBindings): string 
 		`| ${displayKey("tui.input.submit")} | Send / queue while busy |`,
 		`| ${displayAppKey("app.message.queue")} | Queue message for next turn |`,
 		`| ${displayAppKey("app.message.dequeue")} | Select queued message to edit |`,
-		`| ${displayKeys(key(bindings, "tui.input.newLine"), formatKeyHint("ctrl+j"))} | New line |`,
-		`| ${displayKeys(formatKeyHint("ctrl+w"), formatKeyHint("alt+backspace"))} | Delete word backwards |`,
-		`| ${displayKeys(formatKeyHint("ctrl+u"))} | Delete to start of line |`,
-		`| ${displayKeys(formatKeyHint("ctrl+k"))} | Delete to end of line |`,
+		`| ${displayKeys(key(bindings, "tui.input.newLine"), formatFixedKey("ctrl+j"))} | New line |`,
+		`| ${displayKeys(formatFixedKey("ctrl+w"), formatFixedKey("alt+backspace"))} | Delete word backwards |`,
+		`| ${displayKeys(formatFixedKey("ctrl+u"))} | Delete to start of line |`,
+		`| ${displayKeys(formatFixedKey("ctrl+k"))} | Delete to end of line |`,
 		`| ${displayAppKey("app.clipboard.copyLine")} | Copy current line |`,
 		`| ${displayAppKey("app.clipboard.copyPrompt")} | Copy whole prompt |`,
 		"",

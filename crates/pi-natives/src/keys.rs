@@ -633,7 +633,7 @@ fn matches_key_inner(bytes: &[u8], key_id: &str, kitty_protocol_active: bool) ->
 		if modifier == 0 {
 			return bytes == b"\x1b" || kitty_matches(CP_ESCAPE, 0);
 		}
-		return kitty_matches(CP_ESCAPE, modifier);
+		return kitty_matches(CP_ESCAPE, modifier) || mok_matches(CP_ESCAPE, modifier);
 	}
 
 	if key.eq_ignore_ascii_case("space") {
@@ -1491,6 +1491,14 @@ mod tests {
 		assert!(!matches_key_inner(super_p, "p", true));
 		assert!(!matches_key_inner(b"p", "super+p", true));
 		assert_eq!(parse_key_inner(super_p, true).as_deref(), Some("super+p"));
+	}
+
+	#[test]
+	fn modified_escape_matches_kitty_and_modify_other_keys() {
+		assert!(matches_key_inner(b"\x1b[27;5;27~", "ctrl+escape", false));
+		assert!(!matches_key_inner(b"\x1b[27;5;27~", "escape", false));
+		assert!(matches_key_inner(b"\x1b[27;5u", "ctrl+escape", true));
+		assert!(matches_key_inner(b"\x1b[27;9u", "super+escape", true));
 	}
 
 	#[test]

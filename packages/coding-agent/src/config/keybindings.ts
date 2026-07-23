@@ -542,6 +542,12 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 		const keys = this.getKeys(keybinding);
 		return formatKeyHints(keys, context);
 	}
+	/**
+	 * Format a fixed key chord using this manager's display context.
+	 */
+	formatKeyHint(key: string): string {
+		return formatKeyHint(key, this.#displayContext);
+	}
 
 	/**
 	 * Load user bindings from a file, migrating old names if needed.

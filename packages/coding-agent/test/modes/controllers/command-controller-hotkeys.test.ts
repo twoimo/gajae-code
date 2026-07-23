@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { formatKeyHint } from "../../../src/config/keybindings";
+import { formatKeyHint, KeybindingsManager } from "../../../src/config/keybindings";
 import { buildHelpMarkdown } from "../../../src/modes/controllers/command-controller";
 import { buildHotkeysMarkdown, formatHotkeyMarkdownCode } from "../../../src/modes/utils/hotkeys-markdown";
+
+const formatFixedKey = (key: string): string => formatKeyHint(key);
 
 describe("buildHotkeysMarkdown", () => {
 	it("emits flush-left markdown and uses the configured temporary selector hint", () => {
@@ -42,6 +44,7 @@ describe("buildHotkeysMarkdown", () => {
 		};
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
+				formatKeyHint: formatFixedKey,
 				getDisplayString(action) {
 					return displayStrings[action] ?? "Disabled";
 				},
@@ -71,6 +74,7 @@ describe("buildHotkeysMarkdown", () => {
 		const render = (newLine: string): string =>
 			buildHotkeysMarkdown({
 				keybindings: {
+					formatKeyHint: formatFixedKey,
 					getDisplayString(action) {
 						return action === "tui.input.newLine" ? newLine : "Ctrl+K";
 					},
@@ -81,9 +85,28 @@ describe("buildHotkeysMarkdown", () => {
 		expect(render("")).toContain(`| \`Disabled/${formatKeyHint("ctrl+j")}\` | New line |`);
 	});
 
+	it("uses injected Darwin labels while keeping fixed editor delete chords after remapping", () => {
+		const keybindings = KeybindingsManager.inMemory({
+			"tui.editor.deleteWordBackward": "ctrl+x",
+			"tui.editor.deleteToLineStart": "ctrl+y",
+			"tui.editor.deleteToLineEnd": "ctrl+z",
+		});
+		keybindings.setDisplayContext({ platform: "darwin" });
+
+		const markdown = buildHotkeysMarkdown({ keybindings });
+
+		expect(markdown).toContain("| `⇧↩/⌃J` | New line |");
+		expect(markdown).toContain("| `⌃W/⌥⌫` | Delete word backwards |");
+		expect(markdown).toContain("| `⌃U` | Delete to start of line |");
+		expect(markdown).toContain("| `⌃K` | Delete to end of line |");
+		expect(markdown).not.toContain("| `⌃X` | Delete word backwards |");
+		expect(markdown).not.toContain("| `⌃Y` | Delete to start of line |");
+		expect(markdown).not.toContain("| `⌃Z` | Delete to end of line |");
+	});
 	it("escapes Markdown metacharacters in dynamic table labels", () => {
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
+				formatKeyHint: formatFixedKey,
 				getDisplayString(action) {
 					if (action === "tui.input.submit") return "Ctrl+|";
 					if (action === "app.message.queue") return "`";
@@ -102,6 +125,7 @@ describe("buildHotkeysMarkdown", () => {
 	it("renders the temporary selector row as disabled when no display string is configured", () => {
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
+				formatKeyHint: formatFixedKey,
 				getDisplayString(action) {
 					if (action === "app.model.selectTemporary") {
 						return "";
