@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { loadNative } from "../native/loader-state.js";
+import { loadNative, validateLoadedBindings } from "../native/loader-state.js";
 
 type ProbeResult = Record<string, unknown> & { kind: string; platform?: unknown };
 
@@ -43,5 +43,20 @@ describe("probeWindowsJobMemory", () => {
 		const probe = loadNative().probeWindowsJobMemory;
 		expect(typeof probe).toBe("function");
 		expectTaggedProbeResult((probe as () => unknown)());
+	});
+
+	it("rejects stale same-version bindings without the memory probe capability", () => {
+		const bindings = {
+			__piNativesVCurrent: () => undefined,
+			__piNativesPublishOutcomeV1: () => undefined,
+			renameNoReplacePath: () => undefined,
+		};
+		expect(() =>
+			validateLoadedBindings(
+				{ versionSentinelExport: "__piNativesVCurrent", packageVersion: "current" },
+				bindings,
+				"cached-addon.node",
+			),
+		).toThrow("probeWindowsJobMemory");
 	});
 });

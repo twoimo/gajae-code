@@ -1,6 +1,9 @@
+import * as os from "node:os";
 import { logger } from "@gajae-code/utils";
 import type { Settings } from "../config/settings";
-import { MemoryGuardHost } from "../runtime/memory-guard";
+import { computeMemoryGuardDomain } from "../runtime/memory-domain";
+import { chooseMemoryGuardAction, MemoryGuardHost, resolveMemoryGuardPolicy } from "../runtime/memory-guard";
+import { resolveEffectiveMemoryLimit } from "../runtime/memory-limit";
 import { listTabsForGc, releaseTabIfGcEligible, type TabGcSnapshot } from "./browser/tab-supervisor";
 import { cleanupStaleScreenshotFallbackDirs, hasCreatedScreenshotFallbackDir } from "./computer-gc";
 
@@ -56,6 +59,8 @@ export function resolveSweepIntervalMs(settings: Settings): number {
 export interface ResourceGcDeps {
 	now: () => number;
 	rssBytes: () => number;
+	totalMemoryBytes: () => number;
+	runGc: () => void;
 	logWarn: (msg: string, meta?: Record<string, unknown>) => void;
 	listTabs: () => TabGcSnapshot[];
 	releaseTab: (name: string, policy: { now: () => number; idleMs: number }) => Promise<boolean>;
@@ -66,6 +71,8 @@ export interface ResourceGcDeps {
 const defaultDeps: ResourceGcDeps = {
 	now: () => Date.now(),
 	rssBytes: () => process.memoryUsage().rss,
+	totalMemoryBytes: () => os.totalmem(),
+	runGc: () => Bun.gc(true),
 	logWarn: (msg, meta) => logger.warn(msg, meta),
 	listTabs: () => listTabsForGc(),
 	releaseTab: (name, policy) => releaseTabIfGcEligible(name, policy),
@@ -83,6 +90,9 @@ const scheduler = new MemoryGuardHost({
 });
 let rssWarningActive = false;
 let lastScreenshotScanAt = 0;
+const memoryGuardGcActive = new Set<string>();
+const memoryGuardRestartAboveSince = new Map<string, number>();
+const memoryGuardRestartCooldownUntil = new Map<string, number>();
 let deps: ResourceGcDeps = defaultDeps;
 
 export interface ResourceGcRegistration {
@@ -106,14 +116,89 @@ export function registerResourceGcSession(reg: ResourceGcRegistration): () => vo
 		if (unregistered) return;
 		unregistered = true;
 		activeSessions.delete(reg.sessionId);
+		memoryGuardGcActive.delete(reg.sessionId);
+		memoryGuardRestartAboveSince.delete(reg.sessionId);
+		memoryGuardRestartCooldownUntil.delete(reg.sessionId);
 		unregisterSchedule();
 	};
 }
 
 export async function sweepOnce(d: ResourceGcDeps = deps): Promise<void> {
 	if (activeSessions.size === 0) return;
+	await sweepMemoryPressureGuard(d);
 	await sweepBrowserTabs(d);
 	await sweepScreenshots(d);
+}
+
+function sweepMemoryPressureGuard(d: ResourceGcDeps): void {
+	const rssBytes = d.rssBytes();
+	const totalMemoryBytes = d.totalMemoryBytes();
+	for (const [sessionId, settings] of activeSessions) {
+		const policy = resolveMemoryGuardPolicy(settings);
+		if (!policy.enabled) {
+			memoryGuardGcActive.delete(sessionId);
+			memoryGuardRestartAboveSince.delete(sessionId);
+			continue;
+		}
+		const limit = resolveEffectiveMemoryLimit({
+			hardCapBytes: totalMemoryBytes,
+			policyLimitBytes: policy.policyLimitBytes,
+		});
+		if (limit.effectiveBytes === null) continue;
+		const domain = computeMemoryGuardDomain({
+			effectiveLimitBytes: limit.effectiveBytes,
+			totalUsageBytes: rssBytes,
+			parentBytes: rssBytes,
+			parentReserveBytes: policy.parentReserveBytes,
+			workers: [],
+		});
+		const decision = chooseMemoryGuardAction({
+			domain,
+			hostSupported: false,
+			workerSupported: () => false,
+		});
+		const usageRatio = rssBytes / limit.effectiveBytes;
+		if (usageRatio >= policy.gcThresholdRatio) {
+			if (!memoryGuardGcActive.has(sessionId)) {
+				memoryGuardGcActive.add(sessionId);
+				d.runGc();
+				d.logWarn("Memory guard: GC threshold reached", {
+					sessionId,
+					rssBytes,
+					effectiveLimitBytes: limit.effectiveBytes,
+					limitSource: limit.source,
+					usageRatio,
+					decision: decision.kind,
+				});
+			}
+		} else {
+			memoryGuardGcActive.delete(sessionId);
+		}
+
+		if (usageRatio < policy.restartThresholdRatio) {
+			memoryGuardRestartAboveSince.delete(sessionId);
+			continue;
+		}
+		const now = d.now();
+		const aboveSince = memoryGuardRestartAboveSince.get(sessionId);
+		if (aboveSince === undefined) {
+			memoryGuardRestartAboveSince.set(sessionId, now);
+			continue;
+		}
+		const cooldownUntil = memoryGuardRestartCooldownUntil.get(sessionId) ?? 0;
+		if (now - aboveSince < policy.restartThresholdWindowMs || now < cooldownUntil) continue;
+		memoryGuardRestartCooldownUntil.set(sessionId, now + policy.cooldownMs);
+		d.logWarn("Memory guard: restart threshold sustained; restart remains advisory-only", {
+			sessionId,
+			rssBytes,
+			effectiveLimitBytes: limit.effectiveBytes,
+			limitSource: limit.source,
+			usageRatio,
+			windowMs: policy.restartThresholdWindowMs,
+			cooldownMs: policy.cooldownMs,
+			decision: decision.kind,
+		});
+	}
 }
 
 function ownerBrowserPolicy(snapshot: TabGcSnapshot): BrowserGcPolicy | null {
@@ -263,6 +348,9 @@ export function __resetResourceGcForTest(): void {
 	scheduler.resetForTest();
 	activeSessions.clear();
 	rssWarningActive = false;
+	memoryGuardGcActive.clear();
+	memoryGuardRestartAboveSince.clear();
+	memoryGuardRestartCooldownUntil.clear();
 	lastScreenshotScanAt = 0;
 	deps = defaultDeps;
 }

@@ -79,6 +79,12 @@ export interface CachedEmbeddedExtractionIsFreshInput {
 
 export function cachedEmbeddedExtractionIsFresh(input: CachedEmbeddedExtractionIsFreshInput): boolean;
 
+export function validateLoadedBindings(
+	ctx: { versionSentinelExport: string; packageVersion: string },
+	bindings: Record<string, unknown>,
+	candidate: string,
+): void;
+
 export interface LoaderContext {
 	isCompiledBinary: boolean;
 	platformTag: string;
