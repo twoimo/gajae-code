@@ -122,6 +122,7 @@ describe("CONSUMER/KEY-FIELD MATRIX for compact handoff payloads", () => {
 			"stage",
 			"stage_n",
 			"sha256",
+			"repository_binding",
 			"created_at",
 			"pending_approval_path",
 		]);
@@ -132,6 +133,12 @@ describe("CONSUMER/KEY-FIELD MATRIX for compact handoff payloads", () => {
 			  "stage": "final",
 			  "stage_n": 2,
 			  "sha256": "<sha256>",
+			  "repository_binding": {
+			    "schema": "gjc.repository_binding.v1",
+			    "worktreeRoot": "/tmp/SCRUBBED",
+			    "commonDir": null,
+			    "displayPath": "/tmp/SCRUBBED"
+			  },
 			  "created_at": "<iso>",
 			  "pending_approval_path": "/tmp/SCRUBBED"
 			}
@@ -141,7 +148,7 @@ describe("CONSUMER/KEY-FIELD MATRIX for compact handoff payloads", () => {
 		const ralplanSeed = await runNativeRalplanCommand(["--json", "scope the work"], root);
 		expect(ralplanSeed.status).toBe(0);
 		expect(scrub(ralplanSeed.stdout ?? "")).toMatchInlineSnapshot(`
-			"{"ok":true,"skill":"ralplan","mode":"short","state_path":"/tmp/SCRUBBED","run_id":"run-b","handoff":"/skill:ralplan"}
+			"{"ok":true,"skill":"ralplan","mode":"short","state_path":"/tmp/SCRUBBED","run_id":"run-b","handoff":"/skill:ralplan","repository_binding":{"schema":"gjc.repository_binding.v1","worktreeRoot":"/tmp/SCRUBBED","commonDir":null,"displayPath":"/tmp/SCRUBBED"}}
 			"
 			`);
 
