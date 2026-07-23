@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "compiled-tui-dogfood-report",
   "pr": 2967,
-  "head": "88aa8c12c88e01675c8a2a6bb24ee053c70d14a0",
+  "head": "597a7eb0a62e14f9fbffde9d0336edfddb94ee56",
   "buildCommand": [
     "bun",
     "--cwd=packages/coding-agent",
@@ -19,11 +19,11 @@
       "--smoke-test"
     ]
   ],
-  "dogfoodInvocation": "compiled packages/coding-agent/dist/gjc in a 120x36 xterm-256color PTY for 8 seconds, then Ctrl-C shutdown",
-  "binarySha256": "61e361e9cfe19f328e03b50028f29092c87f86a17cd0dde1f5bae4f4df573c52",
+  "dogfoodInvocation": "compiled packages/coding-agent/dist/gjc in a 120x36 xterm-256color PTY, opened /hotkeys, then Ctrl-C shutdown",
+  "binarySha256": "5fbe7c9c52daca3084f525d9afcc2d0e16e06975566182b0ce308540d44f1388",
   "rawAnsiArtifact": "packages/coding-agent/test/fixtures/tui/evidence/platform-shortcuts-real-product-dogfood.ansi.gz",
-  "rawAnsiSha256": "36883e7abdf5308d603c2ccea14335a115797b2c952581d689528914e1e25994",
-  "rawAnsiBytes": 519473,
+  "rawAnsiSha256": "c7d8a311642f6926c12cbb8f8121c98793004f3fece8e54e0f638cfa6e62d914",
+  "rawAnsiBytes": 470112,
   "observations": {
     "composerPlaceholder": true,
     "flowPanel": true,
@@ -31,7 +31,8 @@
     "macShiftGlyph": true,
     "newLineHint": true,
     "clearHint": true,
-    "searchHistoryHint": true
+    "searchHistoryHint": true,
+    "accessibleHotkeysDualLabels": true
   },
   "excerpt": "⌃L model · ⇧⇥ reasoning · ⇥ complete · ⌃J newline | ⌃C clear",
   "result": "passed",
