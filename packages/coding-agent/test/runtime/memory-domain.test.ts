@@ -88,4 +88,19 @@ describe("computeMemoryGuardDomain", () => {
 		expect(snapshot.workers[0]?.excessBytes).toBe(0);
 		expect(snapshot.workers[1]?.excessBytes).toBe(0);
 	});
+	it("counts rejected worker bytes as unmanaged pressure", () => {
+		const snapshot = computeMemoryGuardDomain({
+			effectiveLimitBytes: 100,
+			totalUsageBytes: 110,
+			parentBytes: 10,
+			parentReserveBytes: 10,
+			workers: [
+				{ workerId: "rejected", bytes: 40, accepted: false },
+				{ workerId: "accepted", bytes: 60 },
+			],
+		});
+		expect(snapshot.unmanagedBytes).toBe(40);
+		expect(snapshot.perWorkerAllowanceBytes).toBe(50);
+		expect(snapshot.workers[1]?.excessBytes).toBe(10);
+	});
 });

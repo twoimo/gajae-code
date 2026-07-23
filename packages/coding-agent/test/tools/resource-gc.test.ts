@@ -41,6 +41,8 @@ function baseDeps(over: Partial<ResourceGcDeps> = {}): ResourceGcDeps {
 	return {
 		now: () => NOW,
 		rssBytes: () => 1,
+		totalMemoryBytes: () => 1024 * MB,
+		runGc: vi.fn(),
 		logWarn: vi.fn(),
 		listTabs: () => [],
 		releaseTab: vi.fn(async () => true),
@@ -113,6 +115,58 @@ describe("resource GC controller", () => {
 	afterEach(() => {
 		__resetResourceGcForTest();
 		vi.restoreAllMocks();
+	});
+
+	it("applies enabled memory policy to GC and sustained restart advisory telemetry", async () => {
+		const settings = Settings.isolated({
+			"memoryGuard.enabled": true,
+			"memoryGuard.policyLimitMb": 100,
+			"memoryGuard.gcThresholdPercent": 70,
+			"memoryGuard.restartThresholdPercent": 85,
+			"memoryGuard.restartThresholdWindowMs": 90_000,
+			"memoryGuard.cooldownMs": 600_000,
+			"browser.gc.enabled": false,
+			"computer.screenshotGc.enabled": false,
+		});
+		registerResourceGcSession({ sessionId: "s1", settings });
+
+		let now = NOW;
+		let rss = 75 * MB;
+		const runGc = vi.fn();
+		const logWarn = vi.fn();
+		const deps = baseDeps({
+			now: () => now,
+			rssBytes: () => rss,
+			totalMemoryBytes: () => 200 * MB,
+			runGc,
+			logWarn,
+		});
+
+		await sweepOnce(deps);
+		await sweepOnce(deps);
+		expect(runGc).toHaveBeenCalledTimes(1);
+
+		rss = 60 * MB;
+		await sweepOnce(deps);
+		rss = 90 * MB;
+		await sweepOnce(deps);
+		now += 90_000;
+		await sweepOnce(deps);
+
+		expect(runGc).toHaveBeenCalledTimes(2);
+		expect(logWarn).toHaveBeenCalledWith(
+			"Memory guard: restart threshold sustained; restart remains advisory-only",
+			expect.objectContaining({ sessionId: "s1", effectiveLimitBytes: 100 * MB }),
+		);
+	});
+
+	it("keeps positive fractional sweep intervals schedulable", () => {
+		const unregister = registerResourceGcSession({
+			sessionId: "fractional",
+			settings: gcSettings(500.5),
+		});
+		expect(__getResourceGcStateForTest().timerActive).toBe(true);
+		unregister();
 	});
 
 	it("idle sweep evicts idle tabs oldest-first and spares recent ones", async () => {
