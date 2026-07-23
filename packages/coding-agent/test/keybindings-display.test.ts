@@ -20,6 +20,15 @@ describe("KeybindingsManager.getDisplayString", () => {
 			"Alt+Shift+C/Ctrl+Shift+C",
 		);
 	});
+	it("uses the configured default context across composed consumers", () => {
+		const keybindings = KeybindingsManager.inMemory({
+			"app.commandPalette.open": "super+p",
+		});
+		keybindings.setDisplayContext({ platform: "darwin" });
+
+		expect(keybindings.getDisplayString("app.commandPalette.open")).toBe("⌘P");
+		expect(keybindings.getDisplayString("app.commandPalette.open", { platform: "linux" })).toBe("Super+P");
+	});
 
 	it("returns an empty string when the action has no binding", () => {
 		const keybindings = KeybindingsManager.inMemory({

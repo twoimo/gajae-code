@@ -481,6 +481,7 @@ function migrateKeybindingsConfigFile(agentDir: string): void {
  */
 export class KeybindingsManager extends TuiKeybindingsManager {
 	#configPath: string | undefined;
+	#displayContext: KeyDisplayContext = runtimeKeyDisplayContext;
 
 	constructor(userBindings: KeybindingsConfig = {}, configPath?: string) {
 		super(KEYBINDINGS, toKeybindingsConfig(userBindings));
@@ -511,6 +512,13 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 	static inMemory(userBindings: KeybindingsConfig = {}): KeybindingsManager {
 		return new KeybindingsManager(userBindings);
 	}
+	/**
+	 * Set the default display context used by composed surfaces that do not
+	 * supply an explicit context.
+	 */
+	setDisplayContext(context: KeyDisplayContext): void {
+		this.#displayContext = context;
+	}
 
 	/**
 	 * Reload keybindings from the config file.
@@ -530,7 +538,7 @@ export class KeybindingsManager extends TuiKeybindingsManager {
 	/**
 	 * Get display string for a keybinding (e.g., "ctrl+c/escape").
 	 */
-	getDisplayString(keybinding: Keybinding, context: KeyDisplayContext = runtimeKeyDisplayContext): string {
+	getDisplayString(keybinding: Keybinding, context: KeyDisplayContext = this.#displayContext): string {
 		const keys = this.getKeys(keybinding);
 		return formatKeyHints(keys, context);
 	}

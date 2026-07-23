@@ -437,6 +437,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.mcpManager = mcpManager;
 		this.#eventBus = eventBus;
 		this.#keyDisplayContext = keyDisplayContext;
+		this.keybindings.setDisplayContext(this.#keyDisplayContext);
 		const thisMode = this;
 		this.#goalModeController = new GoalModeController({
 			session: this.session,
@@ -607,6 +608,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.isInitialized) return;
 
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
+		this.keybindings.setDisplayContext(this.#keyDisplayContext);
 
 		// Register session manager flush for signal handlers (SIGINT, SIGTERM, SIGHUP)
 		this.#cleanupUnsubscribe = postmortem.register("session-manager-flush", () => this.sessionManager.flush());
