@@ -44,10 +44,14 @@ export class QueuePaneComponent extends Container {
 		const byId = new Map(entries.map(entry => [entry.id, entry]));
 		const displayKey = options.formatKeyHint ?? formatKeyHint;
 		const selectKeys = `${displayKey("alt+up")}/${displayKey("alt+down")}`;
-		const editKey = options.formatSelectAction?.("tui.select.confirm") || displayKey("enter");
+		const editKey = options.formatSelectAction
+			? options.formatSelectAction("tui.select.confirm") || "Disabled"
+			: displayKey("enter");
 		const deleteKey = displayKey("delete");
 		const moveKeys = `${displayKey("ctrl+up")}/${displayKey("ctrl+down")}`;
-		const closeKey = options.formatSelectAction?.("tui.select.cancel") || displayKey("escape");
+		const closeKey = options.formatSelectAction
+			? options.formatSelectAction("tui.select.cancel") || "Disabled"
+			: displayKey("escape");
 		const itemHint = `${editKey} edit · ${deleteKey} remove · ${moveKeys} move`;
 		const controlsHint = `${selectKeys} select · ${itemHint} · ${closeKey} close`;
 		const items: SelectItem[] = entries.map((entry, index) => ({
@@ -79,6 +83,15 @@ export class QueuePaneComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
+		if (this.#matchesSelectAction(keyData, "tui.select.confirm")) {
+			if (this.#selectedEntry) this.#onSelect(this.#selectedEntry);
+			return;
+		}
+		if (this.#matchesSelectAction(keyData, "tui.select.cancel")) {
+			this.#onClose();
+			return;
+		}
+		if (matchesKey(keyData, "enter") || matchesKey(keyData, "escape")) return;
 		if (matchesKey(keyData, "alt+up") || matchesKey(keyData, "alt+down")) {
 			const direction = matchesKey(keyData, "alt+up") ? -1 : 1;
 			this.#selectedIndex = (this.#selectedIndex + direction + this.#entries.length) % this.#entries.length;
@@ -94,15 +107,6 @@ export class QueuePaneComponent extends Container {
 			if (this.#selectedEntry) this.#onMove(this.#selectedEntry, this.#selectedIndex, "down");
 			return;
 		}
-		if (this.#matchesSelectAction(keyData, "tui.select.confirm")) {
-			if (this.#selectedEntry) this.#onSelect(this.#selectedEntry);
-			return;
-		}
-		if (this.#matchesSelectAction(keyData, "tui.select.cancel")) {
-			this.#onClose();
-			return;
-		}
-		if (matchesKey(keyData, "enter") || matchesKey(keyData, "escape")) return;
 		if (matchesKey(keyData, "delete")) {
 			if (this.#selectedEntry) this.#onDelete(this.#selectedEntry, this.#selectedIndex);
 			return;

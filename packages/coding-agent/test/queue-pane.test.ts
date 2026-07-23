@@ -48,33 +48,52 @@ describe("QueuePaneComponent", () => {
 		expect(deleted).toEqual(["followUp:2"]);
 		expect(closed).toBe(true);
 	});
-	it("uses effective selector confirm and cancel bindings", () => {
+	it("gives effective selector bindings precedence over fixed queue controls", () => {
 		const edited: string[] = [];
+		const deleted: string[] = [];
+		const moved: string[] = [];
 		let closed = false;
 		const pane = new QueuePaneComponent([{ id: "steer:1", text: "interrupt", mode: "steer", label: "Steer" }], {
 			formatKeyHint: key => formatKeyHint(key, { platform: "darwin" }),
-			formatSelectAction: action => (action === "tui.select.confirm" ? "⌃E" : "⌃X"),
+			formatSelectAction: action => (action === "tui.select.confirm" ? "⌃↑" : "⌦"),
 			matchesSelectAction: (keyData, action) =>
-				action === "tui.select.confirm" ? keyData === "\x05" : keyData === "\x18",
+				action === "tui.select.confirm" ? keyData === "\x1b[1;5A" : keyData === "\x1b[3~",
 			onSelect: entry => edited.push(entry.id),
-			onDelete: () => {},
-			onMove: () => {},
+			onDelete: entry => deleted.push(entry.id),
+			onMove: entry => moved.push(entry.id),
 			onClose: () => {
 				closed = true;
 			},
 		});
 
 		const rendered = pane.render(160).join("\n");
-		expect(rendered).toContain("⌃E edit");
-		expect(rendered).toContain("⌃X close");
+		expect(rendered).toContain("⌃↑ edit");
+		expect(rendered).toContain("⌦ close");
 		pane.handleInput("\n");
 		pane.handleInput("\x1b");
 		expect(edited).toEqual([]);
 		expect(closed).toBe(false);
-		pane.handleInput("\x05");
-		pane.handleInput("\x18");
-		expect(edited).toContain("steer:1");
+		pane.handleInput("\x1b[1;5A");
+		pane.handleInput("\x1b[3~");
+		expect(edited).toEqual(["steer:1"]);
 		expect(closed).toBe(true);
+		expect(moved).toEqual([]);
+		expect(deleted).toEqual([]);
+	});
+
+	it("renders disabled effective confirm and cancel actions without fixed fallbacks", () => {
+		const pane = new QueuePaneComponent([{ id: "steer:1", text: "interrupt", mode: "steer", label: "Steer" }], {
+			formatKeyHint: key => formatKeyHint(key, { platform: "darwin" }),
+			formatSelectAction: () => "",
+			matchesSelectAction: () => false,
+			onSelect: () => {},
+			onDelete: () => {},
+			onMove: () => {},
+			onClose: () => {},
+		});
+		const rendered = pane.render(160).join("\n");
+		expect(rendered).toContain("Disabled edit");
+		expect(rendered).toContain("Disabled close");
 	});
 
 	it("renders textual controls off Darwin", () => {
