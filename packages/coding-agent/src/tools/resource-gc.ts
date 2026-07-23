@@ -1,4 +1,7 @@
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
+import * as path from "node:path";
+import { probeWindowsJobMemory } from "@gajae-code/natives";
 import { logger } from "@gajae-code/utils";
 import type { Settings } from "../config/settings";
 import { computeMemoryGuardDomain } from "../runtime/memory-domain";
@@ -59,7 +62,7 @@ export function resolveSweepIntervalMs(settings: Settings): number {
 export interface ResourceGcDeps {
 	now: () => number;
 	rssBytes: () => number;
-	totalMemoryBytes: () => number;
+	memorySnapshot: () => Promise<MemoryPressureSnapshot>;
 	runGc: () => void;
 	logWarn: (msg: string, meta?: Record<string, unknown>) => void;
 	listTabs: () => TabGcSnapshot[];
@@ -71,7 +74,7 @@ export interface ResourceGcDeps {
 const defaultDeps: ResourceGcDeps = {
 	now: () => Date.now(),
 	rssBytes: () => process.memoryUsage().rss,
-	totalMemoryBytes: () => os.totalmem(),
+	memorySnapshot: () => sampleMemoryPressure(),
 	runGc: () => Bun.gc(true),
 	logWarn: (msg, meta) => logger.warn(msg, meta),
 	listTabs: () => listTabsForGc(),
@@ -107,9 +110,12 @@ export interface ResourceGcRegistration {
  */
 export function registerResourceGcSession(reg: ResourceGcRegistration): () => void {
 	activeSessions.set(reg.sessionId, reg.settings);
+	const memoryPolicy = resolveMemoryGuardPolicy(reg.settings);
 	const unregisterSchedule = scheduler.register({
 		ownerId: reg.sessionId,
-		intervalMs: resolveSweepIntervalMs(reg.settings),
+		intervalMs: memoryPolicy.enabled
+			? Math.min(resolveSweepIntervalMs(reg.settings), memoryPolicy.checkIntervalMs)
+			: resolveSweepIntervalMs(reg.settings),
 	});
 	let unregistered = false;
 	return () => {
@@ -125,30 +131,163 @@ export function registerResourceGcSession(reg: ResourceGcRegistration): () => vo
 
 export async function sweepOnce(d: ResourceGcDeps = deps): Promise<void> {
 	if (activeSessions.size === 0) return;
-	await sweepMemoryPressureGuard(d);
+	const memorySweep = sweepMemoryPressureGuard(d);
+	if (memorySweep) await memorySweep;
 	await sweepBrowserTabs(d);
 	await sweepScreenshots(d);
 }
 
-function sweepMemoryPressureGuard(d: ResourceGcDeps): void {
-	const rssBytes = d.rssBytes();
-	const totalMemoryBytes = d.totalMemoryBytes();
+export interface MemoryPressureSnapshot {
+	hardCapBytes: number;
+	totalUsageBytes: number;
+	parentBytes: number;
+	source: "host" | "linux_cgroup_v2" | "linux_cgroup_v1" | "windows_job";
+}
+
+function decodeMountInfoPath(value: string): string {
+	return value.replace(/\\([0-7]{3})/g, (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)));
+}
+
+function resolveCgroupDirectory(
+	mountInfo: string,
+	membershipPath: string,
+	fsType: "cgroup" | "cgroup2",
+): string | null {
+	for (const line of mountInfo.split("\n")) {
+		const [left, right] = line.split(" - ", 2);
+		if (!left || !right) continue;
+		const leftFields = left.split(" ");
+		const rightFields = right.split(" ");
+		if (leftFields.length < 5 || rightFields[0] !== fsType) continue;
+		if (fsType === "cgroup" && !rightFields.slice(2).join(",").split(",").includes("memory")) continue;
+		const mountRoot = decodeMountInfoPath(leftFields[3]!);
+		const mountPoint = decodeMountInfoPath(leftFields[4]!);
+		const relative = path.posix.relative(mountRoot, membershipPath);
+		if (relative.startsWith("..") || path.posix.isAbsolute(relative)) continue;
+		return path.join(mountPoint, relative);
+	}
+	return null;
+}
+
+async function readMemoryCounter(file: string): Promise<number | null> {
+	try {
+		const value = (await fs.readFile(file, "utf8")).trim();
+		if (value === "max" || !/^\d+$/.test(value)) return null;
+		const parsed = Number(value);
+		return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): Promise<MemoryPressureSnapshot | null> {
+	let cgroup: string;
+	let mountInfo: string;
+	try {
+		[cgroup, mountInfo] = await Promise.all([
+			fs.readFile("/proc/self/cgroup", "utf8"),
+			fs.readFile("/proc/self/mountinfo", "utf8"),
+		]);
+	} catch {
+		return null;
+	}
+
+	const entries = cgroup.split("\n").map(line => line.split(":"));
+	const v2Membership = entries.find(parts => parts[0] === "0" && parts[1] === "")?.[2];
+	const v1Membership = entries.find(parts => parts[1]?.split(",").includes("memory"))?.[2];
+	const fsType = v2Membership ? "cgroup2" : v1Membership ? "cgroup" : null;
+	const membership = v2Membership ?? v1Membership;
+	if (!fsType || !membership) return null;
+	const directory = resolveCgroupDirectory(mountInfo, membership, fsType);
+	if (!directory) return null;
+
+	const limitName = fsType === "cgroup2" ? "memory.max" : "memory.limit_in_bytes";
+	const usageName = fsType === "cgroup2" ? "memory.current" : "memory.usage_in_bytes";
+	let hardCapBytes = hostBytes;
+	let totalUsageBytes = (await readMemoryCounter(path.join(directory, usageName))) ?? parentBytes;
+	let current = directory;
+	while (true) {
+		const candidate = await readMemoryCounter(path.join(current, limitName));
+		if (candidate !== null && candidate < hardCapBytes) {
+			hardCapBytes = candidate;
+			totalUsageBytes = (await readMemoryCounter(path.join(current, usageName))) ?? totalUsageBytes;
+		}
+		const parent = path.dirname(current);
+		if (parent === current) break;
+		current = parent;
+	}
+	return {
+		hardCapBytes,
+		totalUsageBytes: Math.max(parentBytes, totalUsageBytes),
+		parentBytes,
+		source: fsType === "cgroup2" ? "linux_cgroup_v2" : "linux_cgroup_v1",
+	};
+}
+
+function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryPressureSnapshot | null {
+	const result = probeWindowsJobMemory();
+	if (result.kind !== "job_snapshot") return null;
+	const limit = Number(result.jobMemoryLimitBytes);
+	const usage = Number(result.jobMemoryUsedBytes);
+	if (!Number.isSafeInteger(limit) || limit <= 0 || !Number.isSafeInteger(usage) || usage < 0) return null;
+	return {
+		hardCapBytes: Math.min(hostBytes, limit),
+		totalUsageBytes: Math.max(parentBytes, usage),
+		parentBytes,
+		source: "windows_job",
+	};
+}
+
+async function sampleMemoryPressure(): Promise<MemoryPressureSnapshot> {
+	const parentBytes = process.memoryUsage().rss;
+	const hostBytes = os.totalmem();
+	if (process.platform === "linux") {
+		const cgroup = await sampleLinuxCgroupMemory(hostBytes, parentBytes);
+		if (cgroup) return cgroup;
+	}
+	if (process.platform === "win32") {
+		const job = sampleWindowsJobMemory(hostBytes, parentBytes);
+		if (job) return job;
+	}
+	return { hardCapBytes: hostBytes, totalUsageBytes: parentBytes, parentBytes, source: "host" };
+}
+
+function sweepMemoryPressureGuard(d: ResourceGcDeps): Promise<void> | undefined {
+	let enabled = false;
+	for (const [sessionId, settings] of activeSessions) {
+		if (resolveMemoryGuardPolicy(settings).enabled) {
+			enabled = true;
+			continue;
+		}
+		memoryGuardGcActive.delete(sessionId);
+		memoryGuardRestartAboveSince.delete(sessionId);
+		memoryGuardRestartCooldownUntil.delete(sessionId);
+	}
+	if (!enabled) return undefined;
+	return sweepEnabledMemoryPressureGuard(d);
+}
+
+async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void> {
+	const snapshot = await d.memorySnapshot();
+	let gcRequested = false;
+	const gcTelemetry: Record<string, unknown>[] = [];
 	for (const [sessionId, settings] of activeSessions) {
 		const policy = resolveMemoryGuardPolicy(settings);
 		if (!policy.enabled) {
 			memoryGuardGcActive.delete(sessionId);
 			memoryGuardRestartAboveSince.delete(sessionId);
+			memoryGuardRestartCooldownUntil.delete(sessionId);
 			continue;
 		}
 		const limit = resolveEffectiveMemoryLimit({
-			hardCapBytes: totalMemoryBytes,
+			hardCapBytes: snapshot.hardCapBytes,
 			policyLimitBytes: policy.policyLimitBytes,
 		});
 		if (limit.effectiveBytes === null) continue;
 		const domain = computeMemoryGuardDomain({
 			effectiveLimitBytes: limit.effectiveBytes,
-			totalUsageBytes: rssBytes,
-			parentBytes: rssBytes,
+			totalUsageBytes: snapshot.totalUsageBytes,
+			parentBytes: snapshot.parentBytes,
 			parentReserveBytes: policy.parentReserveBytes,
 			workers: [],
 		});
@@ -157,15 +296,17 @@ function sweepMemoryPressureGuard(d: ResourceGcDeps): void {
 			hostSupported: false,
 			workerSupported: () => false,
 		});
-		const usageRatio = rssBytes / limit.effectiveBytes;
+		const usageRatio = snapshot.totalUsageBytes / limit.effectiveBytes;
 		if (usageRatio >= policy.gcThresholdRatio) {
 			if (!memoryGuardGcActive.has(sessionId)) {
 				memoryGuardGcActive.add(sessionId);
-				d.runGc();
-				d.logWarn("Memory guard: GC threshold reached", {
+				gcRequested = true;
+				gcTelemetry.push({
 					sessionId,
-					rssBytes,
+					parentBytes: snapshot.parentBytes,
+					totalUsageBytes: snapshot.totalUsageBytes,
 					effectiveLimitBytes: limit.effectiveBytes,
+					domainSource: snapshot.source,
 					limitSource: limit.source,
 					usageRatio,
 					decision: decision.kind,
@@ -190,14 +331,20 @@ function sweepMemoryPressureGuard(d: ResourceGcDeps): void {
 		memoryGuardRestartCooldownUntil.set(sessionId, now + policy.cooldownMs);
 		d.logWarn("Memory guard: restart threshold sustained; restart remains advisory-only", {
 			sessionId,
-			rssBytes,
+			parentBytes: snapshot.parentBytes,
+			totalUsageBytes: snapshot.totalUsageBytes,
 			effectiveLimitBytes: limit.effectiveBytes,
+			domainSource: snapshot.source,
 			limitSource: limit.source,
 			usageRatio,
 			windowMs: policy.restartThresholdWindowMs,
 			cooldownMs: policy.cooldownMs,
 			decision: decision.kind,
 		});
+	}
+	if (gcRequested) {
+		d.runGc();
+		for (const telemetry of gcTelemetry) d.logWarn("Memory guard: GC threshold reached", telemetry);
 	}
 }
 

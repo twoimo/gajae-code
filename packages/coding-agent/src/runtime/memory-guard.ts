@@ -35,7 +35,7 @@ function toRatio(percent: number): number {
 }
 
 function mbToBytes(value: number): number {
-	return value * BYTES_PER_MB;
+	return Math.round(value * BYTES_PER_MB);
 }
 
 function sortTargets(left: MemoryGuardActionTarget, right: MemoryGuardActionTarget): number {
