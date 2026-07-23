@@ -36,7 +36,7 @@ function parseLinuxProcIdentity(stat: string | null | undefined): LinuxProcStatI
 	const suffix = record.slice(close + 1);
 	if (!/^[ \t]+/.test(suffix)) return null;
 	const fields = suffix.trim().split(/[ \t]+/);
-	if (fields.length < 20 || !/^[RSDTtXZPI]$/.test(fields[0])) return null;
+	if (fields.length < 20 || !/^[A-Za-z]$/.test(fields[0])) return null;
 	const ttyDevice = fields[4];
 	const startTime = fields[19];
 	if (!ttyDevice || !/^-?\d+$/.test(ttyDevice) || !/^\d+$/.test(startTime)) return null;

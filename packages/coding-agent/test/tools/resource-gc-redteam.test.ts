@@ -44,7 +44,12 @@ function baseDeps(over: Partial<ResourceGcDeps> = {}): ResourceGcDeps {
 	return {
 		now: () => NOW,
 		rssBytes: () => 1,
-		totalMemoryBytes: () => 1024 * 1024 * 1024,
+		memorySnapshot: async () => ({
+			hardCapBytes: 1024 * 1024 * 1024,
+			totalUsageBytes: 1,
+			parentBytes: 1,
+			source: "host",
+		}),
 		runGc: vi.fn(),
 		logWarn: vi.fn(),
 		listTabs: () => [],
