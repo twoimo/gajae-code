@@ -18,6 +18,7 @@ import chalk from "chalk";
 import { AsyncJobManager } from "../async";
 import {
 	type AppKeybinding,
+	defaultMessageQueueKeysForPlatform,
 	formatKeyHint,
 	formatKeyHints,
 	KeybindingsManager,
@@ -145,9 +146,14 @@ function buildComposerPlaceholder(
 
 export function getDefaultComposerPlaceholder(
 	context: KeyDisplayContext = { platform: process.platform },
-	keybindings: Pick<KeybindingsManager, "getDisplayString"> = KeybindingsManager.inMemory(),
+	keybindings?: Pick<KeybindingsManager, "getDisplayString">,
 ): string {
-	return buildComposerPlaceholder(keybindings, context, { busy: false, busyPromptMode: "steer" });
+	const effectiveKeybindings =
+		keybindings ??
+		KeybindingsManager.inMemory({
+			"app.message.queue": defaultMessageQueueKeysForPlatform(context.platform),
+		});
+	return buildComposerPlaceholder(effectiveKeybindings, context, { busy: false, busyPromptMode: "steer" });
 }
 
 export const DEFAULT_COMPOSER_PLACEHOLDER = getDefaultComposerPlaceholder();

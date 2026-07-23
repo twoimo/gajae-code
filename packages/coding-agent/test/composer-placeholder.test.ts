@@ -13,13 +13,8 @@ describe("composer placeholder", () => {
 			"linux",
 			"Alt+Enter: Queue (busy) · Shift+Tab: Thinking · Ctrl+L: Model · Ctrl+R: History · Shift+Enter/Ctrl+J: New line · Ctrl+C: Clear",
 		],
-	] as const)("formats canonical idle shortcuts for %s", (platform, expected) => {
-		const keybindings = KeybindingsManager.inMemory({
-			"app.message.queue": platform === "win32" || platform === "darwin" ? "alt+q" : "alt+enter",
-		});
-		expect(getComposerPlaceholder(keybindings, { platform }, { busy: false, busyPromptMode: "steer" })).toBe(
-			`Type your message... ${expected}`,
-		);
+	] as const)("formats platform defaults for %s independently of the host", (platform, expected) => {
+		expect(getDefaultComposerPlaceholder({ platform })).toBe(`Type your message... ${expected}`);
 	});
 
 	it("uses effective remapped discovery bindings", () => {
