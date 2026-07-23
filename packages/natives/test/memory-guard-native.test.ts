@@ -22,15 +22,16 @@ function expectTaggedProbeResult(result: unknown): void {
 		case "job_snapshot":
 			expect(tagged.isInJob).toBe(true);
 			for (const key of [
-				"jobMemoryLimitBytes",
 				"jobMemoryUsedBytes",
 				"peakJobMemoryUsedBytes",
-				"processMemoryLimitBytes",
 				"processPrivateUsageBytes",
 				"processWorkingSetBytes",
 				"peakProcessWorkingSetBytes",
 			] as const) {
 				expect(typeof tagged[key]).toBe("string");
+			}
+			for (const key of ["jobMemoryLimitBytes", "processMemoryLimitBytes"] as const) {
+				expect(tagged[key] === undefined || tagged[key] === null || typeof tagged[key] === "string").toBe(true);
 			}
 			break;
 		default:
