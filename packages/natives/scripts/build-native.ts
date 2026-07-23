@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { $ } from "bun";
 import { detectHostAvx2Support } from "../../../scripts/host-detect";
 import { generateEnumExports } from "./gen-enums";
+import { assertRequiredSymbols } from "./embed-guard";
 
 const repoRoot = path.join(import.meta.dir, "../../..");
 const rustDir = path.join(repoRoot, "crates/pi-natives");
@@ -183,13 +184,13 @@ const requiredGeneratedBindingSymbols = [
 	"probeWindowsJobMemory",
 ] as const;
 
+export function validateGeneratedBindingSource(bindings: string): void {
+	assertRequiredSymbols(bindings, requiredGeneratedBindingSymbols);
+}
+
 async function validateGeneratedBindings(): Promise<void> {
 	const bindings = await Bun.file(path.join(nativeDir, "index.d.ts")).text();
-	for (const symbol of requiredGeneratedBindingSymbols) {
-		if (!bindings.includes(symbol)) {
-			throw new Error(`napi build did not generate the required binding: ${symbol}`);
-		}
-	}
+	validateGeneratedBindingSource(bindings);
 }
 
 type NativeBuildProfile = "local" | "ci" | "dist";
