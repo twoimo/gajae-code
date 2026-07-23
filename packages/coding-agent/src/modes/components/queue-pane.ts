@@ -5,8 +5,6 @@ import { getSelectListTheme, theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 
 const MAX_VISIBLE_QUEUE_MESSAGES = 8;
-const RAW_UP = "\x1b[A";
-const RAW_DOWN = "\x1b[B";
 
 export class QueuePaneComponent extends Container {
 	#selectList: SelectList;
@@ -15,7 +13,8 @@ export class QueuePaneComponent extends Container {
 	#onDelete: (entry: QueuedMessageEditEntry, index: number) => void;
 	#onMove: (entry: QueuedMessageEditEntry, index: number, direction: "up" | "down") => void;
 	#onSelect: (entry: QueuedMessageEditEntry) => void;
-
+	#onClose: () => void;
+	#entries: QueuedMessageEditEntry[];
 	constructor(
 		entries: QueuedMessageEditEntry[],
 		options: {
@@ -31,6 +30,8 @@ export class QueuePaneComponent extends Container {
 		this.#onDelete = options.onDelete;
 		this.#onSelect = options.onSelect;
 		this.#onMove = options.onMove;
+		this.#onClose = options.onClose;
+		this.#entries = entries;
 		this.#selectedIndex = Math.max(0, Math.min(options.selectedIndex ?? 0, entries.length - 1));
 		this.#selectedEntry = entries[this.#selectedIndex];
 		const byId = new Map(entries.map(entry => [entry.id, entry]));
@@ -71,12 +72,11 @@ export class QueuePaneComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
-		if (matchesKey(keyData, "alt+up")) {
-			this.#selectList.handleInput(RAW_UP);
-			return;
-		}
-		if (matchesKey(keyData, "alt+down")) {
-			this.#selectList.handleInput(RAW_DOWN);
+		if (matchesKey(keyData, "alt+up") || matchesKey(keyData, "alt+down")) {
+			const direction = matchesKey(keyData, "alt+up") ? -1 : 1;
+			this.#selectedIndex = (this.#selectedIndex + direction + this.#entries.length) % this.#entries.length;
+			this.#selectedEntry = this.#entries[this.#selectedIndex];
+			this.#selectList.setSelectedIndex(this.#selectedIndex);
 			return;
 		}
 		if (matchesKey(keyData, "ctrl+up") || matchesKey(keyData, "ctrl+shift+up")) {
@@ -85,6 +85,14 @@ export class QueuePaneComponent extends Container {
 		}
 		if (matchesKey(keyData, "ctrl+down") || matchesKey(keyData, "ctrl+shift+down")) {
 			if (this.#selectedEntry) this.#onMove(this.#selectedEntry, this.#selectedIndex, "down");
+			return;
+		}
+		if (matchesKey(keyData, "enter")) {
+			if (this.#selectedEntry) this.#onSelect(this.#selectedEntry);
+			return;
+		}
+		if (matchesKey(keyData, "escape")) {
+			this.#onClose();
 			return;
 		}
 		if (matchesKey(keyData, "delete")) {

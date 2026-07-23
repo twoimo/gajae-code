@@ -5,8 +5,6 @@ import { getSelectListTheme, theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 
 const MAX_VISIBLE_QUEUED_MESSAGES = 8;
-const RAW_UP = "\x1b[A";
-const RAW_DOWN = "\x1b[B";
 type QueuedMessageMoveDirection = "up" | "down";
 
 export type { QueuedMessageMoveDirection };
@@ -17,7 +15,9 @@ export class QueuedMessageSelectorComponent extends Container {
 	#selectedIndex = 0;
 	#onDelete: (entry: QueuedMessageEditEntry, selectedIndex: number) => void;
 	#onMove: (entry: QueuedMessageEditEntry, selectedIndex: number, direction: QueuedMessageMoveDirection) => void;
-
+	#onSelect: (entry: QueuedMessageEditEntry) => void;
+	#onCancel: () => void;
+	#entries: QueuedMessageEditEntry[];
 	constructor(
 		entries: QueuedMessageEditEntry[],
 		onSelect: (entry: QueuedMessageEditEntry) => void,
@@ -30,6 +30,9 @@ export class QueuedMessageSelectorComponent extends Container {
 
 		this.#onDelete = onDelete;
 		this.#onMove = onMove;
+		this.#onSelect = onSelect;
+		this.#onCancel = onCancel;
+		this.#entries = entries;
 		const byId = new Map(entries.map(entry => [entry.id, entry]));
 		this.#selectedIndex = Math.max(0, Math.min(options?.selectedIndex ?? 0, entries.length - 1));
 		this.#selectedEntry = entries[this.#selectedIndex];
@@ -72,12 +75,11 @@ export class QueuedMessageSelectorComponent extends Container {
 	}
 
 	handleInput(keyData: string): void {
-		if (matchesKey(keyData, "alt+up")) {
-			this.#selectList.handleInput(RAW_UP);
-			return;
-		}
-		if (matchesKey(keyData, "alt+down")) {
-			this.#selectList.handleInput(RAW_DOWN);
+		if (matchesKey(keyData, "alt+up") || matchesKey(keyData, "alt+down")) {
+			const direction = matchesKey(keyData, "alt+up") ? -1 : 1;
+			this.#selectedIndex = (this.#selectedIndex + direction + this.#entries.length) % this.#entries.length;
+			this.#selectedEntry = this.#entries[this.#selectedIndex];
+			this.#selectList.setSelectedIndex(this.#selectedIndex);
 			return;
 		}
 		if (matchesKey(keyData, "ctrl+up") || matchesKey(keyData, "ctrl+shift+up")) {
@@ -86,6 +88,14 @@ export class QueuedMessageSelectorComponent extends Container {
 		}
 		if (matchesKey(keyData, "ctrl+down") || matchesKey(keyData, "ctrl+shift+down")) {
 			if (this.#selectedEntry) this.#onMove(this.#selectedEntry, this.#selectedIndex, "down");
+			return;
+		}
+		if (matchesKey(keyData, "enter")) {
+			if (this.#selectedEntry) this.#onSelect(this.#selectedEntry);
+			return;
+		}
+		if (matchesKey(keyData, "escape")) {
+			this.#onCancel();
 			return;
 		}
 		if (matchesKey(keyData, "delete")) {
