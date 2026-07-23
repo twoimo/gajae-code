@@ -54,6 +54,7 @@ function baseDeps(over: Partial<ResourceGcDeps> = {}): ResourceGcDeps {
 		cleanupScreenshots: vi.fn(async () => ({ scanned: 0, removed: 0 })),
 		screenshotArmed: () => false,
 		...over,
+		monotonicNow: over.monotonicNow ?? over.now ?? (() => NOW),
 	};
 }
 

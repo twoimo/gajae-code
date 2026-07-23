@@ -61,6 +61,7 @@ export function resolveSweepIntervalMs(settings: Settings): number {
 /** Injectable seams so the controller is fully testable without real browsers/filesystem/RSS. */
 export interface ResourceGcDeps {
 	now: () => number;
+	monotonicNow: () => number;
 	rssBytes: () => number;
 	memorySnapshot: () => Promise<MemoryPressureSnapshot>;
 	runGc: () => void;
@@ -73,6 +74,7 @@ export interface ResourceGcDeps {
 
 const defaultDeps: ResourceGcDeps = {
 	now: () => Date.now(),
+	monotonicNow: () => performance.now(),
 	rssBytes: () => process.memoryUsage().rss,
 	memorySnapshot: () => sampleMemoryPressure(),
 	runGc: () => Bun.gc(true),
@@ -155,7 +157,12 @@ export interface MemoryPressureSnapshot {
 	hardCapBytes: number;
 	totalUsageBytes: number;
 	parentBytes: number;
-	source: "host" | "linux_cgroup_v2" | "linux_cgroup_v1" | "windows_job";
+	source:
+		| "host"
+		| "linux_cgroup_v2"
+		| "linux_cgroup_v1"
+		| "windows_job"
+		| "windows_process_job_limit";
 }
 
 function decodeMountInfoPath(value: string): string {
@@ -167,6 +174,7 @@ function resolveCgroupDirectory(
 	membershipPath: string,
 	fsType: "cgroup" | "cgroup2",
 ): string | null {
+	let namespaceFallback: string | null = null;
 	for (const line of mountInfo.split("\n")) {
 		const [left, right] = line.split(" - ", 2);
 		if (!left || !right) continue;
@@ -178,9 +186,9 @@ function resolveCgroupDirectory(
 		const mountPoint = decodeMountInfoPath(leftFields[4]!);
 		const relative = path.posix.relative(mountRoot, membershipPath);
 		if (!relative.startsWith("..") && !path.posix.isAbsolute(relative)) return path.join(mountPoint, relative);
-		return path.join(mountPoint, membershipPath.replace(/^\/+/, ""));
+		namespaceFallback ??= path.join(mountPoint, membershipPath.replace(/^\/+/, ""));
 	}
-	return null;
+	return namespaceFallback;
 }
 
 async function readMemoryCounter(file: string): Promise<number | null> {
@@ -272,13 +280,15 @@ function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryP
 		{
 			limit: Number(result.jobMemoryLimitBytes),
 			usage: Number(result.jobMemoryUsedBytes),
+			source: "job" as const,
 		},
 		{
 			limit: Number(result.processMemoryLimitBytes),
 			usage: Number(result.processPrivateUsageBytes),
+			source: "process" as const,
 		},
 	].filter(
-		(candidate): candidate is { limit: number; usage: number } =>
+		(candidate): candidate is { limit: number; usage: number; source: "job" | "process" } =>
 			Number.isSafeInteger(candidate.limit) &&
 			candidate.limit > 0 &&
 			Number.isSafeInteger(candidate.usage) &&
@@ -291,11 +301,12 @@ function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryP
 			? candidate
 			: selected,
 	);
+	const processLimitSelected = pressured.source === "process";
 	return {
 		hardCapBytes: Math.min(hostBytes, pressured.limit),
 		totalUsageBytes: pressured.usage,
 		parentBytes,
-		source: "windows_job",
+		source: processLimitSelected ? "windows_process_job_limit" : "windows_job",
 	};
 }
 
@@ -381,7 +392,7 @@ async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void>
 			memoryGuardRestartAboveSince.delete(sessionId);
 			continue;
 		}
-		const now = d.now();
+		const now = d.monotonicNow();
 		const aboveSince = memoryGuardRestartAboveSince.get(sessionId);
 		if (aboveSince === undefined) {
 			memoryGuardRestartAboveSince.set(sessionId, now);
@@ -507,7 +518,11 @@ async function sweepScreenshots(d: ResourceGcDeps): Promise<void> {
 
 // ── Test-only seams ─────────────────────────────────────────────────────────────────────────
 export function __setResourceGcDepsForTest(overrides: Partial<ResourceGcDeps>): void {
-	deps = { ...defaultDeps, ...overrides };
+	deps = {
+		...defaultDeps,
+		...overrides,
+		monotonicNow: overrides.monotonicNow ?? overrides.now ?? defaultDeps.monotonicNow,
+	};
 }
 
 export function __setResourceGcSchedulerNowForTest(now: () => number): void {
