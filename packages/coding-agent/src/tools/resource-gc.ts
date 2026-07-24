@@ -153,11 +153,18 @@ export async function sweepOnce(d: ResourceGcDeps = deps): Promise<void> {
 	await sweepScreenshots(d);
 }
 
+export interface MemoryPressureDomain {
+	hardCapBytes: number;
+	totalUsageBytes: number;
+	source: MemoryPressureSnapshot["source"];
+}
+
 export interface MemoryPressureSnapshot {
 	hardCapBytes: number;
 	totalUsageBytes: number;
 	parentBytes: number;
 	source: "host" | "linux_cgroup_v2" | "linux_cgroup_v1" | "windows_job" | "windows_process_job_limit";
+	domains?: MemoryPressureDomain[];
 }
 
 function decodeMountInfoPath(value: string): string {
@@ -167,6 +174,7 @@ function decodeMountInfoPath(value: string): string {
 interface CgroupDirectoryCandidate {
 	directory: string;
 	mountPoint: string;
+	fallback: boolean;
 }
 
 function resolveCgroupDirectories(
@@ -193,7 +201,8 @@ function resolveCgroupDirectories(
 				: path.join(mountPoint, membershipPath.replace(/^\/+/, ""));
 		if (seen.has(directory)) continue;
 		seen.add(directory);
-		const candidate = { directory, mountPoint };
+		const fallback = relative.startsWith("..") || path.posix.isAbsolute(relative);
+		const candidate = { directory, mountPoint, fallback };
 		if (!relative.startsWith("..") && !path.posix.isAbsolute(relative)) contained.push(candidate);
 		else fallbacks.push(candidate);
 	}
@@ -205,7 +214,21 @@ async function readMemoryCounter(file: string): Promise<number | null> {
 		const value = (await fs.readFile(file, "utf8")).trim();
 		if (value === "max" || !/^\d+$/.test(value)) return null;
 		const parsed = Number(value);
-		return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+		return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+type MemoryLimitCounter = { kind: "finite"; bytes: number } | { kind: "unlimited" };
+
+async function readMemoryLimit(file: string): Promise<MemoryLimitCounter | null> {
+	try {
+		const value = (await fs.readFile(file, "utf8")).trim();
+		if (value === "max") return { kind: "unlimited" };
+		if (!/^\d+$/.test(value)) return null;
+		const bytes = Number(value);
+		return Number.isSafeInteger(bytes) && bytes >= 0 ? { kind: "finite", bytes } : null;
 	} catch {
 		return null;
 	}
@@ -222,32 +245,24 @@ async function sampleLinuxCgroupDirectory(
 	candidate: CgroupDirectoryCandidate,
 	fsType: "cgroup" | "cgroup2",
 	hostBytes: number,
-	parentBytes: number,
-): Promise<{ snapshot: MemoryPressureSnapshot; hasFiniteLimit: boolean } | null> {
+): Promise<MemoryPressureDomain[]> {
 	const limitName = fsType === "cgroup2" ? "memory.max" : "memory.limit_in_bytes";
 	const usageName = fsType === "cgroup2" ? "memory.current" : "memory.usage_in_bytes";
-	let selectedDomain: { limit: number; usage: number } | null = null;
-	let unlimitedUsageBytes: number | null = null;
-	let hasMeasurement = false;
+	const source = fsType === "cgroup2" ? "linux_cgroup_v2" : "linux_cgroup_v1";
+	const domains: MemoryPressureDomain[] = [];
 	let current = candidate.directory;
 	while (true) {
 		const [limit, usage] = await Promise.all([
-			readMemoryCounter(path.join(current, limitName)),
+			readMemoryLimit(path.join(current, limitName)),
 			readMemoryCounter(path.join(current, usageName)),
 		]);
-		if (usage !== null) {
-			hasMeasurement = true;
-			unlimitedUsageBytes = unlimitedUsageBytes === null ? usage : Math.max(unlimitedUsageBytes, usage);
-		}
-		if (limit !== null) {
-			hasMeasurement = true;
-			if (
-				usage !== null &&
-				(selectedDomain === null ||
-					usage / Math.min(hostBytes, limit) > selectedDomain.usage / Math.min(hostBytes, selectedDomain.limit))
-			) {
-				selectedDomain = { limit, usage };
-			}
+		if (limit !== null && usage !== null) {
+			const zeroLimit = limit.kind === "finite" && limit.bytes === 0;
+			domains.push({
+				hardCapBytes: limit.kind === "unlimited" ? hostBytes : Math.max(1, limit.bytes),
+				totalUsageBytes: zeroLimit ? Math.max(1, usage) : usage,
+				source,
+			});
 		}
 		if (current === candidate.mountPoint) break;
 		const parent = path.dirname(current);
@@ -259,16 +274,7 @@ async function sampleLinuxCgroupDirectory(
 		}
 		current = parent;
 	}
-	if (!hasMeasurement) return null;
-	return {
-		hasFiniteLimit: selectedDomain !== null,
-		snapshot: {
-			hardCapBytes: selectedDomain === null ? hostBytes : Math.min(hostBytes, selectedDomain.limit),
-			totalUsageBytes: Math.max(parentBytes, selectedDomain?.usage ?? unlimitedUsageBytes ?? parentBytes),
-			parentBytes,
-			source: fsType === "cgroup2" ? "linux_cgroup_v2" : "linux_cgroup_v1",
-		},
-	};
+	return domains;
 }
 
 export async function __sampleLinuxCgroupHierarchyForTest(
@@ -278,14 +284,27 @@ export async function __sampleLinuxCgroupHierarchyForTest(
 	hostBytes: number,
 	parentBytes: number,
 ): Promise<MemoryPressureSnapshot | null> {
-	let unlimitedSnapshot: MemoryPressureSnapshot | null = null;
+	const containedDomains: MemoryPressureDomain[] = [];
+	const fallbackDomains: MemoryPressureDomain[] = [];
 	for (const candidate of resolveCgroupDirectories(mountInfo, membership, fsType)) {
-		const sampled = await sampleLinuxCgroupDirectory(candidate, fsType, hostBytes, parentBytes);
-		if (!sampled) continue;
-		if (sampled.hasFiniteLimit) return sampled.snapshot;
-		unlimitedSnapshot ??= sampled.snapshot;
+		const domains = await sampleLinuxCgroupDirectory(candidate, fsType, hostBytes);
+		if (candidate.fallback) fallbackDomains.push(...domains);
+		else containedDomains.push(...domains);
 	}
-	return unlimitedSnapshot;
+	const domains = containedDomains.length > 0 ? containedDomains : fallbackDomains;
+	if (domains.length === 0) return null;
+	const selected = domains.reduce((current, domain) =>
+		domain.totalUsageBytes / Math.min(hostBytes, domain.hardCapBytes) >
+		current.totalUsageBytes / Math.min(hostBytes, current.hardCapBytes)
+			? domain
+			: current,
+	);
+	return {
+		...selected,
+		totalUsageBytes: Math.max(parentBytes, selected.totalUsageBytes),
+		parentBytes,
+		domains,
+	};
 }
 
 async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): Promise<MemoryPressureSnapshot | null> {
@@ -372,6 +391,24 @@ async function sampleMemoryPressure(): Promise<MemoryPressureSnapshot> {
 	return { hardCapBytes: hostBytes, totalUsageBytes: parentBytes, parentBytes, source: "host" };
 }
 
+export function __selectMemoryPressureDomainForTest(
+	snapshot: MemoryPressureSnapshot,
+	policyLimitBytes: number | null,
+): MemoryPressureSnapshot {
+	const domains = snapshot.domains;
+	if (!domains || domains.length === 0) return snapshot;
+	const selected = domains.reduce((current, domain) => {
+		const currentLimit = Math.min(current.hardCapBytes, policyLimitBytes ?? current.hardCapBytes);
+		const domainLimit = Math.min(domain.hardCapBytes, policyLimitBytes ?? domain.hardCapBytes);
+		return domain.totalUsageBytes / domainLimit > current.totalUsageBytes / currentLimit ? domain : current;
+	});
+	return {
+		...snapshot,
+		...selected,
+		totalUsageBytes: Math.max(snapshot.parentBytes, selected.totalUsageBytes),
+	};
+}
+
 function sweepMemoryPressureGuard(d: ResourceGcDeps): Promise<void> | undefined {
 	let enabled = false;
 	for (const [sessionId, settings] of activeSessions) {
@@ -399,15 +436,16 @@ async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void>
 			memoryGuardRestartCooldownUntil.delete(sessionId);
 			continue;
 		}
+		const pressure = __selectMemoryPressureDomainForTest(snapshot, policy.policyLimitBytes);
 		const limit = resolveEffectiveMemoryLimit({
-			hardCapBytes: snapshot.hardCapBytes,
+			hardCapBytes: pressure.hardCapBytes,
 			policyLimitBytes: policy.policyLimitBytes,
 		});
 		if (limit.effectiveBytes === null) continue;
 		const domain = computeMemoryGuardDomain({
 			effectiveLimitBytes: limit.effectiveBytes,
-			totalUsageBytes: snapshot.totalUsageBytes,
-			parentBytes: snapshot.parentBytes,
+			totalUsageBytes: pressure.totalUsageBytes,
+			parentBytes: pressure.parentBytes,
 			parentReserveBytes: policy.parentReserveBytes,
 			workers: [],
 		});
@@ -416,17 +454,17 @@ async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void>
 			hostSupported: false,
 			workerSupported: () => false,
 		});
-		const usageRatio = snapshot.totalUsageBytes / limit.effectiveBytes;
+		const usageRatio = pressure.totalUsageBytes / limit.effectiveBytes;
 		if (usageRatio >= policy.gcThresholdRatio) {
 			if (!memoryGuardGcActive.has(sessionId)) {
 				memoryGuardGcActive.add(sessionId);
 				gcRequested = true;
 				gcTelemetry.push({
 					sessionId,
-					parentBytes: snapshot.parentBytes,
-					totalUsageBytes: snapshot.totalUsageBytes,
+					parentBytes: pressure.parentBytes,
+					totalUsageBytes: pressure.totalUsageBytes,
 					effectiveLimitBytes: limit.effectiveBytes,
-					domainSource: snapshot.source,
+					domainSource: pressure.source,
 					limitSource: limit.source,
 					usageRatio,
 					decision: decision.kind,
@@ -451,10 +489,10 @@ async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void>
 		memoryGuardRestartCooldownUntil.set(sessionId, now + policy.cooldownMs);
 		d.logWarn("Memory guard: restart threshold sustained; restart remains advisory-only", {
 			sessionId,
-			parentBytes: snapshot.parentBytes,
-			totalUsageBytes: snapshot.totalUsageBytes,
+			parentBytes: pressure.parentBytes,
+			totalUsageBytes: pressure.totalUsageBytes,
 			effectiveLimitBytes: limit.effectiveBytes,
-			domainSource: snapshot.source,
+			domainSource: pressure.source,
 			limitSource: limit.source,
 			usageRatio,
 			windowMs: policy.restartThresholdWindowMs,

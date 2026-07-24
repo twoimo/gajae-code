@@ -12,6 +12,7 @@ import {
 	__runResourceGcTickForTest,
 	__runResourceGcTimerCallbackForTest,
 	__sampleLinuxCgroupHierarchyForTest,
+	__selectMemoryPressureDomainForTest,
 	__setResourceGcDepsForTest,
 	__setResourceGcSchedulerNowForTest,
 	type ResourceGcDeps,
@@ -138,11 +139,34 @@ describe("Linux cgroup memory sampling", () => {
 			writeCounters(path.join(second, "app"), "1000", "700");
 			const mountInfo = [mountLine(31, "/", first), mountLine(32, "/", second)].join("\n");
 
-			await expect(__sampleLinuxCgroupHierarchyForTest(mountInfo, "/app", "cgroup2", 4000, 100)).resolves.toEqual({
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountInfo, "/app", "cgroup2", 4000, 100),
+			).resolves.toMatchObject({
 				hardCapBytes: 1000,
 				totalUsageBytes: 700,
 				parentBytes: 100,
 				source: "linux_cgroup_v2",
+			});
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("compares pressure across every compatible containing mount", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-cgroup-multi-mount-"));
+		try {
+			const narrow = path.join(root, "narrow");
+			const broad = path.join(root, "broad");
+			writeCounters(narrow, "1000", "100");
+			writeCounters(path.join(broad, "app"), "1000", "100");
+			writeCounters(broad, "2000", "1900");
+			const mountInfo = [mountLine(38, "/app", narrow), mountLine(39, "/", broad)].join("\n");
+
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountInfo, "/app", "cgroup2", 5000, 50),
+			).resolves.toMatchObject({
+				hardCapBytes: 2000,
+				totalUsageBytes: 1900,
 			});
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
@@ -156,7 +180,9 @@ describe("Linux cgroup memory sampling", () => {
 			writeCounters(path.join(mountPoint, "app"), "2000", "600");
 			const mountInfo = mountLine(41, "/docker/container-id", mountPoint);
 
-			await expect(__sampleLinuxCgroupHierarchyForTest(mountInfo, "/app", "cgroup2", 5000, 100)).resolves.toEqual({
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountInfo, "/app", "cgroup2", 5000, 100),
+			).resolves.toMatchObject({
 				hardCapBytes: 2000,
 				totalUsageBytes: 600,
 				parentBytes: 100,
@@ -177,7 +203,7 @@ describe("Linux cgroup memory sampling", () => {
 			writeCounters(mountPoint, "3000", "600");
 			await expect(
 				__sampleLinuxCgroupHierarchyForTest(mountLine(45, "/", mountPoint), "/parent/child", "cgroup2", 5000, 50),
-			).resolves.toEqual({
+			).resolves.toMatchObject({
 				hardCapBytes: 2000,
 				totalUsageBytes: 1900,
 				parentBytes: 50,
@@ -197,6 +223,27 @@ describe("Linux cgroup memory sampling", () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
+	it("selects ancestor pressure against the configured policy cap", () => {
+		expect(
+			__selectMemoryPressureDomainForTest(
+				{
+					hardCapBytes: 1000,
+					totalUsageBytes: 600,
+					parentBytes: 50,
+					source: "linux_cgroup_v2",
+					domains: [
+						{ hardCapBytes: 1000, totalUsageBytes: 600, source: "linux_cgroup_v2" },
+						{ hardCapBytes: 8000, totalUsageBytes: 4000, source: "linux_cgroup_v2" },
+					],
+				},
+				2000,
+			),
+		).toMatchObject({
+			hardCapBytes: 8000,
+			totalUsageBytes: 4000,
+		});
+	});
+
 	it("ignores zero and malformed counters while preserving valid unlimited usage", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-cgroup-counters-"));
 		try {
@@ -211,11 +258,19 @@ describe("Linux cgroup memory sampling", () => {
 			writeCounters(path.join(unlimitedMount, "app"), "max", "900");
 			await expect(
 				__sampleLinuxCgroupHierarchyForTest(mountLine(52, "/", unlimitedMount), "/app", "cgroup2", 5000, 100),
-			).resolves.toEqual({
+			).resolves.toMatchObject({
 				hardCapBytes: 5000,
 				totalUsageBytes: 900,
 				parentBytes: 100,
 				source: "linux_cgroup_v2",
+			});
+			const zeroMount = path.join(root, "zero");
+			writeCounters(path.join(zeroMount, "app"), "0", "0");
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountLine(53, "/", zeroMount), "/app", "cgroup2", 5000, 100),
+			).resolves.toMatchObject({
+				hardCapBytes: 1,
+				totalUsageBytes: 100,
 			});
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
