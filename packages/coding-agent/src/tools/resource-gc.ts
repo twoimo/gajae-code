@@ -164,12 +164,19 @@ function decodeMountInfoPath(value: string): string {
 	return value.replace(/\\([0-7]{3})/g, (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)));
 }
 
-function resolveCgroupDirectory(
+interface CgroupDirectoryCandidate {
+	directory: string;
+	mountPoint: string;
+}
+
+function resolveCgroupDirectories(
 	mountInfo: string,
 	membershipPath: string,
 	fsType: "cgroup" | "cgroup2",
-): string | null {
-	let namespaceFallback: string | null = null;
+): CgroupDirectoryCandidate[] {
+	const contained: CgroupDirectoryCandidate[] = [];
+	const fallbacks: CgroupDirectoryCandidate[] = [];
+	const seen = new Set<string>();
 	for (const line of mountInfo.split("\n")) {
 		const [left, right] = line.split(" - ", 2);
 		if (!left || !right) continue;
@@ -180,10 +187,17 @@ function resolveCgroupDirectory(
 		const mountRoot = decodeMountInfoPath(leftFields[3]!);
 		const mountPoint = decodeMountInfoPath(leftFields[4]!);
 		const relative = path.posix.relative(mountRoot, membershipPath);
-		if (!relative.startsWith("..") && !path.posix.isAbsolute(relative)) return path.join(mountPoint, relative);
-		namespaceFallback ??= path.join(mountPoint, membershipPath.replace(/^\/+/, ""));
+		const directory =
+			!relative.startsWith("..") && !path.posix.isAbsolute(relative)
+				? path.join(mountPoint, relative)
+				: path.join(mountPoint, membershipPath.replace(/^\/+/, ""));
+		if (seen.has(directory)) continue;
+		seen.add(directory);
+		const candidate = { directory, mountPoint };
+		if (!relative.startsWith("..") && !path.posix.isAbsolute(relative)) contained.push(candidate);
+		else fallbacks.push(candidate);
 	}
-	return namespaceFallback;
+	return [...contained, ...fallbacks];
 }
 
 async function readMemoryCounter(file: string): Promise<number | null> {
@@ -204,40 +218,66 @@ function parseCgroupEntry(line: string): [string, string, string] | null {
 	return [line.slice(0, first), line.slice(first + 1, second), line.slice(second + 1)];
 }
 
-async function sampleLinuxCgroupHierarchy(
+async function sampleLinuxCgroupDirectory(
+	candidate: CgroupDirectoryCandidate,
+	fsType: "cgroup" | "cgroup2",
+	hostBytes: number,
+	parentBytes: number,
+): Promise<{ snapshot: MemoryPressureSnapshot; hasFiniteLimit: boolean } | null> {
+	const limitName = fsType === "cgroup2" ? "memory.max" : "memory.limit_in_bytes";
+	const usageName = fsType === "cgroup2" ? "memory.current" : "memory.usage_in_bytes";
+	let hardCapBytes = hostBytes;
+	let totalUsageBytes = parentBytes;
+	let hasFiniteLimit = false;
+	let hasMeasurement = false;
+	let current = candidate.directory;
+	while (true) {
+		const [limit, usage] = await Promise.all([
+			readMemoryCounter(path.join(current, limitName)),
+			readMemoryCounter(path.join(current, usageName)),
+		]);
+		if (usage !== null) {
+			hasMeasurement = true;
+			if (current === candidate.directory) totalUsageBytes = usage;
+		}
+		if (limit !== null && limit <= hardCapBytes) {
+			hasMeasurement = true;
+			hasFiniteLimit = true;
+			hardCapBytes = limit;
+			totalUsageBytes = usage ?? totalUsageBytes;
+		}
+		if (current === candidate.mountPoint) break;
+		const parent = path.dirname(current);
+		if (parent === current || !parent.startsWith(`${candidate.mountPoint}${path.sep}`)) break;
+		current = parent;
+	}
+	if (!hasMeasurement) return null;
+	return {
+		hasFiniteLimit,
+		snapshot: {
+			hardCapBytes,
+			totalUsageBytes: Math.max(parentBytes, totalUsageBytes),
+			parentBytes,
+			source: fsType === "cgroup2" ? "linux_cgroup_v2" : "linux_cgroup_v1",
+		},
+	};
+}
+
+export async function __sampleLinuxCgroupHierarchyForTest(
 	mountInfo: string,
 	membership: string,
 	fsType: "cgroup" | "cgroup2",
 	hostBytes: number,
 	parentBytes: number,
 ): Promise<MemoryPressureSnapshot | null> {
-	const directory = resolveCgroupDirectory(mountInfo, membership, fsType);
-	if (!directory) return null;
-	const limitName = fsType === "cgroup2" ? "memory.max" : "memory.limit_in_bytes";
-	const usageName = fsType === "cgroup2" ? "memory.current" : "memory.usage_in_bytes";
-	const initialUsage = await readMemoryCounter(path.join(directory, usageName));
-	const initialLimit = await readMemoryCounter(path.join(directory, limitName));
-	if (initialUsage === null && initialLimit === null) return null;
-
-	let hardCapBytes = hostBytes;
-	let totalUsageBytes = initialUsage ?? parentBytes;
-	let current = directory;
-	while (true) {
-		const candidate = await readMemoryCounter(path.join(current, limitName));
-		if (candidate !== null && candidate <= hardCapBytes) {
-			hardCapBytes = candidate;
-			totalUsageBytes = (await readMemoryCounter(path.join(current, usageName))) ?? totalUsageBytes;
-		}
-		const parent = path.dirname(current);
-		if (parent === current) break;
-		current = parent;
+	let unlimitedSnapshot: MemoryPressureSnapshot | null = null;
+	for (const candidate of resolveCgroupDirectories(mountInfo, membership, fsType)) {
+		const sampled = await sampleLinuxCgroupDirectory(candidate, fsType, hostBytes, parentBytes);
+		if (!sampled) continue;
+		if (sampled.hasFiniteLimit) return sampled.snapshot;
+		unlimitedSnapshot ??= sampled.snapshot;
 	}
-	return {
-		hardCapBytes,
-		totalUsageBytes: Math.max(parentBytes, totalUsageBytes),
-		parentBytes,
-		source: fsType === "cgroup2" ? "linux_cgroup_v2" : "linux_cgroup_v1",
-	};
+	return unlimitedSnapshot;
 }
 
 async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): Promise<MemoryPressureSnapshot | null> {
@@ -259,11 +299,17 @@ async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): 
 	const v2Membership = entries.find(parts => parts[0] === "0" && parts[1] === "")?.[2];
 	const v1Membership = entries.find(parts => parts[1].split(",").includes("memory"))?.[2];
 	if (v2Membership) {
-		const snapshot = await sampleLinuxCgroupHierarchy(mountInfo, v2Membership, "cgroup2", hostBytes, parentBytes);
+		const snapshot = await __sampleLinuxCgroupHierarchyForTest(
+			mountInfo,
+			v2Membership,
+			"cgroup2",
+			hostBytes,
+			parentBytes,
+		);
 		if (snapshot) return snapshot;
 	}
 	if (v1Membership) {
-		return sampleLinuxCgroupHierarchy(mountInfo, v1Membership, "cgroup", hostBytes, parentBytes);
+		return __sampleLinuxCgroupHierarchyForTest(mountInfo, v1Membership, "cgroup", hostBytes, parentBytes);
 	}
 	return null;
 }
