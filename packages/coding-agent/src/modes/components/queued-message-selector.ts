@@ -9,13 +9,6 @@ type QueuedMessageMoveDirection = "up" | "down";
 type QueueSelectorAction = "tui.select.confirm" | "tui.select.cancel";
 type QueueSelectorNavigationAction = "tui.select.up" | "tui.select.down" | "tui.select.pageUp" | "tui.select.pageDown";
 
-const SELECT_NAVIGATION_INPUT: Readonly<Record<QueueSelectorNavigationAction, string>> = {
-	"tui.select.up": "\x1b[A",
-	"tui.select.down": "\x1b[B",
-	"tui.select.pageUp": "\x1b[5~",
-	"tui.select.pageDown": "\x1b[6~",
-};
-
 export type { QueuedMessageMoveDirection };
 
 export class QueuedMessageSelectorComponent extends Container {
@@ -110,7 +103,7 @@ export class QueuedMessageSelectorComponent extends Container {
 		}
 		const navigation = this.#resolveSelectNavigation(keyData);
 		if (navigation) {
-			this.#selectList.handleInput(SELECT_NAVIGATION_INPUT[navigation]);
+			this.#selectList.handleNavigation(navigation);
 			return;
 		}
 		if (matchesKey(keyData, "enter") || matchesKey(keyData, "escape")) return;
