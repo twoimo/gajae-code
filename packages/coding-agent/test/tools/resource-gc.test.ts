@@ -167,6 +167,36 @@ describe("Linux cgroup memory sampling", () => {
 		}
 	});
 
+	it("samples the mount root and selects the ancestor nearest to pressure", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-cgroup-ancestor-"));
+		try {
+			const mountPoint = path.join(root, "memory");
+			const child = path.join(mountPoint, "parent", "child");
+			writeCounters(child, "1000", "100");
+			writeCounters(path.join(mountPoint, "parent"), "2000", "1900");
+			writeCounters(mountPoint, "3000", "600");
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountLine(45, "/", mountPoint), "/parent/child", "cgroup2", 5000, 50),
+			).resolves.toEqual({
+				hardCapBytes: 2000,
+				totalUsageBytes: 1900,
+				parentBytes: 50,
+				source: "linux_cgroup_v2",
+			});
+
+			writeCounters(child, "max", "100");
+			writeCounters(path.join(mountPoint, "parent"), "max", "200");
+			writeCounters(mountPoint, "1500", "1200");
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountLine(46, "/", mountPoint), "/parent/child", "cgroup2", 5000, 50),
+			).resolves.toMatchObject({
+				hardCapBytes: 1500,
+				totalUsageBytes: 1200,
+			});
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 	it("ignores zero and malformed counters while preserving valid unlimited usage", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-cgroup-counters-"));
 		try {
