@@ -7,6 +7,14 @@ import { DynamicBorder } from "./dynamic-border";
 const MAX_VISIBLE_QUEUED_MESSAGES = 8;
 type QueuedMessageMoveDirection = "up" | "down";
 type QueueSelectorAction = "tui.select.confirm" | "tui.select.cancel";
+type QueueSelectorNavigationAction = "tui.select.up" | "tui.select.down" | "tui.select.pageUp" | "tui.select.pageDown";
+
+const SELECT_NAVIGATION_INPUT: Readonly<Record<QueueSelectorNavigationAction, string>> = {
+	"tui.select.up": "\x1b[A",
+	"tui.select.down": "\x1b[B",
+	"tui.select.pageUp": "\x1b[5~",
+	"tui.select.pageDown": "\x1b[6~",
+};
 
 export type { QueuedMessageMoveDirection };
 
@@ -20,6 +28,7 @@ export class QueuedMessageSelectorComponent extends Container {
 	#onCancel: () => void;
 	#entries: QueuedMessageEditEntry[];
 	#matchesSelectAction: (keyData: string, action: QueueSelectorAction) => boolean;
+	#resolveSelectNavigation: (keyData: string) => QueueSelectorNavigationAction | undefined;
 	constructor(
 		entries: QueuedMessageEditEntry[],
 		onSelect: (entry: QueuedMessageEditEntry) => void,
@@ -31,6 +40,7 @@ export class QueuedMessageSelectorComponent extends Container {
 			formatKeyHint?: (key: string) => string;
 			formatSelectAction?: (action: QueueSelectorAction) => string;
 			matchesSelectAction?: (keyData: string, action: QueueSelectorAction) => boolean;
+			resolveSelectNavigation?: (keyData: string) => QueueSelectorNavigationAction | undefined;
 		},
 	) {
 		super();
@@ -43,6 +53,7 @@ export class QueuedMessageSelectorComponent extends Container {
 		this.#matchesSelectAction =
 			options?.matchesSelectAction ??
 			((keyData, action) => matchesKey(keyData, action === "tui.select.confirm" ? "enter" : "escape"));
+		this.#resolveSelectNavigation = options?.resolveSelectNavigation ?? (() => undefined);
 		const byId = new Map(entries.map(entry => [entry.id, entry]));
 		this.#selectedIndex = Math.max(0, Math.min(options?.selectedIndex ?? 0, entries.length - 1));
 		this.#selectedEntry = entries[this.#selectedIndex];
@@ -95,6 +106,11 @@ export class QueuedMessageSelectorComponent extends Container {
 		}
 		if (this.#matchesSelectAction(keyData, "tui.select.cancel")) {
 			this.#onCancel();
+			return;
+		}
+		const navigation = this.#resolveSelectNavigation(keyData);
+		if (navigation) {
+			this.#selectList.handleInput(SELECT_NAVIGATION_INPUT[navigation]);
 			return;
 		}
 		if (matchesKey(keyData, "enter") || matchesKey(keyData, "escape")) return;

@@ -33,6 +33,13 @@ import type { PasteTextContext } from "../components/custom-editor";
 import { QueuePaneComponent } from "../components/queue-pane";
 import { type QueuedMessageMoveDirection, QueuedMessageSelectorComponent } from "../components/queued-message-selector";
 
+const QUEUE_SELECTOR_NAVIGATION_ACTIONS = [
+	"tui.select.up",
+	"tui.select.down",
+	"tui.select.pageUp",
+	"tui.select.pageDown",
+] as const;
+
 interface Expandable {
 	setExpanded(expanded: boolean): void;
 	setManuallyExpanded?(expanded: boolean): void;
@@ -1050,6 +1057,10 @@ export class InputController {
 			formatSelectAction: action => this.ctx.keybindings.getDisplayString(action),
 			matchesSelectAction: (keyData, action) =>
 				this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+			resolveSelectNavigation: keyData =>
+				QUEUE_SELECTOR_NAVIGATION_ACTIONS.find(action =>
+					this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+				),
 			onSelect: entry => {
 				const restored = this.#restoreQueuedMessageToEditor(entry);
 				close();
@@ -1235,6 +1246,10 @@ export class InputController {
 				formatSelectAction: action => this.ctx.keybindings.getDisplayString(action),
 				matchesSelectAction: (keyData, action) =>
 					this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+				resolveSelectNavigation: keyData =>
+					QUEUE_SELECTOR_NAVIGATION_ACTIONS.find(action =>
+						this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+					),
 			},
 		);
 		this.ctx.editorContainer.clear();
