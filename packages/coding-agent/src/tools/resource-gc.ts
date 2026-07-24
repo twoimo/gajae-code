@@ -199,8 +199,9 @@ function resolveCgroupDirectories(
 			!relative.startsWith("..") && !path.posix.isAbsolute(relative)
 				? path.join(mountPoint, relative)
 				: path.join(mountPoint, membershipPath.replace(/^\/+/, ""));
-		if (seen.has(directory)) continue;
-		seen.add(directory);
+		const key = `${directory}\0${mountPoint}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
 		const fallback = relative.startsWith("..") || path.posix.isAbsolute(relative);
 		const candidate = { directory, mountPoint, fallback };
 		if (!relative.startsWith("..") && !path.posix.isAbsolute(relative)) contained.push(candidate);
@@ -222,13 +223,15 @@ async function readMemoryCounter(file: string): Promise<number | null> {
 
 type MemoryLimitCounter = { kind: "finite"; bytes: number } | { kind: "unlimited" };
 
-async function readMemoryLimit(file: string): Promise<MemoryLimitCounter | null> {
+async function readMemoryLimit(file: string, fsType: "cgroup" | "cgroup2"): Promise<MemoryLimitCounter | null> {
 	try {
 		const value = (await fs.readFile(file, "utf8")).trim();
 		if (value === "max") return { kind: "unlimited" };
 		if (!/^\d+$/.test(value)) return null;
-		const bytes = Number(value);
-		return Number.isSafeInteger(bytes) && bytes >= 0 ? { kind: "finite", bytes } : null;
+		const bytes = BigInt(value);
+		if (fsType === "cgroup" && bytes > BigInt(Number.MAX_SAFE_INTEGER)) return { kind: "unlimited" };
+		const numericBytes = Number(bytes);
+		return Number.isSafeInteger(numericBytes) ? { kind: "finite", bytes: numericBytes } : null;
 	} catch {
 		return null;
 	}
@@ -253,13 +256,13 @@ async function sampleLinuxCgroupDirectory(
 	let current = candidate.directory;
 	while (true) {
 		const [limit, usage] = await Promise.all([
-			readMemoryLimit(path.join(current, limitName)),
+			readMemoryLimit(path.join(current, limitName), fsType),
 			readMemoryCounter(path.join(current, usageName)),
 		]);
 		if (limit !== null && usage !== null) {
 			const zeroLimit = limit.kind === "finite" && limit.bytes === 0;
 			domains.push({
-				hardCapBytes: limit.kind === "unlimited" ? hostBytes : Math.max(1, limit.bytes),
+				hardCapBytes: limit.kind === "unlimited" ? hostBytes : Math.min(hostBytes, Math.max(1, limit.bytes)),
 				totalUsageBytes: zeroLimit ? Math.max(1, usage) : usage,
 				source,
 			});
@@ -363,17 +366,20 @@ function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryP
 			candidate.usage >= 0,
 	);
 	if (candidates.length === 0) return null;
-	const pressured = candidates.reduce((selected, candidate) =>
-		candidate.usage / Math.min(hostBytes, candidate.limit) > selected.usage / Math.min(hostBytes, selected.limit)
+	const domains: MemoryPressureDomain[] = candidates.map(candidate => ({
+		hardCapBytes: Math.min(hostBytes, candidate.limit),
+		totalUsageBytes: candidate.usage,
+		source: candidate.source === "process" ? "windows_process_job_limit" : "windows_job",
+	}));
+	const pressured = domains.reduce((selected, candidate) =>
+		candidate.totalUsageBytes / candidate.hardCapBytes > selected.totalUsageBytes / selected.hardCapBytes
 			? candidate
 			: selected,
 	);
-	const processLimitSelected = pressured.source === "process";
 	return {
-		hardCapBytes: Math.min(hostBytes, pressured.limit),
-		totalUsageBytes: pressured.usage,
+		...pressured,
 		parentBytes,
-		source: processLimitSelected ? "windows_process_job_limit" : "windows_job",
+		domains,
 	};
 }
 

@@ -120,8 +120,9 @@ function controlledReleases(): { releaseTab: Mock<ResourceGcDeps["releaseTab"]>;
 }
 
 describe("Linux cgroup memory sampling", () => {
-	function mountLine(id: number, root: string, mountPoint: string): string {
-		return `${id} 1 0:${id} ${root} ${mountPoint} rw - cgroup2 cgroup rw`;
+	function mountLine(id: number, root: string, mountPoint: string, fsType: "cgroup" | "cgroup2" = "cgroup2"): string {
+		const superOptions = fsType === "cgroup" ? "rw,memory" : "rw";
+		return `${id} 1 0:${id} ${root} ${mountPoint} rw - ${fsType} cgroup ${superOptions}`;
 	}
 
 	function writeCounters(directory: string, limit: string, usage: string): void {
@@ -173,6 +174,25 @@ describe("Linux cgroup memory sampling", () => {
 		}
 	});
 
+	it("preserves distinct ancestor chains that resolve to the same leaf path", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-cgroup-shared-leaf-"));
+		try {
+			const broad = path.join(root, "shared");
+			const leaf = path.join(broad, "parent", "child");
+			writeCounters(leaf, "1000", "100");
+			writeCounters(broad, "2000", "1900");
+			const mountInfo = [mountLine(42, "/parent/child", leaf), mountLine(43, "/", broad)].join("\n");
+
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountInfo, "/parent/child", "cgroup2", 5000, 50),
+			).resolves.toMatchObject({
+				hardCapBytes: 2000,
+				totalUsageBytes: 1900,
+			});
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 	it("uses the namespace-relative fallback after containment candidates are exhausted", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-cgroup-namespace-"));
 		try {
@@ -271,6 +291,26 @@ describe("Linux cgroup memory sampling", () => {
 			).resolves.toMatchObject({
 				hardCapBytes: 1,
 				totalUsageBytes: 100,
+			});
+			const clampedMount = path.join(root, "clamped");
+			writeCounters(path.join(clampedMount, "app"), "9000", "4500");
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountLine(54, "/", clampedMount), "/app", "cgroup2", 5000, 100),
+			).resolves.toMatchObject({
+				hardCapBytes: 5000,
+				totalUsageBytes: 4500,
+			});
+
+			const v1Mount = path.join(root, "v1");
+			const v1Directory = path.join(v1Mount, "app");
+			fs.mkdirSync(v1Directory, { recursive: true });
+			fs.writeFileSync(path.join(v1Directory, "memory.limit_in_bytes"), "9223372036854771712");
+			fs.writeFileSync(path.join(v1Directory, "memory.usage_in_bytes"), "800");
+			await expect(
+				__sampleLinuxCgroupHierarchyForTest(mountLine(55, "/", v1Mount, "cgroup"), "/app", "cgroup", 5000, 100),
+			).resolves.toMatchObject({
+				hardCapBytes: 5000,
+				totalUsageBytes: 800,
 			});
 		} finally {
 			fs.rmSync(root, { recursive: true, force: true });
