@@ -226,9 +226,8 @@ async function sampleLinuxCgroupDirectory(
 ): Promise<{ snapshot: MemoryPressureSnapshot; hasFiniteLimit: boolean } | null> {
 	const limitName = fsType === "cgroup2" ? "memory.max" : "memory.limit_in_bytes";
 	const usageName = fsType === "cgroup2" ? "memory.current" : "memory.usage_in_bytes";
-	let hardCapBytes = hostBytes;
-	let totalUsageBytes = parentBytes;
-	let hasFiniteLimit = false;
+	let selectedDomain: { limit: number; usage: number } | null = null;
+	let unlimitedUsageBytes: number | null = null;
 	let hasMeasurement = false;
 	let current = candidate.directory;
 	while (true) {
@@ -238,25 +237,34 @@ async function sampleLinuxCgroupDirectory(
 		]);
 		if (usage !== null) {
 			hasMeasurement = true;
-			if (current === candidate.directory) totalUsageBytes = usage;
+			unlimitedUsageBytes = unlimitedUsageBytes === null ? usage : Math.max(unlimitedUsageBytes, usage);
 		}
-		if (limit !== null && limit <= hardCapBytes) {
+		if (limit !== null) {
 			hasMeasurement = true;
-			hasFiniteLimit = true;
-			hardCapBytes = limit;
-			totalUsageBytes = usage ?? totalUsageBytes;
+			if (
+				usage !== null &&
+				(selectedDomain === null ||
+					usage / Math.min(hostBytes, limit) > selectedDomain.usage / Math.min(hostBytes, selectedDomain.limit))
+			) {
+				selectedDomain = { limit, usage };
+			}
 		}
 		if (current === candidate.mountPoint) break;
 		const parent = path.dirname(current);
-		if (parent === current || !parent.startsWith(`${candidate.mountPoint}${path.sep}`)) break;
+		if (
+			parent === current ||
+			(parent !== candidate.mountPoint && !parent.startsWith(`${candidate.mountPoint}${path.sep}`))
+		) {
+			break;
+		}
 		current = parent;
 	}
 	if (!hasMeasurement) return null;
 	return {
-		hasFiniteLimit,
+		hasFiniteLimit: selectedDomain !== null,
 		snapshot: {
-			hardCapBytes,
-			totalUsageBytes: Math.max(parentBytes, totalUsageBytes),
+			hardCapBytes: selectedDomain === null ? hostBytes : Math.min(hostBytes, selectedDomain.limit),
+			totalUsageBytes: Math.max(parentBytes, selectedDomain?.usage ?? unlimitedUsageBytes ?? parentBytes),
 			parentBytes,
 			source: fsType === "cgroup2" ? "linux_cgroup_v2" : "linux_cgroup_v1",
 		},
