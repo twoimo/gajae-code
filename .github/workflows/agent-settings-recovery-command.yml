@@ -1,0 +1,62 @@
+name: Rebase malformed settings recovery
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.event.issue.number == 1 && github.event.comment.body == '/run-settings-recovery-repair'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repair target
+        uses: actions/checkout@v4
+        with:
+          ref: fix/malformed-settings-recovery-current
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge current upstream dev
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git remote add upstream https://github.com/Yeachan-Heo/gajae-code.git || true
+          git fetch --no-tags upstream dev
+          git merge --no-edit --no-ff upstream/dev
+          git push origin HEAD:fix/malformed-settings-recovery-current
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Re-run the exact prior blocker
+        run: bun test --timeout 30000 packages/coding-agent/test/modes/components/settings-selector-pet.test.ts
+
+      - name: Run malformed-settings and interactive-control regression suite
+        run: |
+          bun test --timeout 30000 \
+            packages/coding-agent/test/notifications-config.test.ts \
+            packages/coding-agent/test/settings-manager.test.ts \
+            packages/coding-agent/test/issue-775-repro.test.ts \
+            packages/coding-agent/test/modes/components/settings-selector-memory-refresh.test.ts \
+            packages/coding-agent/test/modes/components/settings-selector-pet.test.ts \
+            packages/coding-agent/test/modes/components/thinking-selector.test.ts \
+            packages/coding-agent/test/startup-update-contract.test.ts
+
+      - name: Run package check and build
+        run: |
+          bun --cwd=packages/coding-agent run check
+          bun --cwd=packages/coding-agent run build
+
+      - name: Publish verification receipt commit
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git commit --allow-empty -m "test(coding-agent): verify malformed settings recovery"
+          git push origin HEAD:fix/malformed-settings-recovery-current
