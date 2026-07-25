@@ -18,7 +18,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Check one-shot trigger
         id: gate
         shell: bash
@@ -28,114 +27,16 @@ jobs:
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
-
       - uses: oven-sh/setup-bun@v2
         if: steps.gate.outputs.run == 'true'
         with:
           bun-version: '1.3'
-
       - name: Apply exact review fixes
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          test_path = Path('packages/coding-agent/test/tools/resource-gc.test.ts')
-          text = test_path.read_text()
-
-          settings_import = 'import { resetSettingsForTest, Settings } from "../../src/config/settings";\n'
-          limit_import = 'import { resolveEffectiveMemoryLimit } from "../../src/runtime/memory-limit";\n'
-          if limit_import not in text:
-              if settings_import not in text:
-                  raise SystemExit('settings import anchor missing')
-              text = text.replace(settings_import, settings_import + limit_import, 1)
-
-          seam = '\t__sampleWindowsJobMemoryForTest,\n'
-          import_anchor = '\t__sampleLinuxCgroupHierarchyForTest,\n'
-          if seam not in text:
-              if import_anchor not in text:
-                  raise SystemExit('resource-gc import anchor missing')
-              text = text.replace(import_anchor, import_anchor + seam, 1)
-
-          marker = '});\ndescribe("resource GC controller", () => {'
-          regression = r'''});
-
-describe("Windows Job memory sampling", () => {
-	const GIB = 1024 ** 3;
-	const HOST_BYTES = 16 * GIB;
-	const PARENT_BYTES = 2 * GIB;
-
-	function uncappedCommitSnapshot() {
-		return __sampleWindowsJobMemoryForTest(HOST_BYTES, PARENT_BYTES, {
-			kind: "job_snapshot",
-			platform: "win32",
-			isInJob: true,
-			jobMemoryUsedBytes: String(20 * GIB),
-			peakJobMemoryUsedBytes: String(21 * GIB),
-			processPrivateUsageBytes: String(20 * GIB),
-			processWorkingSetBytes: String(PARENT_BYTES),
-			peakProcessWorkingSetBytes: String(3 * GIB),
-		});
-	}
-
-	it("keeps uncapped Job commit charge separate from physical RAM", () => {
-		const snapshot = uncappedCommitSnapshot();
-		expect(snapshot).not.toBeNull();
-		expect(snapshot?.parentBytes).toBe(PARENT_BYTES);
-		expect(snapshot?.domains).toContainEqual({
-			hardCapBytes: Number.MAX_SAFE_INTEGER,
-			totalUsageBytes: 20 * GIB,
-			source: "windows_job",
-		});
-		expect(snapshot?.domains).toContainEqual({
-			hardCapBytes: HOST_BYTES,
-			totalUsageBytes: PARENT_BYTES,
-			source: "windows_process_job_limit",
-		});
-	});
-
-	it("does not clamp a commit-domain policy cap to physical RAM", () => {
-		const snapshot = uncappedCommitSnapshot();
-		expect(snapshot).not.toBeNull();
-		const policyLimitBytes = 24 * GIB;
-		const pressure = __selectMemoryPressureDomainForTest(snapshot!, policyLimitBytes);
-		const limit = resolveEffectiveMemoryLimit({
-			hardCapBytes: pressure.hardCapBytes,
-			policyLimitBytes,
-		});
-		expect(pressure.source).toBe("windows_job");
-		expect(limit.effectiveBytes).toBe(policyLimitBytes);
-		expect(limit.effectiveBytes).toBeGreaterThan(HOST_BYTES);
-		expect(pressure.totalUsageBytes / limit.effectiveBytes!).toBeCloseTo(20 / 24, 8);
-	});
-});
-
-describe("resource GC controller", () => {'''
-          if 'describe("Windows Job memory sampling"' not in text:
-              if marker not in text:
-                  raise SystemExit('Windows test insertion anchor missing')
-              text = text.replace(marker, regression, 1)
-          test_path.write_text(text)
-
-          dts_path = Path('packages/natives/native/index.d.ts')
-          dts = dts_path.read_text()
-          comment = '''/**
- * macOS computer-use controller.
- *
- * This declaration and the named JS export are available on every platform so
- * consumers can import them portably; the native controller itself is built
- * only on macOS.
- */
-'''
-          if 'macOS computer-use controller.' not in dts:
-              anchor = '/* eslint-disable */\nexport declare class ComputerController'
-              if anchor not in dts:
-                  raise SystemExit('ComputerController declaration anchor missing')
-              dts = dts.replace(anchor, '/* eslint-disable */\n' + comment + 'export declare class ComputerController', 1)
-          dts_path.write_text(dts)
-          PY
-
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgp0ZXN0X3BhdGggPSBQYXRoKCJwYWNrYWdlcy9jb2RpbmctYWdlbnQvdGVzdC90b29scy9yZXNvdXJjZS1nYy50ZXN0LnRzIikKdGV4dCA9IHRlc3RfcGF0aC5yZWFkX3RleHQoKQoKc2V0dGluZ3NfaW1wb3J0ID0gJ2ltcG9ydCB7IHJlc2V0U2V0dGluZ3NGb3JUZXN0LCBTZXR0aW5ncyB9IGZyb20gIi4uLy4uL3NyYy9jb25maWcvc2V0dGluZ3MiO1xuJwpsaW1pdF9pbXBvcnQgPSAnaW1wb3J0IHsgcmVzb2x2ZUVmZmVjdGl2ZU1lbW9yeUxpbWl0IH0gZnJvbSAiLi4vLi4vc3JjL3J1bnRpbWUvbWVtb3J5LWxpbWl0IjtcbicKaWYgbGltaXRfaW1wb3J0IG5vdCBpbiB0ZXh0OgogICAgaWYgc2V0dGluZ3NfaW1wb3J0IG5vdCBpbiB0ZXh0OgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoInNldHRpbmdzIGltcG9ydCBhbmNob3IgbWlzc2luZyIpCiAgICB0ZXh0ID0gdGV4dC5yZXBsYWNlKHNldHRpbmdzX2ltcG9ydCwgc2V0dGluZ3NfaW1wb3J0ICsgbGltaXRfaW1wb3J0LCAxKQoKc2VhbSA9ICJcdF9fc2FtcGxlV2luZG93c0pvYk1lbW9yeUZvclRlc3QsXG4iCmltcG9ydF9hbmNob3IgPSAiXHRfX3NhbXBsZUxpbnV4Q2dyb3VwSGllcmFyY2h5Rm9yVGVzdCxcbiIKaWYgc2VhbSBub3QgaW4gdGV4dDoKICAgIGlmIGltcG9ydF9hbmNob3Igbm90IGluIHRleHQ6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgicmVzb3VyY2UtZ2MgaW1wb3J0IGFuY2hvciBtaXNzaW5nIikKICAgIHRleHQgPSB0ZXh0LnJlcGxhY2UoaW1wb3J0X2FuY2hvciwgaW1wb3J0X2FuY2hvciArIHNlYW0sIDEpCgptYXJrZXIgPSAnfSk7XG5kZXNjcmliZSgicmVzb3VyY2UgR0MgY29udHJvbGxlciIsICgpID0+IHsnCnJlZ3Jlc3Npb24gPSByJycnfSk7IAoKZGVzY3JpYmUoIldpbmRvd3MgSm9iIG1lbW9yeSBzYW1wbGluZyIsICgpID0+IHsKCWNvbnN0IEdJQiA9IDEwMjQgKiogMzsKCWNvbnN0IEhPU1RfQllURVMgPSAxNiAqIEdJQjsKCWNvbnN0IFBBUkVOVF9CWVRFUyA9IDIgKiBHSUI7CgoJZnVuY3Rpb24gdW5jYXBwZWRDb21taXRTbmFwc2hvdCgpIHsKCQlyZXR1cm4gX19zYW1wbGVXaW5kb3dzSm9iTWVtb3J5Rm9yVGVzdChIT1NUX0JZVEVTLCBQQVJFTlRfQllURVMsIHsKCQkJa2luZDogImpvYl9zbmFwc2hvdCIsCgkJCXBsYXRmb3JtOiAid2luMzIiLAoJCQlpc0luSm9iOiB0cnVlLAoJCQlqb2JNZW1vcnlVc2VkQnl0ZXM6IFN0cmluZygyMCAqIEdJQiksCgkJCXBlYWtKb2JNZW1vcnlVc2VkQnl0ZXM6IFN0cmluZygyMSAqIEdJQiksCgkJCXByb2Nlc3NQcml2YXRlVXNhZ2VCeXRlczogU3RyaW5nKDIwICogR0lCKSwKCQkJcHJvY2Vzc1dvcmtpbmdTZXRCeXRlczogU3RyaW5nKFBBUkVOVF9CWVRFUyksCgkJCXBlYWtQcm9jZXNzV29ya2luZ1NldEJ5dGVzOiBTdHJpbmcoMyAqIEdJQiksCgkJfSk7Cgl9CgoJaXQoImtlZXBzIHVuY2FwcGVkIEpvYiBjb21taXQgY2hhcmdlIHNlcGFyYXRlIGZyb20gcGh5c2ljYWwgUkFNIiwgKCkgPT4gewoJCWNvbnN0IHNuYXBzaG90ID0gdW5jYXBwZWRDb21taXRTbmFwc2hvdCgpOwoJCWV4cGVjdChzbmFwc2hvdCkubm90LnRvQmVOdWxsKCk7CgkJZXhwZWN0KHNuYXBzaG90Py5wYXJlbnRCeXRlcykudG9CZShQQVJFTlRfQllURVMpOwoJCWV4cGVjdChzbmFwc2hvdD8uZG9tYWlucykudG9Db250YWluRXF1YWwoewoJCQloYXJkQ2FwQnl0ZXM6IE51bWJlci5NQVhfU0FGRV9JTlRFR0VSLAoJCQl0b3RhbFVzYWdlQnl0ZXM6IDIwICogR0lCLAoJCQlzb3VyY2U6ICJ3aW5kb3dzX2pvYiIsCgkJfSk7CgkJZXhwZWN0KHNuYXBzaG90Py5kb21haW5zKS50b0NvbnRhaW5FcXVhbCh7CgkJCWhhcmRDYXBCeXRlczogSE9TVF9CWVRFUywKCQkJdG90YWxVc2FnZUJ5dGVzOiBQQVJFTlRfQllURVMsCgkJCXNvdXJjZTogIndpbmRvd3NfcHJvY2Vzc19qb2JfbGltaXQiLAoJCX0pOwoJfSk7CgoJaXQoImRvZXMgbm90IGNsYW1wIGEgY29tbWl0LWRvbWFpbiBwb2xpY3kgY2FwIHRvIHBoeXNpY2FsIFJBTSIsICgpID0+IHsKCQljb25zdCBzbmFwc2hvdCA9IHVuY2FwcGVkQ29tbWl0U25hcHNob3QoKTsKCQlleHBlY3Qoc25hcHNob3QpLm5vdC50b0JlTnVsbCgpOwoJCWNvbnN0IHBvbGljeUxpbWl0Qnl0ZXMgPSAyNCAqIEdJQjsKCQljb25zdCBwcmVzc3VyZSA9IF9fc2VsZWN0TWVtb3J5UHJlc3N1cmVEb21haW5Gb3JUZXN0KHNuYXBzaG90ISwgcG9saWN5TGltaXRCeXRlcyk7CgkJY29uc3QgbGltaXQgPSByZXNvbHZlRWZmZWN0aXZlTWVtb3J5TGltaXQoewoJCQloYXJkQ2FwQnl0ZXM6IHByZXNzdXJlLmhhcmRDYXBCeXRlcywKCQkJcG9saWN5TGltaXRCeXRlcywKCQl9KTsKCQlleHBlY3QocHJlc3N1cmUuc291cmNlKS50b0JlKCJ3aW5kb3dzX2pvYiIpOwoJCWV4cGVjdChsaW1pdC5lZmZlY3RpdmVCeXRlcykudG9CZShwb2xpY3lMaW1pdEJ5dGVzKTsKCQlleHBlY3QobGltaXQuZWZmZWN0aXZlQnl0ZXMpLnRvQmVHcmVhdGVyVGhhbihIT1NUX0JZVEVTKTsKCQlleHBlY3QocHJlc3N1cmUudG90YWxVc2FnZUJ5dGVzIC8gbGltaXQuZWZmZWN0aXZlQnl0ZXMhKS50b0JlQ2xvc2VUbygyMCAvIDI0LCA4KTsKCX0pOwp9KTsKCmRlc2NyaWJlKCJyZXNvdXJjZSBHQyBjb250cm9sbGVyIiwgKCkgPT4geycnJwppZiAnZGVzY3JpYmUoIldpbmRvd3MgSm9iIG1lbW9yeSBzYW1wbGluZyInIG5vdCBpbiB0ZXh0OgogICAgaWYgbWFya2VyIG5vdCBpbiB0ZXh0OgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIldpbmRvd3MgdGVzdCBpbnNlcnRpb24gYW5jaG9yIG1pc3NpbmciKQogICAgdGV4dCA9IHRleHQucmVwbGFjZShtYXJrZXIsIHJlZ3Jlc3Npb24sIDEpCnRlc3RfcGF0aC53cml0ZV90ZXh0KHRleHQpCgpkdHNfcGF0aCA9IFBhdGgoInBhY2thZ2VzL25hdGl2ZXMvbmF0aXZlL2luZGV4LmQudHMiKQpkdHMgPSBkdHNfcGF0aC5yZWFkX3RleHQoKQpjb21tZW50ID0gJycnLyoqCiAqIG1hY09TIGNvbXB1dGVyLXVzZSBjb250cm9sbGVyLgogKgogKiBUaGlzIGRlY2xhcmF0aW9uIGFuZCB0aGUgbmFtZWQgSlMgZXhwb3J0IGFyZSBhdmFpbGFibGUgb24gZXZlcnkgcGxhdGZvcm0gc28KICogY29uc3VtZXJzIGNhbiBpbXBvcnQgdGhlbSBwb3J0YWJseTsgdGhlIG5hdGl2ZSBjb250cm9sbGVyIGl0c2VsZiBpcyBidWlsdAogKiBvbmx5IG9uIG1hY09TLgogKi8KJycnCmlmICJtYWNPUyBjb21wdXRlci11c2UgY29udHJvbGxlci4iIG5vdCBpbiBkdHM6CiAgICBhbmNob3IgPSAiLyogZXNsaW50LWRpc2FibGUgKi9cbmV4cG9ydCBkZWNsYXJlIGNsYXNzIENvbXB1dGVyQ29udHJvbGxlciIKICAgIGlmIGFuY2hvciBub3QgaW4gZHRzOgogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoIkNvbXB1dGVyQ29udHJvbGxlciBkZWNsYXJhdGlvbiBhbmNob3IgbWlzc2luZyIpCiAgICBkdHMgPSBkdHMucmVwbGFjZSgKICAgICAgICBhbmNob3IsCiAgICAgICAgIi8qIGVzbGludC1kaXNhYmxlICovXG4iICsgY29tbWVudCArICJleHBvcnQgZGVjbGFyZSBjbGFzcyBDb21wdXRlckNvbnRyb2xsZXIiLAogICAgICAgIDEsCiAgICApCmR0c19wYXRoLndyaXRlX3RleHQoZHRzKQo=' | base64 -d > /tmp/repair-memory.py
+          python3 /tmp/repair-memory.py
       - name: Install, format, and verify generated output
         if: steps.gate.outputs.run == 'true'
         run: |
@@ -148,7 +49,6 @@ describe("resource GC controller", () => {'''
           cmp /tmp/index.generated.d.ts packages/natives/native/index.d.ts
           cmp /tmp/index.generated.js packages/natives/native/index.js
           grep -F "macOS computer-use controller." packages/natives/native/index.d.ts
-
       - name: Run focused verification
         if: steps.gate.outputs.run == 'true'
         run: |
@@ -164,7 +64,6 @@ describe("resource GC controller", () => {'''
             packages/natives/test/memory-guard-build-wiring.test.ts
           bun --cwd=packages/coding-agent run check
           bun --cwd=packages/natives run check
-
       - name: Commit verified repair
         if: steps.gate.outputs.run == 'true'
         shell: bash
@@ -176,15 +75,9 @@ describe("resource GC controller", () => {'''
           git add packages/coding-agent/test/tools/resource-gc.test.ts packages/natives/native/index.d.ts packages/natives/native/index.js
           git commit -m "test(coding-agent): cover Windows memory accounting"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
       - name: Report success
         if: steps.gate.outputs.run == 'true'
         uses: actions/github-script@v7
         with:
           script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: 'MEMORY_FINAL_REVIEW_OK',
-            });
+            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: 'MEMORY_FINAL_REVIEW_OK' });
