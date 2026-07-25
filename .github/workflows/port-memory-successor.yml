@@ -6,7 +6,6 @@ on:
 
 permissions:
   contents: write
-  issues: write
 
 jobs:
   port:
@@ -16,23 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: successor/memory-guard-current
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check one-shot trigger
-        id: gate
-        shell: bash
-        run: |
-          if [ -f .github/trigger/port-memory-successor ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Apply closed-PR net diff to current dev
         id: apply
-        if: steps.gate.outputs.run == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -42,46 +30,29 @@ jobs:
           git diff --binary 5cd97b6611a56b4df75b9151e9f28691c28d7f98..origin/backup/memory-guard-426ca8d1 > /tmp/memory-successor.patch
           if ! git apply --3way --index /tmp/memory-successor.patch; then
             git diff --name-only --diff-filter=U | sort > /tmp/memory-conflicts.txt
+            git diff --cc > /tmp/memory-conflict-diff.txt
             exit 1
           fi
 
-      - name: Report application conflicts
-        if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
-        uses: actions/github-script@v7
+      - name: Upload conflict evidence
+        if: steps.apply.outcome == 'failure'
+        uses: actions/upload-artifact@v4
         with:
-          script: |
-            const fs = require('fs');
-            const conflicts = fs.existsSync('/tmp/memory-conflicts.txt')
-              ? fs.readFileSync('/tmp/memory-conflicts.txt', 'utf8').trim()
-              : '(patch failed before conflict enumeration)';
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `MEMORY_SUCCESSOR_CONFLICTS\n\n${conflicts}`,
-            });
+          name: memory-successor-conflicts-${{ github.run_id }}
+          path: |
+            /tmp/memory-conflicts.txt
+            /tmp/memory-conflict-diff.txt
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Stop after conflict report
-        if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
+      - name: Stop after conflict capture
+        if: steps.apply.outcome == 'failure'
         run: exit 1
 
       - name: Commit current-dev port
-        if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
           git rm .github/trigger/port-memory-successor
           git add -A
           git commit -m 'feat(coding-agent): port memory pressure observability to current dev'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
-      - name: Report success
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: 'MEMORY_SUCCESSOR_PORTED',
-            });
+          git push origin HEAD:successor/memory-guard-current
