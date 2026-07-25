@@ -40,14 +40,7 @@ jobs:
           path.write_text(text)
           PY
           bunx biome check --write packages/coding-agent/test/model-selector-profiles-redteam.test.ts
-      - run: |
-          bun test --timeout 30000 \
-            packages/coding-agent/test/model-selector-profiles.test.ts \
-            packages/coding-agent/test/model-selector-profiles-redteam.test.ts \
-            packages/coding-agent/test/model-preset-landing-redteam-qa.test.ts \
-            packages/coding-agent/test/cli-args-mpreset.test.ts
-      - run: bun --cwd=packages/coding-agent run check
-      - name: Commit repair
+      - name: Publish callback repair
         shell: bash
         run: |
           if git diff --quiet; then exit 0; fi
@@ -56,3 +49,11 @@ jobs:
           git add packages/coding-agent/test/model-selector-profiles-redteam.test.ts
           git commit -m 'test(coding-agent): preserve void preset callbacks'
           git push origin HEAD:successor/model-preset-default-action-clean
+      - name: Run focused regressions
+        run: |
+          bun test --timeout 30000 \
+            packages/coding-agent/test/model-selector-profiles.test.ts \
+            packages/coding-agent/test/model-selector-profiles-redteam.test.ts \
+            packages/coding-agent/test/model-preset-landing-redteam-qa.test.ts \
+            packages/coding-agent/test/cli-args-mpreset.test.ts
+      - run: bun --cwd=packages/coding-agent run check
