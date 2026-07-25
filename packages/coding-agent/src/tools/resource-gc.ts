@@ -96,6 +96,7 @@ const scheduler = new MemoryGuardHost({
 let rssWarningActive = false;
 let lastScreenshotScanAt = 0;
 const memoryGuardGcActive = new Set<string>();
+const memoryGuardLastEvaluatedAt = new Map<string, number>();
 const memoryGuardRestartAboveSince = new Map<string, number>();
 const memoryGuardRestartCooldownUntil = new Map<string, number>();
 let deps: ResourceGcDeps = defaultDeps;
@@ -137,6 +138,7 @@ export function registerResourceGcSession(reg: ResourceGcRegistration): () => vo
 		if (unregistered) return;
 		unregistered = true;
 		activeSessions.delete(reg.sessionId);
+		memoryGuardLastEvaluatedAt.delete(reg.sessionId);
 		memoryGuardGcActive.delete(reg.sessionId);
 		memoryGuardRestartAboveSince.delete(reg.sessionId);
 		memoryGuardRestartCooldownUntil.delete(reg.sessionId);
@@ -147,8 +149,12 @@ export function registerResourceGcSession(reg: ResourceGcRegistration): () => vo
 
 export async function sweepOnce(d: ResourceGcDeps = deps): Promise<void> {
 	if (activeSessions.size === 0) return;
-	const memorySweep = sweepMemoryPressureGuard(d);
-	if (memorySweep) await memorySweep;
+	try {
+		const memorySweep = sweepMemoryPressureGuard(d);
+		if (memorySweep) await memorySweep;
+	} catch (error) {
+		d.logWarn("Memory guard: sweep failed; continuing with browser/screenshot cleanup", { error: String(error) });
+	}
 	await sweepBrowserTabs(d);
 	await sweepScreenshots(d);
 }
@@ -344,41 +350,56 @@ async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): 
 	return null;
 }
 
-function sampleWindowsJobMemory(hostBytes: number, parentBytes: number): MemoryPressureSnapshot | null {
+function sampleWindowsJobMemory(hostBytes: number): MemoryPressureSnapshot | null {
 	const result = probeWindowsJobMemory();
 	if (result.kind !== "job_snapshot") return null;
-	const candidates = [
-		{
-			limit: Number(result.jobMemoryLimitBytes),
-			usage: Number(result.jobMemoryUsedBytes),
-			source: "job" as const,
-		},
-		{
-			limit: Number(result.processMemoryLimitBytes),
-			usage: Number(result.processPrivateUsageBytes),
-			source: "process" as const,
-		},
-	].filter(
-		(candidate): candidate is { limit: number; usage: number; source: "job" | "process" } =>
-			Number.isSafeInteger(candidate.limit) &&
-			candidate.limit > 0 &&
-			Number.isSafeInteger(candidate.usage) &&
-			candidate.usage >= 0,
-	);
-	if (candidates.length === 0) return null;
-	const domains: MemoryPressureDomain[] = candidates.map(candidate => ({
-		hardCapBytes: Math.min(hostBytes, candidate.limit),
-		totalUsageBytes: candidate.usage,
-		source: candidate.source === "process" ? "windows_process_job_limit" : "windows_job",
-	}));
-	const pressured = domains.reduce((selected, candidate) =>
-		candidate.totalUsageBytes / candidate.hardCapBytes > selected.totalUsageBytes / selected.hardCapBytes
+	const domains: MemoryPressureDomain[] = [];
+	const jobUsage = Number(result.jobMemoryUsedBytes);
+	const jobLimitRaw = result.jobMemoryLimitBytes;
+	const jobLimit = jobLimitRaw !== undefined && jobLimitRaw !== null ? Number(jobLimitRaw) : NaN;
+	if (Number.isSafeInteger(jobUsage) && jobUsage >= 0) {
+		if (Number.isSafeInteger(jobLimit) && jobLimit > 0) {
+			domains.push({
+				hardCapBytes: jobLimit,
+				totalUsageBytes: jobUsage,
+				source: "windows_job",
+			});
+		} else {
+			// Uncapped Job Object: usage participates against policy limit only (no hard cap)
+			domains.push({
+				hardCapBytes: hostBytes,
+				totalUsageBytes: jobUsage,
+				source: "windows_job",
+			});
+		}
+	}
+	const processUsage = Number(result.processPrivateUsageBytes);
+	const processLimitRaw = result.processMemoryLimitBytes;
+	const processLimit = processLimitRaw !== undefined && processLimitRaw !== null ? Number(processLimitRaw) : NaN;
+	if (Number.isSafeInteger(processUsage) && processUsage >= 0) {
+		if (Number.isSafeInteger(processLimit) && processLimit > 0) {
+			domains.push({
+				hardCapBytes: processLimit,
+				totalUsageBytes: processUsage,
+				source: "windows_process_job_limit",
+			});
+		} else {
+			domains.push({
+				hardCapBytes: hostBytes,
+				totalUsageBytes: processUsage,
+				source: "windows_process_job_limit",
+			});
+		}
+	}
+	if (domains.length === 0) return null;
+	const selected = domains.reduce((current, candidate) =>
+		candidate.totalUsageBytes / candidate.hardCapBytes > current.totalUsageBytes / current.hardCapBytes
 			? candidate
-			: selected,
+			: current,
 	);
 	return {
-		...pressured,
-		parentBytes,
+		...selected,
+		parentBytes: 0,
 		domains,
 	};
 }
@@ -391,7 +412,7 @@ async function sampleMemoryPressure(): Promise<MemoryPressureSnapshot> {
 		if (cgroup) return cgroup;
 	}
 	if (process.platform === "win32") {
-		const job = sampleWindowsJobMemory(hostBytes, parentBytes);
+		const job = sampleWindowsJobMemory(hostBytes);
 		if (job) return job;
 	}
 	return { hardCapBytes: hostBytes, totalUsageBytes: parentBytes, parentBytes, source: "host" };
@@ -433,15 +454,20 @@ function sweepMemoryPressureGuard(d: ResourceGcDeps): Promise<void> | undefined 
 async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void> {
 	const snapshot = await d.memorySnapshot();
 	let gcRequested = false;
-	const gcTelemetry: Record<string, unknown>[] = [];
+	const gcTelemetry: Array<{ sessionId: string } & Record<string, unknown>> = [];
 	for (const [sessionId, settings] of activeSessions) {
 		const policy = resolveMemoryGuardPolicy(settings);
 		if (!policy.enabled) {
 			memoryGuardGcActive.delete(sessionId);
 			memoryGuardRestartAboveSince.delete(sessionId);
 			memoryGuardRestartCooldownUntil.delete(sessionId);
+			memoryGuardLastEvaluatedAt.delete(sessionId);
 			continue;
 		}
+		const now = d.now();
+		const lastEvaluated = memoryGuardLastEvaluatedAt.get(sessionId);
+		const due = lastEvaluated === undefined || now - lastEvaluated >= policy.checkIntervalMs;
+		if (due) memoryGuardLastEvaluatedAt.set(sessionId, now);
 		const pressure = __selectMemoryPressureDomainForTest(snapshot, policy.policyLimitBytes);
 		const limit = resolveEffectiveMemoryLimit({
 			hardCapBytes: pressure.hardCapBytes,
@@ -462,8 +488,7 @@ async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void>
 		});
 		const usageRatio = pressure.totalUsageBytes / limit.effectiveBytes;
 		if (usageRatio >= policy.gcThresholdRatio) {
-			if (!memoryGuardGcActive.has(sessionId)) {
-				memoryGuardGcActive.add(sessionId);
+			if (due && !memoryGuardGcActive.has(sessionId)) {
 				gcRequested = true;
 				gcTelemetry.push({
 					sessionId,
@@ -484,14 +509,13 @@ async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void>
 			memoryGuardRestartAboveSince.delete(sessionId);
 			continue;
 		}
-		const now = d.monotonicNow();
 		const aboveSince = memoryGuardRestartAboveSince.get(sessionId);
 		if (aboveSince === undefined) {
 			memoryGuardRestartAboveSince.set(sessionId, now);
 			continue;
 		}
 		const cooldownUntil = memoryGuardRestartCooldownUntil.get(sessionId) ?? 0;
-		if (now - aboveSince < policy.restartThresholdWindowMs || now < cooldownUntil) continue;
+		if (!due || now - aboveSince < policy.restartThresholdWindowMs || now < cooldownUntil) continue;
 		memoryGuardRestartCooldownUntil.set(sessionId, now + policy.cooldownMs);
 		d.logWarn("Memory guard: restart threshold sustained; restart remains advisory-only", {
 			sessionId,
@@ -507,8 +531,15 @@ async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void>
 		});
 	}
 	if (gcRequested) {
-		d.runGc();
-		for (const telemetry of gcTelemetry) d.logWarn("Memory guard: GC threshold reached", telemetry);
+		try {
+			d.runGc();
+			for (const { sessionId, ...telemetry } of gcTelemetry) {
+				memoryGuardGcActive.add(sessionId);
+				d.logWarn("Memory guard: GC threshold reached", { sessionId, ...telemetry });
+			}
+		} catch (error) {
+			d.logWarn("Memory guard: GC invocation failed; latch not set", { error: String(error) });
+		}
 	}
 }
 
@@ -666,6 +697,7 @@ export function __resetResourceGcForTest(): void {
 	memoryGuardGcActive.clear();
 	memoryGuardRestartAboveSince.clear();
 	memoryGuardRestartCooldownUntil.clear();
+	memoryGuardLastEvaluatedAt.clear();
 	lastScreenshotScanAt = 0;
 	deps = defaultDeps;
 }
