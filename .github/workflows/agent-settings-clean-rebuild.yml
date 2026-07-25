@@ -1,0 +1,105 @@
+name: Rebuild malformed settings successor on current dev
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  rebuild:
+    if: github.event.issue.number == 1 && github.event.comment.body == '/rebuild-settings-clean'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/malformed-settings-recovery-current
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply exact net feature diff onto current dev
+        id: apply
+        continue-on-error: true
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git fetch --no-tags origin backup/malformed-settings-e5f15e86
+          git diff --binary 96f64a8e22eacf496742c87b0be2a38f1821ba91..origin/backup/malformed-settings-e5f15e86 > /tmp/settings-successor.patch
+          if ! git apply --3way --index /tmp/settings-successor.patch; then
+            git diff --name-only --diff-filter=U > /tmp/settings-conflicts.txt
+            exit 1
+          fi
+
+      - name: Report patch conflicts
+        if: steps.apply.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const paths = fs.existsSync('/tmp/settings-conflicts.txt')
+              ? fs.readFileSync('/tmp/settings-conflicts.txt', 'utf8').trim()
+              : '(patch failed before conflict enumeration)';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 1,
+              body: `SETTINGS_REBUILD_FAILED\n\n${paths}`,
+            });
+
+      - name: Stop after conflict report
+        if: steps.apply.outcome == 'failure'
+        run: exit 1
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Format changed TypeScript files
+        shell: bash
+        run: |
+          changed=$(git diff --cached --name-only -- '*.ts' '*.tsx')
+          if [ -n "$changed" ]; then
+            bunx biome check --write $changed
+            git add $changed
+          fi
+
+      - name: Re-run exact prior blocker
+        run: bun test --timeout 30000 packages/coding-agent/test/modes/components/settings-selector-pet.test.ts
+
+      - name: Run malformed-settings and interactive-control regression suite
+        run: |
+          bun test --timeout 30000 \
+            packages/coding-agent/test/notifications-config.test.ts \
+            packages/coding-agent/test/settings-manager.test.ts \
+            packages/coding-agent/test/issue-775-repro.test.ts \
+            packages/coding-agent/test/modes/components/settings-selector-memory-refresh.test.ts \
+            packages/coding-agent/test/modes/components/settings-selector-pet.test.ts \
+            packages/coding-agent/test/modes/components/thinking-selector.test.ts \
+            packages/coding-agent/test/startup-update-contract.test.ts
+
+      - name: Run package check and build
+        run: |
+          bun --cwd=packages/coding-agent run check
+          bun --cwd=packages/coding-agent run build
+
+      - name: Commit clean successor
+        shell: bash
+        run: |
+          git add -A
+          git commit -m "fix(coding-agent): harden malformed settings recovery"
+          git push --force-with-lease origin HEAD:fix/malformed-settings-recovery-current
+
+      - name: Report successful verification
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 1,
+              body: `SETTINGS_REBUILD_OK\n\n${process.env.GITHUB_SHA}`,
+            });
