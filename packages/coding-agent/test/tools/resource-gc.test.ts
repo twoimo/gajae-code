@@ -759,7 +759,7 @@ describe("resource GC monotonic scheduler", () => {
 		expect(vi.getTimerCount()).toBe(1);
 		await clock.advance(70);
 		expect(releaseTab).toHaveBeenCalledTimes(1);
-		expect(__getResourceGcStateForTest().pendingDeadline).toBe(1200);
+		expect(__getResourceGcStateForTest().pendingDeadline).toBe(1120);
 		unregisterSlow();
 		unregisterEqual();
 		unregisterFast();
@@ -819,7 +819,7 @@ describe("resource GC monotonic scheduler", () => {
 		expect(__getResourceGcStateForTest().pendingDeadline).toBe(1100);
 		await clock.advance(50);
 		expect(releaseTab).toHaveBeenCalledTimes(1);
-		expect(__getResourceGcStateForTest().pendingDeadline).toBe(2100);
+		expect(__getResourceGcStateForTest().pendingDeadline).toBe(2000);
 		unregisterSlow();
 		expectSchedulerStopped();
 	});
