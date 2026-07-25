@@ -1,0 +1,29 @@
+name: Sync memory guard branch with current dev
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.event.issue.number == 1 && github.event.comment.body == '/merge-memory-current-dev'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/memory-guard-domain-scheduler
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge current upstream dev
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git remote add upstream https://github.com/Yeachan-Heo/gajae-code.git || true
+          git fetch --no-tags upstream dev
+          git merge --no-edit --no-ff upstream/dev
+          git push origin HEAD:fix/memory-guard-domain-scheduler
