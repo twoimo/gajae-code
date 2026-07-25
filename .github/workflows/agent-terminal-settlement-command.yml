@@ -36,14 +36,13 @@ jobs:
         working-directory: work
         shell: bash
         run: |
-          if git diff --quiet; then
-            exit 0
+          if ! git diff --quiet; then
+            git config user.name "twoimo"
+            git config user.email "32544727+twoimo@users.noreply.github.com"
+            git add packages/coding-agent/src/sdk/bus/telegram-daemon.ts packages/coding-agent/test/notifications-telegram-daemon.test.ts
+            git commit -m "fix(notifications): retire rejected legacy terminals"
+            git push origin HEAD:fix/telegram-tool-activity-terminal-rejection
           fi
-          git config user.name "twoimo"
-          git config user.email "32544727+twoimo@users.noreply.github.com"
-          git add packages/coding-agent/src/sdk/bus/telegram-daemon.ts packages/coding-agent/test/notifications-telegram-daemon.test.ts
-          git commit -m "fix(notifications): retire rejected legacy terminals"
-          git push origin HEAD:fix/telegram-tool-activity-terminal-rejection
 
       - name: Install dependencies
         working-directory: work
@@ -60,3 +59,12 @@ jobs:
       - name: Run package check
         working-directory: work
         run: bun --cwd=packages/coding-agent run check
+
+      - name: Publish verification receipt commit
+        working-directory: work
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git commit --allow-empty -m "test(notifications): verify rejected terminal repair"
+          git push origin HEAD:fix/telegram-tool-activity-terminal-rejection
