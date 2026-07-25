@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import runpy
 import subprocess
 from pathlib import Path
 
@@ -11,10 +10,15 @@ CONFLICT_PATHS = (
     "packages/coding-agent/test/input-controller-keybindings.test.ts",
 )
 
+
+def has_conflict_markers(text: str) -> bool:
+    return any(line.startswith(("<<<<<<< ", "=======", ">>>>>>> ")) for line in text.splitlines())
+
+
 for value in CONFLICT_PATHS:
     path = Path(value)
     text = path.read_text()
-    if "<<<<<<< " not in text and "=======" not in text and ">>>>>>> " not in text:
+    if not has_conflict_markers(text):
         continue
     try:
         current_dev = subprocess.check_output(
@@ -29,4 +33,10 @@ for value in CONFLICT_PATHS:
 base = Path(__file__).with_name("settings-successor-base.py")
 if not base.exists():
     raise SystemExit(f"settings successor base script missing: {base}")
-runpy.run_path(str(base), run_name="__main__")
+source = base.read_text()
+old = 'if "<<<<<<< " in text or "=======" in text or ">>>>>>> " in text:'
+new = 'if any(line.startswith(("<<<<<<< ", "=======", ">>>>>>> ")) for line in text.splitlines()):'
+if old not in source:
+    raise SystemExit("settings conflict-marker verifier source anchor missing")
+source = source.replace(old, new, 1)
+exec(compile(source, str(base), "exec"), {"__name__": "__main__", "__file__": str(base)})
