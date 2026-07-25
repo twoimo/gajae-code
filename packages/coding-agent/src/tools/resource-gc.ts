@@ -1,7 +1,21 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { probeWindowsJobMemory } from "@gajae-code/natives";
+import type { WindowsJobMemoryProbeResult } from "@gajae-code/natives";
+
+function safeProbeWindowsJobMemory(): WindowsJobMemoryProbeResult {
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const natives = require("@gajae-code/natives") as { probeWindowsJobMemory?: () => unknown };
+		if (typeof natives.probeWindowsJobMemory === "function") {
+			return natives.probeWindowsJobMemory() as WindowsJobMemoryProbeResult;
+		}
+	} catch {
+		// Native addon unbuilt or missing
+	}
+	return { kind: "unsupported_platform", platform: process.platform };
+}
+
 import { logger } from "@gajae-code/utils";
 import type { Settings } from "../config/settings";
 import { computeMemoryGuardDomain } from "../runtime/memory-domain";
@@ -350,24 +364,36 @@ async function sampleLinuxCgroupMemory(hostBytes: number, parentBytes: number): 
 	return null;
 }
 
-function sampleWindowsJobMemory(hostBytes: number): MemoryPressureSnapshot | null {
-	const result = probeWindowsJobMemory();
+export function __sampleWindowsJobMemoryForTest(
+	hostBytes: number,
+	parentBytes: number,
+	probeResult?: WindowsJobMemoryProbeResult,
+): MemoryPressureSnapshot | null {
+	return sampleWindowsJobMemory(hostBytes, parentBytes, probeResult);
+}
+
+function sampleWindowsJobMemory(
+	hostBytes: number,
+	parentBytes: number,
+	result = safeProbeWindowsJobMemory(),
+): MemoryPressureSnapshot | null {
 	if (result.kind !== "job_snapshot") return null;
 	const domains: MemoryPressureDomain[] = [];
 	const jobUsage = Number(result.jobMemoryUsedBytes);
 	const jobLimitRaw = result.jobMemoryLimitBytes;
-	const jobLimit = jobLimitRaw !== undefined && jobLimitRaw !== null ? Number(jobLimitRaw) : NaN;
+	const hasJobLimit = jobLimitRaw !== undefined && jobLimitRaw !== null;
+	const jobLimit = hasJobLimit ? Number(jobLimitRaw) : NaN;
 	if (Number.isSafeInteger(jobUsage) && jobUsage >= 0) {
-		if (Number.isSafeInteger(jobLimit) && jobLimit > 0) {
+		if (hasJobLimit && Number.isSafeInteger(jobLimit) && jobLimit > 0) {
 			domains.push({
 				hardCapBytes: jobLimit,
 				totalUsageBytes: jobUsage,
 				source: "windows_job",
 			});
 		} else {
-			// Uncapped Job Object: usage participates against policy limit only (no hard cap)
+			// Uncapped Job Object: usage participates against policy limit (no physical RAM clamp)
 			domains.push({
-				hardCapBytes: hostBytes,
+				hardCapBytes: Number.MAX_SAFE_INTEGER,
 				totalUsageBytes: jobUsage,
 				source: "windows_job",
 			});
@@ -375,9 +401,10 @@ function sampleWindowsJobMemory(hostBytes: number): MemoryPressureSnapshot | nul
 	}
 	const processUsage = Number(result.processPrivateUsageBytes);
 	const processLimitRaw = result.processMemoryLimitBytes;
-	const processLimit = processLimitRaw !== undefined && processLimitRaw !== null ? Number(processLimitRaw) : NaN;
+	const hasProcessLimit = processLimitRaw !== undefined && processLimitRaw !== null;
+	const processLimit = hasProcessLimit ? Number(processLimitRaw) : NaN;
 	if (Number.isSafeInteger(processUsage) && processUsage >= 0) {
-		if (Number.isSafeInteger(processLimit) && processLimit > 0) {
+		if (hasProcessLimit && Number.isSafeInteger(processLimit) && processLimit > 0) {
 			domains.push({
 				hardCapBytes: processLimit,
 				totalUsageBytes: processUsage,
@@ -385,11 +412,19 @@ function sampleWindowsJobMemory(hostBytes: number): MemoryPressureSnapshot | nul
 			});
 		} else {
 			domains.push({
-				hardCapBytes: hostBytes,
+				hardCapBytes: Number.MAX_SAFE_INTEGER,
 				totalUsageBytes: processUsage,
 				source: "windows_process_job_limit",
 			});
 		}
+	}
+	const workingSetUsage = Number(result.processWorkingSetBytes);
+	if (Number.isSafeInteger(workingSetUsage) && workingSetUsage >= 0) {
+		domains.push({
+			hardCapBytes: hostBytes,
+			totalUsageBytes: Math.max(parentBytes, workingSetUsage),
+			source: "windows_process_job_limit",
+		});
 	}
 	if (domains.length === 0) return null;
 	const selected = domains.reduce((current, candidate) =>
@@ -399,7 +434,7 @@ function sampleWindowsJobMemory(hostBytes: number): MemoryPressureSnapshot | nul
 	);
 	return {
 		...selected,
-		parentBytes: 0,
+		parentBytes,
 		domains,
 	};
 }
@@ -412,7 +447,7 @@ async function sampleMemoryPressure(): Promise<MemoryPressureSnapshot> {
 		if (cgroup) return cgroup;
 	}
 	if (process.platform === "win32") {
-		const job = sampleWindowsJobMemory(hostBytes);
+		const job = sampleWindowsJobMemory(hostBytes, parentBytes);
 		if (job) return job;
 	}
 	return { hardCapBytes: hostBytes, totalUsageBytes: parentBytes, parentBytes, source: "host" };
@@ -473,7 +508,13 @@ async function sweepEnabledMemoryPressureGuard(d: ResourceGcDeps): Promise<void>
 			hardCapBytes: pressure.hardCapBytes,
 			policyLimitBytes: policy.policyLimitBytes,
 		});
-		if (limit.effectiveBytes === null) continue;
+		if (limit.effectiveBytes === null) {
+			memoryGuardGcActive.delete(sessionId);
+			memoryGuardRestartAboveSince.delete(sessionId);
+			memoryGuardRestartCooldownUntil.delete(sessionId);
+			memoryGuardLastEvaluatedAt.delete(sessionId);
+			continue;
+		}
 		const domain = computeMemoryGuardDomain({
 			effectiveLimitBytes: limit.effectiveBytes,
 			totalUsageBytes: pressure.totalUsageBytes,

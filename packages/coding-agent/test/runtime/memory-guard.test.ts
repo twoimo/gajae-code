@@ -107,4 +107,59 @@ describe("MemoryGuardHost", () => {
 		await first;
 		unregister();
 	});
+
+	it("schedules based on earliest per-registration due time", async () => {
+		let now = 1000;
+		const host = new MemoryGuardHost({
+			run: async () => {},
+			schedulerNow: () => now,
+		});
+		const unregA = host.register({ ownerId: "session-a", intervalMs: 5_000 });
+		const unregB = host.register({ ownerId: "session-b", intervalMs: 30_000 });
+		let state = host.getStateForTest();
+		expect(state.pendingDeadline).toBe(6_000);
+
+		// Advance past session-a's deadline and trigger timer callback
+		now = 6_000;
+		await host.runTimerCallbackForTest({ generation: state.generation, token: state.pendingOwner!.token }, 6_000);
+		state = host.getStateForTest();
+		// session-a next due is now 6_000 + 5_000 = 11_000, session-b next due is 1_000 + 30_000 = 31_000
+		expect(state.pendingDeadline).toBe(11_000);
+
+		// Updating interval for session-a reschedules to the new earliest due time
+		host.updateInterval("session-a", 15_000);
+		state = host.getStateForTest();
+		expect(state.pendingDeadline).toBe(21_000);
+
+		unregA();
+		unregB();
+	});
+
+	it("defers scheduling when a tick is in progress", async () => {
+		const now = 1000;
+		const gate = Promise.withResolvers<void>();
+		const host = new MemoryGuardHost({
+			run: async () => {
+				await gate.promise;
+			},
+			schedulerNow: () => now,
+		});
+		const unreg = host.register({ ownerId: "session-a", intervalMs: 5_000 });
+		const tickPromise = host.runTick();
+		const state = host.getStateForTest();
+		expect(state.inProgress).toBe(true);
+
+		// Second registration while in-progress defers schedule
+		host.register({ ownerId: "session-b", intervalMs: 2_000 });
+		const stateDeferred = host.getStateForTest();
+		expect(stateDeferred.pendingDeadline).toBe(3_000);
+
+		gate.resolve();
+		await tickPromise;
+		const finalState = host.getStateForTest();
+		expect(finalState.inProgress).toBe(false);
+		expect(finalState.pendingDeadline).toBe(3_000);
+
+		unreg();
+	});
 });

@@ -106,7 +106,7 @@ export class MemoryGuardHost {
 	#logDebug: (message: string, meta?: Record<string, unknown>) => void;
 	#defaultSchedulerNow: () => number;
 	#schedulerNow: () => number;
-	#registrations = new Map<string, number>();
+	#registrations = new Map<string, { intervalMs: number; nextDueMs: number }>();
 	#pendingTimer: NodeJS.Timeout | null = null;
 	#pendingDeadline: number | null = null;
 	#pendingOwner: ScheduleOwner | null = null;
@@ -125,11 +125,14 @@ export class MemoryGuardHost {
 
 	register(registration: MemoryGuardHostRegistration): () => void {
 		const intervalMs = normalizePositiveIntervalMs(registration.intervalMs);
-		const isNewRegistration = !this.#registrations.has(registration.ownerId);
-		this.#registrations.set(registration.ownerId, intervalMs);
+		const now = this.#schedulerNow();
+		const existing = this.#registrations.get(registration.ownerId);
+		const isNewRegistration = !existing;
+		const nextDueMs = existing ? Math.min(existing.nextDueMs, now + intervalMs) : now + intervalMs;
+		this.#registrations.set(registration.ownerId, { intervalMs, nextDueMs });
 		this.#stopped = false;
 		if (isNewRegistration) {
-			const deadline = this.#schedulerNow() + intervalMs;
+			const deadline = nextDueMs;
 			if (
 				this.#inProgressOwner?.generation === this.#generation &&
 				(this.#pendingDeadline === null || this.#pendingDeadline <= deadline)
@@ -149,12 +152,19 @@ export class MemoryGuardHost {
 	}
 
 	updateInterval(ownerId: string, intervalMs: number): void {
-		if (!this.#registrations.has(ownerId)) return;
+		const existing = this.#registrations.get(ownerId);
+		if (!existing) return;
 		const normalized = normalizePositiveIntervalMs(intervalMs);
-		if (this.#registrations.get(ownerId) === normalized) return;
-		this.#registrations.set(ownerId, normalized);
+		if (existing.intervalMs === normalized) return;
+		const now = this.#schedulerNow();
+		const nextDueMs = now + normalized;
+		this.#registrations.set(ownerId, { intervalMs: normalized, nextDueMs });
 		if (this.#inProgressOwner) return;
-		this.#requestSchedule(this.#schedulerNow() + this.#currentSweepIntervalMs());
+		const nextDeadline = this.#nextDeadlineMs();
+		if (this.#pendingDeadline !== null && nextDeadline > this.#pendingDeadline) {
+			this.#clearPendingSchedule();
+		}
+		this.#requestSchedule(nextDeadline);
 	}
 
 	async runTick(generation = this.#generation, source: WorkOwner["source"] = "external"): Promise<void> {
@@ -167,6 +177,7 @@ export class MemoryGuardHost {
 			this.#logDebug("memory guard tick failed", { error: error instanceof Error ? error.message : String(error) });
 		} finally {
 			if (this.#inProgressOwner === owner) this.#inProgressOwner = null;
+			this.#advanceDueTimes();
 			this.#reconcileCurrentSchedule();
 		}
 	}
@@ -202,10 +213,21 @@ export class MemoryGuardHost {
 		this.#schedulerNow = this.#defaultSchedulerNow;
 	}
 
-	#currentSweepIntervalMs(): number {
-		let min = Number.POSITIVE_INFINITY;
-		for (const intervalMs of this.#registrations.values()) min = Math.min(min, intervalMs);
-		return Number.isFinite(min) ? min : DEFAULT_CHECK_INTERVAL_MS;
+	#nextDeadlineMs(): number {
+		let minDue = Number.POSITIVE_INFINITY;
+		for (const reg of this.#registrations.values()) {
+			minDue = Math.min(minDue, reg.nextDueMs);
+		}
+		return Number.isFinite(minDue) ? minDue : this.#schedulerNow() + DEFAULT_CHECK_INTERVAL_MS;
+	}
+
+	#advanceDueTimes(): void {
+		const now = this.#schedulerNow();
+		for (const reg of this.#registrations.values()) {
+			if (reg.nextDueMs <= now) {
+				reg.nextDueMs = now + reg.intervalMs;
+			}
+		}
 	}
 
 	#clearPendingSchedule(): void {
@@ -254,7 +276,7 @@ export class MemoryGuardHost {
 
 	#reconcileCurrentSchedule(): void {
 		if (this.#stopped || this.#registrations.size === 0 || this.#inProgressOwner) return;
-		const normalDeadline = this.#schedulerNow() + this.#currentSweepIntervalMs();
+		const normalDeadline = this.#nextDeadlineMs();
 		const deferredDeadline =
 			this.#deferredSchedule?.generation === this.#generation ? this.#deferredSchedule.deadline : null;
 		if (deferredDeadline !== null) this.#deferredSchedule = null;
