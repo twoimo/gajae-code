@@ -1,0 +1,128 @@
+name: Rebuild malformed-settings successor
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  rebuild:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'successor/malformed-settings-recovery-current'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check one-shot trigger
+        id: gate
+        shell: bash
+        run: |
+          if [ -f .github/trigger/rebuild-settings-successor ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply closed-PR net diff to current dev
+        id: apply
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          git config user.name 'twoimo'
+          git config user.email '32544727+twoimo@users.noreply.github.com'
+          git fetch --no-tags origin backup/malformed-settings-e5f15e86
+          git diff --binary 96f64a8e22eacf496742c87b0be2a38f1821ba91..origin/backup/malformed-settings-e5f15e86 > /tmp/settings-successor.patch
+          if ! git apply --3way --index /tmp/settings-successor.patch; then
+            git diff --name-only --diff-filter=U | sort > /tmp/settings-conflicts.txt
+            exit 1
+          fi
+
+      - name: Report application conflicts
+        if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const conflicts = fs.existsSync('/tmp/settings-conflicts.txt')
+              ? fs.readFileSync('/tmp/settings-conflicts.txt', 'utf8').trim()
+              : '(patch failed before conflict enumeration)';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `SETTINGS_SUCCESSOR_CONFLICTS\n\n${conflicts}`,
+            });
+
+      - name: Stop after conflict report
+        if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
+        run: exit 1
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.gate.outputs.run == 'true'
+        with:
+          bun-version: '1.3'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Format changed TypeScript files
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          mapfile -t changed < <(git diff --cached --name-only -- '*.ts' '*.tsx')
+          if [ ${#changed[@]} -gt 0 ]; then
+            bunx biome check --write "${changed[@]}"
+            git add "${changed[@]}"
+          fi
+
+      - name: Run exact prior blocker
+        if: steps.gate.outputs.run == 'true'
+        run: bun test --timeout 30000 packages/coding-agent/test/modes/components/settings-selector-pet.test.ts
+
+      - name: Run malformed-settings control suite
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          bun test --timeout 30000 \
+            packages/coding-agent/test/notifications-config.test.ts \
+            packages/coding-agent/test/settings-manager.test.ts \
+            packages/coding-agent/test/issue-775-repro.test.ts \
+            packages/coding-agent/test/modes/components/settings-selector-memory-refresh.test.ts \
+            packages/coding-agent/test/modes/components/settings-selector-pet.test.ts \
+            packages/coding-agent/test/modes/components/thinking-selector.test.ts \
+            packages/coding-agent/test/startup-update-contract.test.ts
+
+      - name: Run package check and build
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          bun --cwd=packages/coding-agent run check
+          bun --cwd=packages/coding-agent run build
+
+      - name: Commit verified successor
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          git rm .github/trigger/rebuild-settings-successor
+          git add -A
+          git commit -m 'fix(coding-agent): harden malformed settings recovery'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Report success
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: 'SETTINGS_SUCCESSOR_VERIFIED',
+            });
