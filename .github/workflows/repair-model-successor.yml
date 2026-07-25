@@ -12,7 +12,7 @@ jobs:
   repair:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'successor/model-preset-default-action-current'
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,9 +81,18 @@ jobs:
           set -o pipefail
           bun install --frozen-lockfile 2>&1 | tee /tmp/model-install.log
 
+      - name: Build native addon required by selector tests
+        id: native
+        if: steps.gate.outputs.run == 'true' && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          bun --cwd=packages/natives run build 2>&1 | tee /tmp/model-native.log
+
       - name: Run profile controller regressions
         id: controller
-        if: steps.gate.outputs.run == 'true' && steps.install.outcome == 'success'
+        if: steps.gate.outputs.run == 'true' && steps.native.outcome == 'success'
         continue-on-error: true
         shell: bash
         run: |
@@ -120,7 +129,7 @@ jobs:
           bun --cwd=packages/coding-agent run check 2>&1 | tee /tmp/model-package.log
 
       - name: Publish verified clean successor
-        if: steps.gate.outputs.run == 'true' && steps.install.outcome == 'success' && steps.controller.outcome == 'success' && steps.redteam.outcome == 'success' && steps.remaining.outcome == 'success' && steps.package.outcome == 'success'
+        if: steps.gate.outputs.run == 'true' && steps.install.outcome == 'success' && steps.native.outcome == 'success' && steps.controller.outcome == 'success' && steps.redteam.outcome == 'success' && steps.remaining.outcome == 'success' && steps.package.outcome == 'success'
         shell: bash
         run: |
           git reset --soft upstream/dev
@@ -138,6 +147,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           INSTALL: ${{ steps.install.outcome }}
+          NATIVE: ${{ steps.native.outcome }}
           CONTROLLER: ${{ steps.controller.outcome }}
           REDTEAM: ${{ steps.redteam.outcome }}
           REMAINING: ${{ steps.remaining.outcome }}
@@ -145,8 +155,8 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const ok = [process.env.INSTALL, process.env.CONTROLLER, process.env.REDTEAM, process.env.REMAINING, process.env.PACKAGE].every(v => v === 'success');
-            const logs = ['/tmp/model-install.log', '/tmp/model-controller.log', '/tmp/model-redteam.log', '/tmp/model-remaining.log', '/tmp/model-package.log']
+            const ok = [process.env.INSTALL, process.env.NATIVE, process.env.CONTROLLER, process.env.REDTEAM, process.env.REMAINING, process.env.PACKAGE].every(v => v === 'success');
+            const logs = ['/tmp/model-install.log', '/tmp/model-native.log', '/tmp/model-controller.log', '/tmp/model-redteam.log', '/tmp/model-remaining.log', '/tmp/model-package.log']
               .filter(path => fs.existsSync(path))
               .flatMap(path => fs.readFileSync(path, 'utf8').split('\n'))
               .slice(-120)
@@ -155,6 +165,6 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: ok ? 'MODEL_SUCCESSOR_VERIFIED' : `MODEL_SUCCESSOR_FAILED\n\ninstall=${process.env.INSTALL}\ncontroller=${process.env.CONTROLLER}\nredteam=${process.env.REDTEAM}\nremaining=${process.env.REMAINING}\npackage=${process.env.PACKAGE}\n\n\`\`\`text\n${logs.slice(0, 50000)}\n\`\`\``,
+              body: ok ? 'MODEL_SUCCESSOR_VERIFIED' : `MODEL_SUCCESSOR_FAILED\n\ninstall=${process.env.INSTALL}\nnative=${process.env.NATIVE}\ncontroller=${process.env.CONTROLLER}\nredteam=${process.env.REDTEAM}\nremaining=${process.env.REMAINING}\npackage=${process.env.PACKAGE}\n\n\`\`\`text\n${logs.slice(0, 50000)}\n\`\`\``,
             });
             if (!ok) core.setFailed('Model successor verification failed');
