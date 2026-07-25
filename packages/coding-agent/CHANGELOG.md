@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Aligned the startup GJC Forge splash border with the composer trailing gutter, including the one-row constrained fallback.
 - Restricted role-agent `bash` now accepts literal mid-word tildes, so git revision syntax such as `git diff HEAD~1` no longer has to be quoted. Bash performs tilde expansion only at the start of a word, so word-initial forms (`~`, `~/path`, `~user`) remain blocked.
 - Restricted role-agent `bash` now rejects unquoted tildes at every bash expansion position inside assignment words, including the compound `name+=value` form, so `A=~`, `A+=~`, `foo=~root/bar`, `A=x:~`, `A+=x:~`, and repeated colon segments such as `a=x:~:y:~` fail closed. Tildes bash does not expand — mid-word git revisions (`HEAD~1`), non-assignment words (`--opt=~`, `1abc=~`, `a++=~`, `a+b=~`), and quoted forms — remain allowed (#3117).
 - Read-only role agents (`architect`, `planner`, `critic`) now receive the `irc` coordination tool and a read-only git prefix set (`status`, `log`, `show`, `diff`, `blame`, `rev-parse`, `ls-files`) in restricted bash; mutating git and arbitrary shell stay blocked. `irc` also stays in the initial active tool set for subagents whenever the parent runtime reports IRC availability, instead of costing a discovery round-trip (#3109).

@@ -76,6 +76,30 @@ describe("WelcomeComponent viewport sizing", () => {
 		}
 	});
 
+	it("reserves the composer gutter for full and one-row welcome layouts", () => {
+		const full = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii", {
+			rightGutterWidth: 1,
+		});
+		const fullLines = full.render(100).map(stripRenderControls);
+		expect(fullLines.length).toBeGreaterThan(0);
+		for (const line of fullLines) {
+			expect(visibleWidth(line)).toBe(100);
+			expect(line.endsWith(" ")).toBe(true);
+			expect(visibleWidth(line.trimEnd())).toBe(99);
+		}
+
+		const oneRow = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii", {
+			rightGutterWidth: 1,
+			getViewportRows: () => 1,
+			getReservedBottomRows: () => 0,
+		});
+		const [line] = oneRow.render(100).map(stripRenderControls);
+		expect(line).toBeDefined();
+		expect(visibleWidth(line!)).toBe(100);
+		expect(line!.endsWith(" ")).toBe(true);
+		expect(visibleWidth(line!.trimEnd())).toBe(99);
+	});
+
 	it("renders the build label from metadata instead of defaulting to dev", () => {
 		const welcome = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii", {
 			buildLabel: "release build",

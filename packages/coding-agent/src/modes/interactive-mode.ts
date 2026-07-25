@@ -123,6 +123,7 @@ export function getDefaultComposerPlaceholder(context: KeyDisplayContext = { pla
 
 export const DEFAULT_COMPOSER_PLACEHOLDER = getDefaultComposerPlaceholder();
 const WELCOME_RESERVED_CONTAINER_CHILD_LIMIT = 8;
+const COMPOSER_RIGHT_GUTTER_WIDTH = 1;
 
 const IRC_SIDEBAR_TOGGLE_SHADOWING_ACTIONS: readonly AppKeybinding[] = [
 	"app.plan.toggle",
@@ -169,7 +170,7 @@ function configureDefaultComposerChrome(editor: CustomEditor): void {
 	editor.setInputPrefix(getDefaultInputPrefix());
 	editor.setPlaceholder(getDefaultComposerPlaceholder());
 	editor.setPaddingX(1);
-	editor.setRightGutterWidth(1);
+	editor.setRightGutterWidth(COMPOSER_RIGHT_GUTTER_WIDTH);
 	editor.setTopBorder(undefined);
 }
 
@@ -660,6 +661,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					getViewportRows: () => this.ui.terminal.rows,
 					getReservedBottomRows: getWelcomeReservedBottomRows,
 					changelogMarkdown: this.#changelogMarkdown,
+					rightGutterWidth: COMPOSER_RIGHT_GUTTER_WIDTH,
 					collapseChangelog: settings.get("collapseChangelog"),
 					keyDisplayContext: this.#keyDisplayContext,
 				},
