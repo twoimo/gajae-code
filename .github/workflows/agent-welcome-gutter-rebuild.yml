@@ -1,0 +1,123 @@
+name: Rebuild welcome gutter successor on current dev
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  rebuild:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/welcome-composer-gutter-current'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trusted repair source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: repair-source
+
+      - name: Check out target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          path: work
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check one-shot trigger
+        id: gate
+        working-directory: work
+        shell: bash
+        run: |
+          if [ -f .github/trigger/welcome-gutter-rebuild ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reset target to the live upstream dev baseline
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        shell: bash
+        run: |
+          git remote add upstream https://github.com/Yeachan-Heo/gajae-code.git || true
+          git fetch --no-tags upstream dev
+          git reset --hard upstream/dev
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.gate.outputs.run == 'true'
+
+      - name: Apply trusted gutter repair
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        run: python3 ../repair-source/.github/repair/welcome-gutter.py
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        run: bun install --frozen-lockfile
+
+      - name: Format changed files
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        run: |
+          bunx biome check --write \
+            packages/coding-agent/src/modes/components/welcome.ts \
+            packages/coding-agent/src/modes/interactive-mode.ts \
+            packages/coding-agent/test/welcome-viewport.test.ts
+
+      - name: Publish product commit before verification
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git add packages/coding-agent/CHANGELOG.md packages/coding-agent/src/modes/components/welcome.ts packages/coding-agent/src/modes/interactive-mode.ts packages/coding-agent/test/welcome-viewport.test.ts
+          git commit -m "fix(coding-agent): align welcome and composer gutters"
+          git push --force origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Run focused viewport tests
+        id: focused
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        working-directory: work
+        run: |
+          bun test --timeout 30000 packages/coding-agent/test/welcome-viewport.test.ts
+          bun test --timeout 30000 packages/coding-agent/test/interactive-mode-editor-component.test.ts --test-name-pattern "welcome|viewport-bound|composer"
+
+      - name: Run package check
+        id: package
+        if: steps.gate.outputs.run == 'true' && steps.focused.outcome == 'success'
+        continue-on-error: true
+        working-directory: work
+        run: bun --cwd=packages/coding-agent run check
+
+      - name: Publish verification receipt and immutable verified branch
+        if: steps.gate.outputs.run == 'true' && steps.focused.outcome == 'success' && steps.package.outcome == 'success'
+        working-directory: work
+        shell: bash
+        run: |
+          git commit --allow-empty -m "test(coding-agent): verify welcome gutter successor"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          git push --force origin HEAD:verified/welcome-composer-gutter
+
+      - name: Report verification result
+        if: steps.gate.outputs.run == 'true' && always()
+        uses: actions/github-script@v7
+        env:
+          FOCUSED: ${{ steps.focused.outcome }}
+          PACKAGE: ${{ steps.package.outcome }}
+        with:
+          script: |
+            const ok = process.env.FOCUSED === 'success' && process.env.PACKAGE === 'success';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: ok ? 'WELCOME_GUTTER_OK' : `WELCOME_GUTTER_FAILED\n\nfocused=${process.env.FOCUSED}\npackage=${process.env.PACKAGE}`,
+            });
+            if (!ok) core.setFailed('Welcome gutter verification failed');
