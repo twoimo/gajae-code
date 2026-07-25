@@ -59,6 +59,7 @@ jobs:
               issue_number: context.issue.number,
               body: `TELEGRAM_REBUILD_FAILED\n\n${paths}`,
             });
+            core.setFailed('Telegram patch application failed');
 
       - name: Stop after conflict report
         if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
@@ -85,12 +86,25 @@ jobs:
           cargo fmt --all
           git add -A
 
-      - name: Run focused rejected-terminal regression
+      - name: Publish product commit before verification
         if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          git rm .github/trigger/telegram-clean-rebuild
+          git add -A
+          git commit -m "fix(notifications): retire rejected legacy tool terminals"
+          git push --force-with-lease origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Run focused rejected-terminal regression
+        id: focused
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
         run: bun test --timeout 30000 packages/coding-agent/test/notifications-telegram-daemon.test.ts --test-name-pattern "terminal submission rejection"
 
       - name: Run Telegram lifecycle suites
-        if: steps.gate.outputs.run == 'true'
+        id: lifecycle
+        if: steps.gate.outputs.run == 'true' && steps.focused.outcome == 'success'
+        continue-on-error: true
         run: |
           bun test --timeout 30000 \
             packages/coding-agent/test/notifications-telegram-daemon.test.ts \
@@ -100,26 +114,32 @@ jobs:
           bun scripts/telegram-daemon-generation-guard.ts --validate-current-tree
 
       - name: Run package check
-        if: steps.gate.outputs.run == 'true'
+        id: package
+        if: steps.gate.outputs.run == 'true' && steps.focused.outcome == 'success' && steps.lifecycle.outcome == 'success'
+        continue-on-error: true
         run: bun --cwd=packages/coding-agent run check
 
-      - name: Commit clean successor
-        if: steps.gate.outputs.run == 'true'
+      - name: Publish verification receipt commit
+        if: steps.gate.outputs.run == 'true' && steps.focused.outcome == 'success' && steps.lifecycle.outcome == 'success' && steps.package.outcome == 'success'
         shell: bash
         run: |
-          git rm .github/trigger/telegram-clean-rebuild
-          git add -A
-          git commit -m "fix(notifications): retire rejected legacy tool terminals"
-          git push --force-with-lease origin HEAD:${{ github.event.pull_request.head.ref }}
+          git commit --allow-empty -m "test(notifications): verify rejected terminal successor"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
 
-      - name: Report successful verification
-        if: steps.gate.outputs.run == 'true'
+      - name: Report verification result
+        if: steps.gate.outputs.run == 'true' && always()
         uses: actions/github-script@v7
+        env:
+          FOCUSED: ${{ steps.focused.outcome }}
+          LIFECYCLE: ${{ steps.lifecycle.outcome }}
+          PACKAGE: ${{ steps.package.outcome }}
         with:
           script: |
+            const ok = process.env.FOCUSED === 'success' && process.env.LIFECYCLE === 'success' && process.env.PACKAGE === 'success';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `TELEGRAM_REBUILD_OK\n\n${context.payload.pull_request.head.sha}`,
+              body: ok ? 'TELEGRAM_REBUILD_OK' : `TELEGRAM_REBUILD_FAILED\n\nfocused=${process.env.FOCUSED}\nlifecycle=${process.env.LIFECYCLE}\npackage=${process.env.PACKAGE}`,
             });
+            if (!ok) core.setFailed('Telegram verification failed');
