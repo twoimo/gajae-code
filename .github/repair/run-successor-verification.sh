@@ -113,33 +113,17 @@ PY
     git fetch --no-tags origin backup/malformed-settings-e5f15e86
     git diff --binary \
       96f64a8e22eacf496742c87b0be2a38f1821ba91..origin/backup/malformed-settings-e5f15e86 \
+      -- . \
+      ':(exclude)packages/coding-agent/src/capability/index.ts' \
+      ':(exclude)packages/coding-agent/src/session/agent-session.ts' \
+      ':(exclude)packages/coding-agent/test/discovery/agent-discovery-disabled-providers.test.ts' \
+      ':(exclude)packages/coding-agent/test/input-controller-keybindings.test.ts' \
       > /tmp/settings-successor.patch
     git reset --hard upstream/dev
-    git apply --3way --index /tmp/settings-successor.patch || true
+    git apply --3way --index /tmp/settings-successor.patch
+    test -z "$(git diff --name-only --diff-filter=U)"
 
-    mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
-    allowed=(
-      packages/coding-agent/src/capability/index.ts
-      packages/coding-agent/src/session/agent-session.ts
-      packages/coding-agent/test/discovery/agent-discovery-disabled-providers.test.ts
-      packages/coding-agent/test/input-controller-keybindings.test.ts
-    )
-    for conflict in "${conflicts[@]}"; do
-      allowed_conflict=false
-      for expected in "${allowed[@]}"; do
-        if [[ "$conflict" == "$expected" ]]; then
-          allowed_conflict=true
-          break
-        fi
-      done
-      if [[ "$allowed_conflict" != true ]]; then
-        echo "Unexpected settings conflict: $conflict" >&2
-        git diff --cc
-        exit 1
-      fi
-    done
-
-    python3 "$REPAIR_ROOT/.github/repair/settings-successor.py"
+    python3 "$REPAIR_ROOT/.github/repair/settings-successor-base.py"
     git add -A
     test -z "$(git diff --name-only --diff-filter=U)"
 
