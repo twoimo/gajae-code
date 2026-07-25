@@ -1,0 +1,95 @@
+name: Sync and verify Telegram successor
+
+on:
+  push:
+    branches:
+      - successor/telegram-tool-activity-clean
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.actor == 'twoimo'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: successor/telegram-tool-activity-clean
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge current upstream dev and resolve known overlap
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git remote add upstream https://github.com/Yeachan-Heo/gajae-code.git || true
+          git fetch --no-tags upstream dev
+          BASE=10a32cfdbe971799581533a0e583fdf77e4c7d2c
+          git merge --no-commit --no-ff upstream/dev || true
+
+          conflicts="$(git diff --name-only --diff-filter=U)"
+          for path in $conflicts; do
+            case "$path" in
+              packages/coding-agent/CHANGELOG.md)
+                git show upstream/dev:packages/coding-agent/CHANGELOG.md > "$path"
+                python3 - <<'PY'
+          from pathlib import Path
+          path = Path('packages/coding-agent/CHANGELOG.md')
+          text = path.read_text()
+          entry = '- Telegram per-tool activity is now opt-in and remains durably controllable with `/toolactivity on|off` or the Notifications preferences UI; disabling it suppresses tool start/completion success and error bubbles without hiding assistant, ask, or session notifications.\n'
+          if entry not in text:
+              marker = '### Changed\n\n'
+              if marker not in text:
+                  raise SystemExit('Unreleased Changed anchor missing')
+              text = text.replace(marker, marker + entry, 1)
+          path.write_text(text)
+          PY
+                git add "$path"
+                ;;
+              packages/coding-agent/src/sdk/bus/index.ts)
+                git checkout --ours -- "$path"
+                git add "$path"
+                git diff --binary "$BASE"..upstream/dev -- "$path" > /tmp/current-index.patch
+                if [ -s /tmp/current-index.patch ]; then
+                  git apply --3way --index /tmp/current-index.patch
+                fi
+                ;;
+              *)
+                echo "Unexpected merge conflict: $path" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git commit --no-edit
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3'
+
+      - name: Install and verify focused lifecycle boundary
+        run: |
+          bun install --frozen-lockfile
+          bunx biome check --write \
+            packages/coding-agent/src/sdk/bus/telegram-daemon.ts \
+            packages/coding-agent/test/notifications-telegram-daemon.test.ts
+          bun test --timeout 30000 \
+            packages/coding-agent/test/notifications-telegram-daemon.test.ts \
+            packages/coding-agent/test/notifications-tool-activity.test.ts \
+            packages/coding-agent/test/sdk-host.test.ts \
+            packages/coding-agent/test/sdk-host-wiring.test.ts
+          bun test --timeout 30000 scripts/telegram-daemon-generation-guard.test.ts
+          bun scripts/telegram-daemon-generation-guard.ts --validate-current-tree
+          bun --cwd=packages/coding-agent run check
+
+      - name: Publish clean current-dev successor
+        shell: bash
+        run: |
+          git reset --soft upstream/dev
+          git rm -f .github/workflows/telegram-successor-sync.yml
+          git add -A
+          git commit -m "fix(notifications): make Telegram tool activity opt-in"
+          git push --force origin HEAD:successor/telegram-tool-activity-clean
