@@ -1,0 +1,195 @@
+name: Rebuild memory guard successor on current dev
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  rebuild:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/memory-guard-domain-scheduler'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trusted repair source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: repair-source
+
+      - name: Check out target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          path: work
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check one-shot trigger
+        id: gate
+        working-directory: work
+        shell: bash
+        run: |
+          if [ -f .github/trigger/memory-clean-port ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reset target to the live upstream dev baseline
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git remote add upstream https://github.com/Yeachan-Heo/gajae-code.git || true
+          git fetch --no-tags upstream dev
+          git reset --hard upstream/dev
+          git fetch --no-tags origin backup/memory-guard-426ca8d1
+
+      - name: Apply exact net feature diff onto current dev
+        if: steps.gate.outputs.run == 'true'
+        id: apply
+        continue-on-error: true
+        working-directory: work
+        shell: bash
+        run: |
+          git diff --binary 5cd97b6611a56b4df75b9151e9f28691c28d7f98..origin/backup/memory-guard-426ca8d1 > /tmp/memory-successor.patch
+          if ! git apply --3way --index /tmp/memory-successor.patch; then
+            git diff --name-only --diff-filter=U > /tmp/memory-conflicts.txt
+            exit 1
+          fi
+
+      - name: Report patch conflicts
+        if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const paths = fs.existsSync('/tmp/memory-conflicts.txt')
+              ? fs.readFileSync('/tmp/memory-conflicts.txt', 'utf8').trim()
+              : '(patch failed before conflict enumeration)';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `MEMORY_REBUILD_FAILED\n\n${paths}`,
+            });
+            core.setFailed('Memory feature patch application failed');
+
+      - name: Stop after conflict report
+        if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
+        working-directory: work
+        run: exit 1
+
+      - name: Apply final owner-blocker repair
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        run: python3 ../repair-source/.github/repair/memory-guard-final.py
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.gate.outputs.run == 'true'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        run: bun install --frozen-lockfile
+
+      - name: Regenerate the native declaration from the actual generator
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        shell: bash
+        run: |
+          bun --cwd=packages/natives run build
+          git add packages/natives/index.d.ts
+          git checkout -- packages/natives/index.js 2>/dev/null || true
+          git clean -fd packages/natives/native 2>/dev/null || true
+
+      - name: Format changed sources
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        shell: bash
+        run: |
+          changed_ts=$(git diff --name-only -- '*.ts' '*.tsx')
+          if [ -n "$changed_ts" ]; then
+            bunx biome check --write $changed_ts
+            git add $changed_ts
+          fi
+          cargo fmt --all
+          git add -A
+
+      - name: Publish product commit before verification
+        if: steps.gate.outputs.run == 'true'
+        working-directory: work
+        shell: bash
+        run: |
+          git add -A
+          git commit -m "feat(coding-agent): add coherent memory pressure observability"
+          git push --force origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Run direct Windows-domain and scheduler regressions
+        id: blockers
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        working-directory: work
+        run: |
+          bun test --timeout 30000 \
+            packages/coding-agent/test/runtime/memory-guard.test.ts \
+            packages/coding-agent/test/tools/resource-gc.test.ts \
+            packages/coding-agent/test/tools/resource-gc-redteam.test.ts
+
+      - name: Run full memory-guard boundary suite
+        id: focused
+        if: steps.gate.outputs.run == 'true' && steps.blockers.outcome == 'success'
+        continue-on-error: true
+        working-directory: work
+        run: |
+          bun test --timeout 30000 \
+            packages/coding-agent/test/runtime/memory-limit.test.ts \
+            packages/coding-agent/test/runtime/memory-domain.test.ts \
+            packages/coding-agent/test/runtime/memory-guard.test.ts \
+            packages/coding-agent/test/tools/resource-gc.test.ts \
+            packages/coding-agent/test/tools/resource-gc-redteam.test.ts \
+            packages/coding-agent/test/gjc-runtime/linux-proc.test.ts \
+            packages/coding-agent/test/cli-memory-guard-native-smoke.test.ts
+
+      - name: Run package, schema, and native checks
+        id: package
+        if: steps.gate.outputs.run == 'true' && steps.blockers.outcome == 'success' && steps.focused.outcome == 'success'
+        continue-on-error: true
+        working-directory: work
+        run: |
+          bun --cwd=packages/coding-agent run check
+          bun run check:schemas
+          cargo check -p pi-natives
+          bun --cwd=packages/natives test
+
+      - name: Publish verification receipt and immutable verified branch
+        if: steps.gate.outputs.run == 'true' && steps.blockers.outcome == 'success' && steps.focused.outcome == 'success' && steps.package.outcome == 'success'
+        working-directory: work
+        shell: bash
+        run: |
+          git commit --allow-empty -m "test(coding-agent): verify memory pressure successor"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          git push --force origin HEAD:verified/memory-guard-domain-scheduler
+
+      - name: Report verification result
+        if: steps.gate.outputs.run == 'true' && always()
+        uses: actions/github-script@v7
+        env:
+          BLOCKERS: ${{ steps.blockers.outcome }}
+          FOCUSED: ${{ steps.focused.outcome }}
+          PACKAGE: ${{ steps.package.outcome }}
+        with:
+          script: |
+            const ok = process.env.BLOCKERS === 'success' && process.env.FOCUSED === 'success' && process.env.PACKAGE === 'success';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: ok ? 'MEMORY_REBUILD_OK' : `MEMORY_REBUILD_FAILED\n\nblockers=${process.env.BLOCKERS}\nfocused=${process.env.FOCUSED}\npackage=${process.env.PACKAGE}`,
+            });
+            if (!ok) core.setFailed('Memory successor verification failed');
