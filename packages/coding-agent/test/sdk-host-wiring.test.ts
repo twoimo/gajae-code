@@ -33,6 +33,9 @@ import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
 import { SessionIndex } from "../src/sdk/broker/session-index";
 import { createNotificationsExtension, PresentationArbiter } from "../src/sdk/bus";
 import { getTelegramFileSink } from "../src/sdk/bus/attachment-registry";
+import { getNotificationConfig } from "../src/sdk/bus/config";
+import { NotificationSessionController } from "../src/sdk/bus/session-control";
+import * as telegramDaemon from "../src/sdk/bus/telegram-daemon";
 import { SessionSdkHost } from "../src/sdk/host";
 import {
 	attachLifecycleStartupCapability,
@@ -111,6 +114,13 @@ function start(
 	commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>(),
 	lifecycle?: { startupCapability: SdkStartupCapability; lifecycleRequired: true },
 	autoStart = true,
+	ensureTelegramDaemon?: (input: {
+		settings: Settings;
+		cwd: string;
+		sessionId: string;
+		onRegistered?: (registration: telegramDaemon.RegisterNotificationRootResult) => void;
+	}) => Promise<"attached">,
+	controller?: NotificationSessionController,
 ): Map<string, (event: unknown, context: unknown) => unknown> {
 	const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
 	const api = {
@@ -134,9 +144,28 @@ function start(
 	const effectiveSettings =
 		settings ??
 		(lifecycle ? ({ get: () => undefined, getAgentDir: () => ctx.cwd } as unknown as Settings) : undefined);
-	createNotificationsExtension(api, effectiveSettings ? { settings: effectiveSettings } : undefined);
+	createNotificationsExtension(
+		api,
+		effectiveSettings ? { settings: effectiveSettings, ensureTelegramDaemon, controller } : undefined,
+	);
 	if (autoStart) void handlers.get("session_start")?.({ type: "session_start" }, ctx);
 	return handlers;
+}
+
+function telegramSettings(agentDir: string, configured: boolean): Settings {
+	const settings = Settings.isolated({
+		"notifications.enabled": true,
+		...(configured
+			? { "notifications.telegram.botToken": "123456:token", "notifications.telegram.chatId": "42" }
+			: {}),
+	}) as Settings;
+	return new Proxy(settings, {
+		get(target, prop) {
+			if (prop === "getAgentDir") return () => agentDir;
+			const value = Reflect.get(target, prop, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	}) as Settings;
 }
 
 function context(
@@ -431,6 +460,123 @@ test("lifecycle cleanup fences same-id startup and preserves proven owner releas
 		serverStart.mockRestore();
 		(NotificationServer.prototype as unknown as { stopAndWait: () => Promise<void> }).stopAndWait = nativeStop;
 	}
+}, 60_000);
+
+test("Telegram root release failure is retained and retried through lifecycle shutdown", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-telegram-root-retry-"));
+	dirs.push(cwd);
+	const sessionId = `telegram-root-retry-${Date.now()}`;
+	const settings = telegramSettings(path.join(cwd, "agent"), true);
+	const capability = new SdkStartupCapability(new SdkStartupRollbackTracker());
+	const unregisterImpl = telegramDaemon.unregisterNotificationRoot;
+	let initialRegistrationToken: string | undefined;
+	let failedInitialCleanup = false;
+	const unregister = spyOn(telegramDaemon, "unregisterNotificationRoot").mockImplementation(async input => {
+		if (!failedInitialCleanup && input.registrationToken === initialRegistrationToken) {
+			failedInitialCleanup = true;
+			throw new Error("roots write failed");
+		}
+		return await unregisterImpl(input);
+	});
+	const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
+	try {
+		const sessionContext = context(cwd, sessionId);
+		const handlers = start(
+			sessionContext,
+			settings,
+			() => {},
+			false,
+			new Map(),
+			{ startupCapability: capability, lifecycleRequired: true },
+			true,
+			async input => {
+				const registration = await telegramDaemon.registerNotificationRoot(input);
+				initialRegistrationToken ??= registration.token;
+				input.onRegistered?.(registration);
+				return "attached";
+			},
+		);
+		await expect(capability.promise).resolves.toEqual({ status: "started" });
+		const rootsFile = telegramDaemon.daemonPaths(settings.getAgentDir()).roots;
+		expect(JSON.parse(fs.readFileSync(rootsFile, "utf8")).sessions[sessionId]).toBe(path.join(cwd, ".gjc", "state"));
+		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
+		expect(unregister).toHaveBeenCalledTimes(2);
+		expect(unregister.mock.calls.map(call => call[0].registrationToken)).toEqual([
+			expect.any(String),
+			expect.any(String),
+		]);
+		expect(unregister.mock.calls[1]?.[0].registrationToken).not.toBe(unregister.mock.calls[0]?.[0].registrationToken);
+		expect(
+			errorSpy.mock.calls.some(([message]) =>
+				String(message).includes(`SDK notification runtime ${sessionId} owner release failed`),
+			),
+		).toBe(true);
+		expect(JSON.parse(fs.readFileSync(rootsFile, "utf8")).sessions[sessionId]).toBeUndefined();
+		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
+		expect(JSON.parse(fs.readFileSync(rootsFile, "utf8"))).toEqual({
+			version: 1,
+			roots: [],
+			managedRoots: [],
+			sessions: {},
+			registrationTokens: {},
+		});
+		expect(unregister).toHaveBeenCalledTimes(3);
+		await expect(
+			handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext),
+		).resolves.toBeUndefined();
+	} finally {
+		unregister.mockRestore();
+		errorSpy.mockRestore();
+	}
+}, 60_000);
+
+test("Telegram root ownership is recorded when reconciliation configures Telegram after startup", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-telegram-root-reconcile-"));
+	dirs.push(cwd);
+	const sessionId = `telegram-root-reconcile-${Date.now()}`;
+	const settings = telegramSettings(path.join(cwd, "agent"), false);
+	const controller = new NotificationSessionController({
+		eligible: true,
+		getConfig: () => getNotificationConfig(settings),
+	});
+	const capability = new SdkStartupCapability(new SdkStartupRollbackTracker());
+	let registrations = 0;
+	const sessionContext = context(cwd, sessionId);
+	const handlers = start(
+		sessionContext,
+		settings,
+		() => {},
+		false,
+		new Map(),
+		{ startupCapability: capability, lifecycleRequired: true },
+		true,
+		async input => {
+			registrations++;
+			const registration = await telegramDaemon.registerNotificationRoot(input);
+			input.onRegistered?.(registration);
+			return "attached";
+		},
+		controller,
+	);
+	await expect(capability.promise).resolves.toEqual({ status: "started" });
+	expect(registrations).toBe(0);
+	settings.set("notifications.telegram.botToken", "123456:token");
+	settings.set("notifications.telegram.chatId", "42");
+	await expect(controller.reconcileCurrentSession(sessionContext as never)).resolves.toMatchObject({
+		outcome: "started",
+	});
+	const rootsFile = telegramDaemon.daemonPaths(settings.getAgentDir()).roots;
+	expect(JSON.parse(fs.readFileSync(rootsFile, "utf8")).sessions[sessionId]).toBe(path.join(cwd, ".gjc", "state"));
+	await expect(
+		handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext),
+	).resolves.toBeUndefined();
+	expect(JSON.parse(fs.readFileSync(rootsFile, "utf8"))).toEqual({
+		version: 1,
+		roots: [],
+		managedRoots: [],
+		sessions: {},
+		registrationTokens: {},
+	});
 }, 60_000);
 
 test("production SDK host starts exactly one instrumented server (no duplicate auto-host)", async () => {
@@ -2168,7 +2314,12 @@ for (const eventType of ["session_switch", "session_branch"] as const) {
 		const stop = spyOn(SessionSdkHost.prototype, "stop").mockRejectedValueOnce(new Error("host stop failed"));
 		const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
 		try {
-			const handlers = start(ctx);
+			const startupCapability = new SdkStartupCapability();
+			const handlers = start(ctx, undefined, () => {}, false, new Map(), {
+				startupCapability,
+				lifecycleRequired: true,
+			});
+			await expect(startupCapability.promise).resolves.toEqual({ status: "started" });
 			const endpointAPath = path.join(cwd, ".gjc", "state", "sdk", `${sessionA}.json`);
 			await waitFor(() => fs.existsSync(endpointAPath), "session A endpoint");
 
@@ -3385,20 +3536,37 @@ test("session teardown drains admitted direct gate resolution before detaching i
 	const sessionId = `direct-resolution-drain-${Date.now()}`;
 	const emitter = new BrokerWorkflowGateEmitter(sessionId, new FileGateStore(path.join(cwd, "gates.json")));
 	const resolution = Promise.withResolvers<{ status: "accepted" }>();
+	const sessionClosedBarrier = Promise.withResolvers<void>();
+	const sessionClosedReached = Promise.withResolvers<void>();
+	const events: string[] = [];
 	let resolutionStarted = false;
-	let controllerDetached = false;
-	const registerController = spyOn(emitter, "registerGateTerminalController").mockImplementation(() => () => {
-		controllerDetached = true;
+	const originalRegisterController = emitter.registerGateTerminalController!.bind(emitter);
+	const originalResolveGate = emitter.resolveGate!.bind(emitter);
+	const originalPushFrameAndWait = NotificationServer.prototype.pushFrameAndWait;
+	const registerController = spyOn(emitter, "registerGateTerminalController").mockImplementation(controller => {
+		const detach = originalRegisterController(controller);
+		return () => {
+			events.push("controller-detached");
+			detach();
+		};
 	});
 	const resolveGate = spyOn(emitter, "resolveGate").mockImplementation(async response => {
 		resolutionStarted = true;
 		await resolution.promise;
-		return {
-			status: "accepted",
-			gate_id: response.gate_id,
-			answer_hash: "fixture",
-			resolved_at: new Date().toISOString(),
-		};
+		const resolved = await originalResolveGate(response);
+		events.push("gate-terminalized");
+		return resolved;
+	});
+	const pushFrameAndWait = spyOn(NotificationServer.prototype, "pushFrameAndWait").mockImplementation(async function (
+		this: NotificationServer,
+		frame,
+		timeout,
+	) {
+		if ((JSON.parse(frame) as { type?: unknown }).type === "session_closed") {
+			sessionClosedReached.resolve();
+			await sessionClosedBarrier.promise;
+		}
+		return await originalPushFrameAndWait.call(this, frame, timeout);
 	});
 	process.env.GJC_NOTIFICATIONS = "1";
 	const sessionContext = context(cwd, sessionId, "main", {}, emitter);
@@ -3435,12 +3603,14 @@ test("session teardown drains admitted direct gate resolution before detaching i
 		);
 		await waitFor(() => resolutionStarted, "direct gate resolution");
 		const shutdown = handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
-		await Bun.sleep(0);
-		expect(controllerDetached).toBe(false);
+		await sessionClosedReached.promise;
+		expect(events).toEqual([]);
+		sessionClosedBarrier.resolve();
 		resolution.resolve({ status: "accepted" });
 		await shutdown;
-		expect(controllerDetached).toBe(true);
+		expect(events).toEqual(["gate-terminalized", "controller-detached"]);
 	} finally {
+		pushFrameAndWait.mockRestore();
 		resolveGate.mockRestore();
 		registerController.mockRestore();
 	}
