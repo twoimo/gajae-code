@@ -44,6 +44,9 @@ jobs:
             repair-source/.github/repair/memory-guard-final-base.py
           cp repair-source/.github/repair/memory-guard-final-current.py \
             repair-source/.github/repair/memory-guard-final.py
+          sed -i \
+            's#settings-successor-base.py#settings-successor.py#' \
+            repair-source/.github/repair/run-successor-verification.sh
 
       - name: Check one-shot trigger
         id: gate
