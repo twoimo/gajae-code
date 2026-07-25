@@ -1,15 +1,16 @@
-name: Run model preset default repair
+name: Rebuild model preset successor on current dev
 
 on:
-  issue_comment:
-    types: [created]
+  pull_request_target:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   repair:
-    if: github.event.issue.number == 1 && github.event.comment.body == '/run-model-preset-repair'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/model-preset-default-action'
     runs-on: ubuntu-latest
     steps:
       - name: Check out trusted repair source
@@ -21,50 +22,70 @@ jobs:
       - name: Check out repair target
         uses: actions/checkout@v4
         with:
-          ref: feat/model-preset-default-action
+          ref: ${{ github.event.pull_request.head.ref }}
           path: work
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check one-shot trigger
+        id: gate
+        working-directory: work
+        shell: bash
+        run: |
+          if [ -f .github/trigger/model-preset-rebuild ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: oven-sh/setup-bun@v2
+        if: steps.gate.outputs.run == 'true'
 
       - name: Apply trusted repair
+        if: steps.gate.outputs.run == 'true'
         working-directory: work
         run: python3 ../repair-source/.github/repair/model-preset-default.py
 
       - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
         working-directory: work
         run: bun install --frozen-lockfile
 
       - name: Format changed files
+        if: steps.gate.outputs.run == 'true'
         working-directory: work
         run: bunx biome check --write packages/coding-agent/src/modes/components/model-selector.ts packages/coding-agent/test/model-selector-profiles-redteam.test.ts
 
-      - name: Commit repair
-        working-directory: work
-        shell: bash
-        run: |
-          if ! git diff --quiet; then
-            git config user.name "twoimo"
-            git config user.email "32544727+twoimo@users.noreply.github.com"
-            git add packages/coding-agent/CHANGELOG.md packages/coding-agent/src/modes/components/model-selector.ts packages/coding-agent/test/model-selector-profiles-redteam.test.ts
-            git commit -m "feat(coding-agent): default preset selection to persistence"
-            git push origin HEAD:feat/model-preset-default-action
-          fi
-
       - name: Run focused preset tests
+        if: steps.gate.outputs.run == 'true'
         working-directory: work
         run: bun test --timeout 30000 packages/coding-agent/test/model-selector-profiles.test.ts packages/coding-agent/test/model-selector-profiles-redteam.test.ts packages/coding-agent/test/model-preset-landing-redteam-qa.test.ts packages/coding-agent/test/cli-args-mpreset.test.ts
 
       - name: Run package check
+        if: steps.gate.outputs.run == 'true'
         working-directory: work
         run: bun --cwd=packages/coding-agent run check
 
-      - name: Publish verification receipt commit
+      - name: Commit verified repair
+        if: steps.gate.outputs.run == 'true'
         working-directory: work
         shell: bash
         run: |
           git config user.name "twoimo"
           git config user.email "32544727+twoimo@users.noreply.github.com"
-          git commit --allow-empty -m "test(coding-agent): verify model preset default action"
-          git push origin HEAD:feat/model-preset-default-action
+          git rm .github/trigger/model-preset-rebuild
+          git add packages/coding-agent/CHANGELOG.md packages/coding-agent/src/modes/components/model-selector.ts packages/coding-agent/test/model-selector-profiles-redteam.test.ts
+          git commit -m "feat(coding-agent): default preset selection to persistence"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Report successful verification
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: 'MODEL_PRESET_REBUILD_OK',
+            });
