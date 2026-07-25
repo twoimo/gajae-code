@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+
+- The built-in `claude-opus`, `opus-codex`, and `fable-opus-codex` presets now use `anthropic/claude-opus-5` instead of `anthropic/claude-opus-4-8`, with effort suffixes preserved; `packages/ai/src/models.json` was regenerated so `anthropic/claude-opus-5` resolves; non-opus roles (`anthropic/claude-sonnet-5` executor/planner overrides, codex and fable roles) are unchanged.
 
 ### Changed
 
@@ -8,14 +11,18 @@
 
 ### Fixed
 
+- Restricted role-agent `bash` now accepts literal mid-word tildes, so git revision syntax such as `git diff HEAD~1` no longer has to be quoted. Bash performs tilde expansion only at the start of a word, so word-initial forms (`~`, `~/path`, `~user`) remain blocked.
+- Restricted role-agent `bash` now rejects unquoted tildes at every bash expansion position inside assignment words, including the compound `name+=value` form, so `A=~`, `A+=~`, `foo=~root/bar`, `A=x:~`, `A+=x:~`, and repeated colon segments such as `a=x:~:y:~` fail closed. Tildes bash does not expand — mid-word git revisions (`HEAD~1`), non-assignment words (`--opt=~`, `1abc=~`, `a++=~`, `a+b=~`), and quoted forms — remain allowed (#3117).
+- ACP sessions now apply execution permission decisions to eval calls and to tools invoked from JavaScript or Python eval contexts, while non-ACP session behavior remains unchanged.
 - Interactive prompt cancellation now reaches API-key preflight through `ModelRegistry`, allowing aborted submissions to clear immediately even while a shared credential-usage request continues in the background.
 - Alibaba Token Plan canonical first-event timeouts now surface without session retry/fallback replay and are not internally retried by auto-compaction, preventing repeated provider usage (#3026).
 - Delegated-task and subagent status surfaces now distinguish provider recovery from normal running, identify first-event versus idle-stream stalls, show retry budget and provider-progress age, and aggregate concurrent degradation by provider (#3071).
 - Telegram notification daemon ownership hardening (#3048): Bot API outcomes now share one honest classifier so both the initiating `429` response and cooldown-suppressed calls settle retryably instead of being lost or falsely rejected, including selected acknowledgements; exclusive operator work is registered before its callback can throw; notification health degrades corrupt daemon-state JSON to a warning; root-registration ownership tokens propagate through injected and built-in ensure, rollback, reconciliation, teardown, and abandoned-startup cleanup seams, with token-bearing rows refusing tokenless cleanup while genuinely legacy rows retain root-match behavior; and initial daemon readiness is published only after the matching heartbeat sidecar rename is durable, so no waiter can attach during the proof window.
+- `/new`, `fork()`, handoff, `/resume`, and branch/tree-jump transitions now complete verified managed `local://` legacy-root migration for the successor session identity *before* that identity is published to the agent, the workflow-gate emitter, or extension hooks, so no observer can resolve `local://` against an ungated root across the gate's `await` boundary. Matches cold-start `createAgentSession()` (#2797) and extends `/resume` (#2925). Sending a prompt right after `/new` no longer fails with "local:// legacy migration must complete before path resolution".
 
 - Telegram notification topics now fence malformed successful `createForumTopic` responses per session endpoint, preventing repeated ambiguous topic creation while keeping explicit Bot API failures retryable.
 - Windows managed-session resume no longer reports `durability_failed` when Bun rejects `fsync` on the read-only descriptor used to revalidate an existing canonical binding; Windows now uses an owner-writable descriptor for that durability fence while retaining no-follow and pre/post identity/content checks.
-- SDK daemon CLI end-to-end tests now drain spawned child stdout and stderr concurrently with process exit, preventing CI pipe teardown races from replacing the product exit contract with SIGPIPE status 141 (#3024).
+- SDK daemon CLI end-to-end tests now capture spawned child stdout and stderr through temporary files instead of pipes, removing the CI pipe teardown race that replaced the product exit contract with SIGPIPE status 141 (#3024).
 - Interactive launch bootstrap is now suppressed for parser-accepted `--print=`, `--help=`, and `--version=` equals forms, keeping non-interactive output free of the warming-workspace preamble on TTYs.
 - Managed legacy-session artifact migration now accepts up to 50,000 files, processes copy work in bounded batches, and reports capacity exhaustion separately from unsafe artifact topology (#2935).
 - Kimi Code first-event timeouts now surface after the provider's continuous first-event wait instead of replaying the full request from zero.

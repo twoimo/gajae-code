@@ -1048,10 +1048,14 @@ function createHandoffContext(document: string): string {
 // ============================================================================
 
 /** Tools that require user permission before execution when an ACP client is connected. */
-const PERMISSION_REQUIRED_TOOLS = new Set(["bash", "monitor", "edit", "delete", "move"]);
+const PERMISSION_REQUIRED_TOOLS = new Set(["bash", "monitor", "eval", "edit", "delete", "move"]);
 
 function isShellExecutionPermissionTool(toolName: string): boolean {
 	return toolName === "bash" || toolName === "monitor";
+}
+
+function isExecutionPermissionTool(toolName: string): boolean {
+	return isShellExecutionPermissionTool(toolName) || toolName === "eval";
 }
 
 /** Permission options presented to the client on each gated tool call. */
@@ -1120,6 +1124,18 @@ function getPermissionIntent(
 	if (isShellExecutionPermissionTool(toolName)) {
 		const cmd = getStringProperty(a, "command")?.slice(0, 80);
 		return { toolName, title: cmd || toolName, cacheKey: toolName };
+	}
+	if (toolName === "eval") {
+		const cells = Array.isArray(a.cells) ? a.cells : [];
+		const firstCell = cells.find(cell => cell && typeof cell === "object" && !Array.isArray(cell));
+		const cell = firstCell as Record<string, unknown> | undefined;
+		const title = cell ? getStringProperty(cell, "title") : undefined;
+		const language = cell ? getStringProperty(cell, "language") : undefined;
+		return {
+			toolName,
+			title: title ?? (language ? `Eval ${language}` : "eval"),
+			cacheKey: toolName,
+		};
 	}
 	if (toolName === "delete") {
 		const p = getStringProperty(a, "path");
@@ -5502,6 +5518,12 @@ export class AgentSession {
 		return undefined;
 	}
 
+	/** Get a registered tool with the same guards used for model-facing execution. */
+	getToolForExecution(name: string): AgentTool | undefined {
+		const tool = this.getToolByName(name);
+		return tool ? this.#prepareToolForExecution(tool) : undefined;
+	}
+
 	/**
 	 * Register a UI/control-plane request handler for a currently foregrounded
 	 * managed bash execution. This is intentionally narrower than generic
@@ -5766,6 +5788,7 @@ export class AgentSession {
 						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
 					}
 					const isShellExecutionTool = isShellExecutionPermissionTool(target.name);
+					const isExecutionTool = isExecutionPermissionTool(target.name);
 					const command =
 						isShellExecutionTool && args && typeof args === "object" && !Array.isArray(args)
 							? getStringProperty(args as Record<string, unknown>, "command")
@@ -5808,7 +5831,7 @@ export class AgentSession {
 								toolCallId,
 								toolName: target.name,
 								title: permissionIntent.title,
-								...(isShellExecutionTool ? { kind: "execute" } : {}),
+								...(isExecutionTool ? { kind: "execute" } : {}),
 								status: "pending",
 								rawInput: args,
 								...(commandContent ? { content: commandContent } : {}),
@@ -9017,6 +9040,10 @@ export class AgentSession {
 			this.agent.reset();
 			if (!options?.drop) await this.sessionManager.flush();
 			await this.sessionManager.newSession(options);
+			// Gate the successor local:// root before the successor identity is
+			// published to the agent, the workflow-gate emitter, hooks, or any
+			// synchronous resolver (#2797 / #2925).
+			await initializeLocalRoot(this.#localProtocolOptions());
 			this.setTodoPhases([]);
 			this.#syncAgentSessionId();
 			this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
@@ -9084,6 +9111,10 @@ export class AgentSession {
 			this.#rebindProviderSessionState(new Map());
 			this.agent.reset();
 			await this.sessionManager.newSession(options);
+			// Gate the successor local:// root before the successor identity is
+			// published to the agent, the workflow-gate emitter, hooks, or any
+			// synchronous resolver (#2797 / #2925).
+			await initializeLocalRoot(this.#localProtocolOptions());
 			this.setTodoPhases([]);
 			this.#syncAgentSessionId();
 			this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
@@ -9227,6 +9258,9 @@ export class AgentSession {
 				return false;
 			}
 
+			// Fork rotates the session identity (and copies artifacts); gate the
+			// successor local:// root before that identity is published (#2797 / #2925).
+			await initializeLocalRoot(this.#localProtocolOptions());
 			// Update agent session ID
 			this.#syncAgentSessionId();
 			this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
@@ -10634,6 +10668,10 @@ export class AgentSession {
 					previousSessionFile ? { parentSession: previousSessionFile } : undefined,
 				);
 				successorSessionFile = this.sessionFile;
+				// Gate the successor local:// root inside the reversible prepare
+				// window, before the successor identity is published; a gate failure
+				// here rolls back (#2797 / #2925).
+				await initializeLocalRoot(this.#localProtocolOptions());
 				this.agent.reset();
 				this.#syncAgentSessionId();
 				this.#rekeyHindsightMemoryForCurrentSessionId();
@@ -14561,6 +14599,10 @@ export class AgentSession {
 
 			try {
 				await this.sessionManager.setSessionFile(sessionPath);
+				// The successor identity is already rotated in the manager but not yet
+				// published; gate its local:// root before publication so no observer
+				// can resolve against an ungated root (#2797 / #2925).
+				if (switchingToDifferentSession) await initializeLocalRoot(this.#localProtocolOptions());
 				this.#syncAgentSessionId();
 				this.#rekeyHindsightMemoryForCurrentSessionId();
 
@@ -14637,13 +14679,8 @@ export class AgentSession {
 				await this.sessionManager.ensureOnDisk();
 
 				if (switchingToDifferentSession) {
-					// Interactive /resume (and any other switchSession identity change) must
-					// await verified legacy local:// migration for the *new* session before
-					// post-commit session_switch / local path resolution. createAgentSession
-					// already does this at cold start (#2797); switchSession previously omitted
-					// it, so resolving local:// after /resume could fail-closed with
-					// "legacy migration must complete before path resolution" (#2925).
-					await initializeLocalRoot(this.#localProtocolOptions());
+					// The local:// migration gate for this successor already ran above,
+					// before the identity was published (#2797 / #2925).
 					this.#resetHindsightConversationTrackingIfHindsight();
 					this.#resetIrcRosterDeliveryState();
 				}
@@ -14775,6 +14812,9 @@ export class AgentSession {
 			} else {
 				this.sessionManager.createBranchedSession(selectedEntry.parentId);
 			}
+			// Branch/tree-jump establishes a new session identity; gate the successor
+			// local:// root before that identity is published (#2797 / #2925).
+			await initializeLocalRoot(this.#localProtocolOptions());
 			this.#syncTodoPhasesFromBranch();
 			this.#syncAgentSessionId();
 			this.#bindWorkflowGateEmitter(previousWorkflowGateSessionId);
