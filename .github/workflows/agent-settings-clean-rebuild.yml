@@ -1,0 +1,184 @@
+name: Rebuild malformed settings successor on current dev
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  rebuild:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/malformed-settings-recovery-current'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check one-shot trigger
+        id: gate
+        shell: bash
+        run: |
+          if [ -f .github/trigger/settings-clean-rebuild ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reset target to the live upstream dev baseline
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git remote add upstream https://github.com/Yeachan-Heo/gajae-code.git || true
+          git fetch --no-tags upstream dev
+          git reset --hard upstream/dev
+          git fetch --no-tags origin backup/malformed-settings-e5f15e86
+
+      - name: Apply exact net feature diff onto current dev
+        if: steps.gate.outputs.run == 'true'
+        id: apply
+        continue-on-error: true
+        shell: bash
+        run: |
+          git diff --binary 96f64a8e22eacf496742c87b0be2a38f1821ba91..origin/backup/malformed-settings-e5f15e86 > /tmp/settings-successor.patch
+          if ! git apply --3way --index /tmp/settings-successor.patch; then
+            git diff --name-only --diff-filter=U > /tmp/settings-conflicts.txt
+            exit 1
+          fi
+
+      - name: Report patch conflicts
+        if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const paths = fs.existsSync('/tmp/settings-conflicts.txt')
+              ? fs.readFileSync('/tmp/settings-conflicts.txt', 'utf8').trim()
+              : '(patch failed before conflict enumeration)';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `SETTINGS_REBUILD_FAILED\n\n${paths}`,
+            });
+            core.setFailed('Settings patch application failed');
+
+      - name: Stop after conflict report
+        if: steps.gate.outputs.run == 'true' && steps.apply.outcome == 'failure'
+        run: exit 1
+
+      - name: Preserve deterministic terminal-environment recovery contract
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('packages/coding-agent/src/modes/components/settings-selector.ts')
+          source = source_path.read_text()
+          source = source.replace('description = getPetUnavailableWarning();', 'description = getPetUnavailableWarning(this.context.terminalEnv);')
+          source_path.write_text(source)
+
+          test_path = Path('packages/coding-agent/test/modes/components/settings-selector-pet.test.ts')
+          tests = test_path.read_text()
+          old_sig = 'function makeComponent(petAvailable: boolean, callbacks: Record<string, unknown>): SettingsSelectorComponent {'
+          new_sig = '''function makeComponent(
+\tpetAvailable: boolean,
+\tcallbacks: Record<string, unknown>,
+\tterminalEnv?: NodeJS.ProcessEnv,
+): SettingsSelectorComponent {'''
+          if old_sig in tests:
+              tests = tests.replace(old_sig, new_sig, 1)
+          context_anchor = '\t\t\tpetAvailable,\n\t\t},'
+          context_replacement = '\t\t\tpetAvailable,\n\t\t\tterminalEnv,\n\t\t},'
+          if 'terminalEnv,' not in tests and context_anchor in tests:
+              tests = tests.replace(context_anchor, context_replacement, 1)
+          tests = tests.replace('const component = makeComponent(false, {});', 'const component = makeComponent(false, {}, {});', 1)
+          test_path.write_text(tests)
+          PY
+          git add packages/coding-agent/src/modes/components/settings-selector.ts packages/coding-agent/test/modes/components/settings-selector-pet.test.ts
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.gate.outputs.run == 'true'
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Format changed TypeScript files
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          changed=$(git diff --cached --name-only -- '*.ts' '*.tsx')
+          if [ -n "$changed" ]; then
+            bunx biome check --write $changed
+            git add $changed
+          fi
+
+      - name: Publish product commit before verification
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          git add -A
+          git commit -m "fix(coding-agent): harden malformed settings recovery"
+          git push --force origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Re-run exact prior blocker
+        id: blocker
+        if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        run: bun test --timeout 30000 packages/coding-agent/test/modes/components/settings-selector-pet.test.ts
+
+      - name: Run malformed-settings and interactive-control regression suite
+        id: focused
+        if: steps.gate.outputs.run == 'true' && steps.blocker.outcome == 'success'
+        continue-on-error: true
+        run: |
+          bun test --timeout 30000 \
+            packages/coding-agent/test/notifications-config.test.ts \
+            packages/coding-agent/test/settings-manager.test.ts \
+            packages/coding-agent/test/issue-775-repro.test.ts \
+            packages/coding-agent/test/modes/components/settings-selector-memory-refresh.test.ts \
+            packages/coding-agent/test/modes/components/settings-selector-pet.test.ts \
+            packages/coding-agent/test/modes/components/thinking-selector.test.ts \
+            packages/coding-agent/test/startup-update-contract.test.ts
+
+      - name: Run package check and build
+        id: package
+        if: steps.gate.outputs.run == 'true' && steps.blocker.outcome == 'success' && steps.focused.outcome == 'success'
+        continue-on-error: true
+        run: |
+          bun --cwd=packages/coding-agent run check
+          bun --cwd=packages/coding-agent run build
+
+      - name: Publish verification receipt and immutable verified branch
+        if: steps.gate.outputs.run == 'true' && steps.blocker.outcome == 'success' && steps.focused.outcome == 'success' && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          git commit --allow-empty -m "test(coding-agent): verify malformed settings recovery"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          git push --force origin HEAD:verified/malformed-settings-recovery
+
+      - name: Report verification result
+        if: steps.gate.outputs.run == 'true' && always()
+        uses: actions/github-script@v7
+        env:
+          BLOCKER: ${{ steps.blocker.outcome }}
+          FOCUSED: ${{ steps.focused.outcome }}
+          PACKAGE: ${{ steps.package.outcome }}
+        with:
+          script: |
+            const ok = process.env.BLOCKER === 'success' && process.env.FOCUSED === 'success' && process.env.PACKAGE === 'success';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: ok ? 'SETTINGS_REBUILD_OK' : `SETTINGS_REBUILD_FAILED\n\nblocker=${process.env.BLOCKER}\nfocused=${process.env.FOCUSED}\npackage=${process.env.PACKAGE}`,
+            });
+            if (!ok) core.setFailed('Malformed settings verification failed');
