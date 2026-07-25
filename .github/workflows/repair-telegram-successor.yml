@@ -23,9 +23,7 @@ jobs:
           bun-version: '1.3.14'
       - run: bun install --frozen-lockfile
       - run: bunx biome check --write packages/coding-agent/test/notifications-telegram-daemon.test.ts
-      - run: bun test --timeout 30000 packages/coding-agent/test/notifications-telegram-daemon.test.ts --test-name-pattern 'terminal submission rejection'
-      - run: bun --cwd=packages/coding-agent run check
-      - name: Commit repair
+      - name: Publish formatting repair
         shell: bash
         run: |
           if git diff --quiet; then exit 0; fi
@@ -34,3 +32,12 @@ jobs:
           git add packages/coding-agent/test/notifications-telegram-daemon.test.ts
           git commit -m 'test(notifications): format rejected terminal regression'
           git push origin HEAD:successor/telegram-tool-activity-clean
+      - name: Run focused regression
+        shell: bash
+        run: |
+          set +e
+          bun test --timeout 30000 packages/coding-agent/test/notifications-telegram-daemon.test.ts --test-name-pattern 'terminal submission rejection' > /tmp/telegram-focused.log 2>&1
+          status=$?
+          cat /tmp/telegram-focused.log
+          exit $status
+      - run: bun --cwd=packages/coding-agent run check
