@@ -47,65 +47,65 @@ jobs:
               text = text.replace(import_anchor, import_anchor + seam, 1)
 
           marker = '\tit("never evicts ownerless tabs under RSS pressure and warns once", async () => {'
-          tests = r'''	it("keeps uncapped Windows Job commit charge separate from physical RAM", () => {
-		const gib = 1024 ** 3;
-		const hostBytes = 16 * gib;
-		const parentBytes = 2 * gib;
-		const snapshot = __sampleWindowsJobMemoryForTest(hostBytes, parentBytes, {
-			kind: "job_snapshot",
-			platform: "win32",
-			isInJob: true,
-			jobMemoryUsedBytes: String(20 * gib),
-			peakJobMemoryUsedBytes: String(21 * gib),
-			processPrivateUsageBytes: String(20 * gib),
-			processWorkingSetBytes: String(parentBytes),
-			peakProcessWorkingSetBytes: String(3 * gib),
-		});
+          tests = r'''\tit("keeps uncapped Windows Job commit charge separate from physical RAM", () => {
+          \t\tconst gib = 1024 ** 3;
+          \t\tconst hostBytes = 16 * gib;
+          \t\tconst parentBytes = 2 * gib;
+          \t\tconst snapshot = __sampleWindowsJobMemoryForTest(hostBytes, parentBytes, {
+          \t\t\tkind: "job_snapshot",
+          \t\t\tplatform: "win32",
+          \t\t\tisInJob: true,
+          \t\t\tjobMemoryUsedBytes: String(20 * gib),
+          \t\t\tpeakJobMemoryUsedBytes: String(21 * gib),
+          \t\t\tprocessPrivateUsageBytes: String(20 * gib),
+          \t\t\tprocessWorkingSetBytes: String(parentBytes),
+          \t\t\tpeakProcessWorkingSetBytes: String(3 * gib),
+          \t\t});
 
-		expect(snapshot).not.toBeNull();
-		expect(snapshot?.parentBytes).toBe(parentBytes);
-		expect(snapshot?.domains).toContainEqual({
-			hardCapBytes: Number.MAX_SAFE_INTEGER,
-			totalUsageBytes: 20 * gib,
-			source: "windows_job",
-		});
-		expect(snapshot?.domains).toContainEqual({
-			hardCapBytes: hostBytes,
-			totalUsageBytes: parentBytes,
-			source: "windows_process_job_limit",
-		});
-	});
+          \t\texpect(snapshot).not.toBeNull();
+          \t\texpect(snapshot?.parentBytes).toBe(parentBytes);
+          \t\texpect(snapshot?.domains).toContainEqual({
+          \t\t\thardCapBytes: Number.MAX_SAFE_INTEGER,
+          \t\t\ttotalUsageBytes: 20 * gib,
+          \t\t\tsource: "windows_job",
+          \t\t});
+          \t\texpect(snapshot?.domains).toContainEqual({
+          \t\t\thardCapBytes: hostBytes,
+          \t\t\ttotalUsageBytes: parentBytes,
+          \t\t\tsource: "windows_process_job_limit",
+          \t\t});
+          \t});
 
-	it("does not clamp a Windows commit-domain policy cap to physical RAM", () => {
-		const gib = 1024 ** 3;
-		const hostBytes = 16 * gib;
-		const policyLimitBytes = 24 * gib;
-		const snapshot = __sampleWindowsJobMemoryForTest(hostBytes, 2 * gib, {
-			kind: "job_snapshot",
-			platform: "win32",
-			isInJob: true,
-			jobMemoryUsedBytes: String(20 * gib),
-			peakJobMemoryUsedBytes: String(21 * gib),
-			processPrivateUsageBytes: String(20 * gib),
-			processWorkingSetBytes: String(2 * gib),
-			peakProcessWorkingSetBytes: String(3 * gib),
-		});
-		expect(snapshot).not.toBeNull();
-		const pressure = __selectMemoryPressureDomainForTest(snapshot!, policyLimitBytes);
-		const limit = resolveEffectiveMemoryLimit({
-			hardCapBytes: pressure.hardCapBytes,
-			policyLimitBytes,
-		});
+          \t it("does not clamp a Windows commit-domain policy cap to physical RAM", () => {
+          \t\tconst gib = 1024 ** 3;
+          \t\tconst hostBytes = 16 * gib;
+          \t\tconst policyLimitBytes = 24 * gib;
+          \t\tconst snapshot = __sampleWindowsJobMemoryForTest(hostBytes, 2 * gib, {
+          \t\t\tkind: "job_snapshot",
+          \t\t\tplatform: "win32",
+          \t\t\tisInJob: true,
+          \t\t\tjobMemoryUsedBytes: String(20 * gib),
+          \t\t\tpeakJobMemoryUsedBytes: String(21 * gib),
+          \t\t\tprocessPrivateUsageBytes: String(20 * gib),
+          \t\t\tprocessWorkingSetBytes: String(2 * gib),
+          \t\t\tpeakProcessWorkingSetBytes: String(3 * gib),
+          \t\t});
+          \t\texpect(snapshot).not.toBeNull();
+          \t\tconst pressure = __selectMemoryPressureDomainForTest(snapshot!, policyLimitBytes);
+          \t\tconst limit = resolveEffectiveMemoryLimit({
+          \t\t\thardCapBytes: pressure.hardCapBytes,
+          \t\t\tpolicyLimitBytes,
+          \t\t});
 
-		expect(pressure.source).toBe("windows_job");
-		expect(limit.effectiveBytes).toBe(policyLimitBytes);
-		expect(limit.effectiveBytes).toBeGreaterThan(hostBytes);
-		const usageRatio = pressure.totalUsageBytes / limit.effectiveBytes!;
-		expect(usageRatio).toBeCloseTo(20 / 24, 8);
-		expect(usageRatio).toBeLessThan(1);
-	});
+          \t\texpect(pressure.source).toBe("windows_job");
+          \t\texpect(limit.effectiveBytes).toBe(policyLimitBytes);
+          \t\texpect(limit.effectiveBytes).toBeGreaterThan(hostBytes);
+          \t\tconst usageRatio = pressure.totalUsageBytes / limit.effectiveBytes!;
+          \t\texpect(usageRatio).toBeCloseTo(20 / 24, 8);
+          \t\texpect(usageRatio).toBeLessThan(1);
+          \t});
 
-'''
+          '''
           if 'keeps uncapped Windows Job commit charge separate from physical RAM' not in text:
               if text.count(marker) != 1:
                   raise SystemExit('test insertion anchor missing')
@@ -115,6 +115,7 @@ jobs:
 
       - name: Restore generated declarations
         run: |
+          python3 -c 'from pathlib import Path; p=Path("packages/natives/native/index.d.ts"); s=p.read_text(); a="/* eslint-disable */\nexport declare class ComputerController"; c="/**\n * macOS computer-use controller.\n *\n * This declaration and the named JS export are available on every platform so\n * consumers can import them portably; the native controller itself is built\n * only on macOS.\n */\n"; p.write_text(s if "macOS computer-use controller." in s else s.replace(a, "/* eslint-disable */\n"+c+"export declare class ComputerController", 1))'
           bun packages/natives/scripts/gen-enums.ts
           cp packages/natives/native/index.d.ts /tmp/index.generated.d.ts
           cp packages/natives/native/index.js /tmp/index.generated.js
