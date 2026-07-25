@@ -11,7 +11,7 @@ jobs:
   repair:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'successor/model-preset-default-action-current'
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,6 +54,10 @@ jobs:
           path = Path('packages/coding-agent/test/model-selector-profiles-redteam.test.ts')
           text = path.read_text()
           text = text.replace(
+              'const select = (selection: ModelSelectorSelection) => selections.push(selection);',
+              'const select = (selection: ModelSelectorSelection) => {\n\t\t\tselections.push(selection);\n\t\t};',
+          )
+          text = text.replace(
               'const renameSelector = createSelector(selection => renamed.push(selection));',
               'const renameSelector = createSelector(selection => {\n\t\t\trenamed.push(selection);\n\t\t});',
           )
@@ -67,16 +71,29 @@ jobs:
             packages/coding-agent/src/modes/components/model-selector.ts \
             packages/coding-agent/test/model-selector-profiles-redteam.test.ts
 
-      - name: Install and verify
+      - name: Install dependencies
         if: steps.gate.outputs.run == 'true'
-        run: |
-          bun install --frozen-lockfile
-          bun test --timeout 30000 \
-            packages/coding-agent/test/model-selector-profiles.test.ts \
-            packages/coding-agent/test/model-selector-profiles-redteam.test.ts \
-            packages/coding-agent/test/model-preset-landing-redteam-qa.test.ts \
-            packages/coding-agent/test/cli-args-mpreset.test.ts
-          bun --cwd=packages/coding-agent run check
+        run: bun install --frozen-lockfile
+
+      - name: Run profile controller regressions
+        if: steps.gate.outputs.run == 'true'
+        run: bun test --timeout 30000 packages/coding-agent/test/model-selector-profiles.test.ts
+
+      - name: Run profile red-team regressions
+        if: steps.gate.outputs.run == 'true'
+        run: bun test --timeout 30000 packages/coding-agent/test/model-selector-profiles-redteam.test.ts
+
+      - name: Run preset landing regressions
+        if: steps.gate.outputs.run == 'true'
+        run: bun test --timeout 30000 packages/coding-agent/test/model-preset-landing-redteam-qa.test.ts
+
+      - name: Run mpreset CLI regressions
+        if: steps.gate.outputs.run == 'true'
+        run: bun test --timeout 30000 packages/coding-agent/test/cli-args-mpreset.test.ts
+
+      - name: Run coding-agent check
+        if: steps.gate.outputs.run == 'true'
+        run: bun --cwd=packages/coding-agent run check
 
       - name: Publish verified clean successor
         if: steps.gate.outputs.run == 'true'
