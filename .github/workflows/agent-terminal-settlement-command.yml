@@ -32,23 +32,7 @@ jobs:
         working-directory: work
         run: python3 ../repair-source/.github/repair/terminal-settlement.py
 
-      - name: Install dependencies
-        working-directory: work
-        run: bun install --frozen-lockfile
-
-      - name: Format changed files
-        working-directory: work
-        run: bunx biome check --write packages/coding-agent/src/sdk/bus/telegram-daemon.ts packages/coding-agent/test/notifications-telegram-daemon.test.ts
-
-      - name: Run focused regressions
-        working-directory: work
-        run: bun test --timeout 30000 packages/coding-agent/test/notifications-telegram-daemon.test.ts --test-name-pattern "terminal submission rejection"
-
-      - name: Run package check
-        working-directory: work
-        run: bun --cwd=packages/coding-agent run check
-
-      - name: Commit verified repair
+      - name: Commit repair for visible verification
         working-directory: work
         shell: bash
         run: |
@@ -60,3 +44,19 @@ jobs:
           git add packages/coding-agent/src/sdk/bus/telegram-daemon.ts packages/coding-agent/test/notifications-telegram-daemon.test.ts
           git commit -m "fix(notifications): retire rejected legacy terminals"
           git push origin HEAD:fix/telegram-tool-activity-terminal-rejection
+
+      - name: Install dependencies
+        working-directory: work
+        run: bun install --frozen-lockfile
+
+      - name: Format check
+        working-directory: work
+        run: bunx biome check packages/coding-agent/src/sdk/bus/telegram-daemon.ts packages/coding-agent/test/notifications-telegram-daemon.test.ts
+
+      - name: Run focused regressions
+        working-directory: work
+        run: bun test --timeout 30000 packages/coding-agent/test/notifications-telegram-daemon.test.ts --test-name-pattern "terminal submission rejection"
+
+      - name: Run package check
+        working-directory: work
+        run: bun --cwd=packages/coding-agent run check
