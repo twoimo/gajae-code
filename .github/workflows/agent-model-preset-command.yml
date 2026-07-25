@@ -56,17 +56,7 @@ jobs:
         working-directory: work
         run: bunx biome check --write packages/coding-agent/src/modes/components/model-selector.ts packages/coding-agent/test/model-selector-profiles-redteam.test.ts
 
-      - name: Run focused preset tests
-        if: steps.gate.outputs.run == 'true'
-        working-directory: work
-        run: bun test --timeout 30000 packages/coding-agent/test/model-selector-profiles.test.ts packages/coding-agent/test/model-selector-profiles-redteam.test.ts packages/coding-agent/test/model-preset-landing-redteam-qa.test.ts packages/coding-agent/test/cli-args-mpreset.test.ts
-
-      - name: Run package check
-        if: steps.gate.outputs.run == 'true'
-        working-directory: work
-        run: bun --cwd=packages/coding-agent run check
-
-      - name: Commit verified repair
+      - name: Publish product commit before verification
         if: steps.gate.outputs.run == 'true'
         working-directory: work
         shell: bash
@@ -78,14 +68,41 @@ jobs:
           git commit -m "feat(coding-agent): default preset selection to persistence"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
 
-      - name: Report successful verification
+      - name: Run focused preset tests
+        id: focused
         if: steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        working-directory: work
+        run: bun test --timeout 30000 packages/coding-agent/test/model-selector-profiles.test.ts packages/coding-agent/test/model-selector-profiles-redteam.test.ts packages/coding-agent/test/model-preset-landing-redteam-qa.test.ts packages/coding-agent/test/cli-args-mpreset.test.ts
+
+      - name: Run package check
+        id: package
+        if: steps.gate.outputs.run == 'true' && steps.focused.outcome == 'success'
+        continue-on-error: true
+        working-directory: work
+        run: bun --cwd=packages/coding-agent run check
+
+      - name: Publish verification receipt commit
+        if: steps.gate.outputs.run == 'true' && steps.focused.outcome == 'success' && steps.package.outcome == 'success'
+        working-directory: work
+        shell: bash
+        run: |
+          git commit --allow-empty -m "test(coding-agent): verify model preset default action"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Report verification result
+        if: steps.gate.outputs.run == 'true' && always()
         uses: actions/github-script@v7
+        env:
+          FOCUSED: ${{ steps.focused.outcome }}
+          PACKAGE: ${{ steps.package.outcome }}
         with:
           script: |
+            const ok = process.env.FOCUSED === 'success' && process.env.PACKAGE === 'success';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: 'MODEL_PRESET_REBUILD_OK',
+              body: ok ? 'MODEL_PRESET_REBUILD_OK' : `MODEL_PRESET_REBUILD_FAILED\n\nfocused=${process.env.FOCUSED}\npackage=${process.env.PACKAGE}`,
             });
+            if (!ok) core.setFailed('Model preset verification failed');
