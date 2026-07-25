@@ -6,17 +6,16 @@ on:
 
 permissions:
   contents: write
-  issues: write
 
 jobs:
   rebuild:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'successor/welcome-composer-gutter-current'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'successor/welcome-composer-gutter-current-v2'
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: successor/welcome-composer-gutter-current-v2
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -30,10 +29,20 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Reset to current upstream dev
+        if: steps.gate.outputs.run == 'true'
+        shell: bash
+        run: |
+          git config user.name 'twoimo'
+          git config user.email '32544727+twoimo@users.noreply.github.com'
+          git remote add upstream https://github.com/Yeachan-Heo/gajae-code.git || true
+          git fetch --no-tags upstream dev
+          git reset --hard upstream/dev
+
       - uses: oven-sh/setup-bun@v2
         if: steps.gate.outputs.run == 'true'
         with:
-          bun-version: '1.3'
+          bun-version: '1.3.14'
 
       - name: Apply current-dev welcome repair
         if: steps.gate.outputs.run == 'true'
@@ -70,10 +79,9 @@ jobs:
 \t#targetRows(termWidth: number): number | undefined {'''),
           ]
           for old, new in replacements:
-              if old in welcome:
-                  welcome = welcome.replace(old, new, 1)
-              elif new not in welcome:
+              if old not in welcome:
                   raise SystemExit(f'welcome anchor mismatch: {old[:80]}')
+              welcome = welcome.replace(old, new, 1)
           welcome_path.write_text(welcome)
 
           mode_path = Path('packages/coding-agent/src/modes/interactive-mode.ts')
@@ -87,10 +95,9 @@ jobs:
                '\t\t\t\t\tchangelogMarkdown: this.#changelogMarkdown,\n\t\t\t\t\trightGutterWidth: COMPOSER_RIGHT_GUTTER_WIDTH,\n\t\t\t\t\tcollapseChangelog:'),
           ]
           for old, new in replacements:
-              if old in mode:
-                  mode = mode.replace(old, new, 1)
-              elif new not in mode:
+              if old not in mode:
                   raise SystemExit(f'interactive-mode anchor mismatch: {old[:80]}')
+              mode = mode.replace(old, new, 1)
           mode_path.write_text(mode)
 
           test_path = Path('packages/coding-agent/test/welcome-viewport.test.ts')
@@ -119,10 +126,9 @@ jobs:
 \t});
 
 '''
-          if 'reserves the composer gutter for normal and one-row welcome layouts' not in tests:
-              if tests.count(marker) != 1:
-                  raise SystemExit('welcome test insertion anchor mismatch')
-              tests = tests.replace(marker, regression + marker, 1)
+          if tests.count(marker) != 1:
+              raise SystemExit('welcome test insertion anchor mismatch')
+          tests = tests.replace(marker, regression + marker, 1)
           test_path.write_text(tests)
 
           changelog_path = Path('packages/coding-agent/CHANGELOG.md')
@@ -153,34 +159,16 @@ jobs:
         run: |
           bun test --timeout 30000 packages/coding-agent/test/welcome-viewport.test.ts
           bun test --timeout 30000 packages/coding-agent/test/interactive-mode-editor-component.test.ts --test-name-pattern 'welcome|viewport-bound|composer'
+          bun --cwd=packages/coding-agent run check
 
-      - name: Run package check
-        if: steps.gate.outputs.run == 'true'
-        run: bun --cwd=packages/coding-agent run check
-
-      - name: Commit verified successor
+      - name: Publish verified clean successor
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
-          git config user.name 'twoimo'
-          git config user.email '32544727+twoimo@users.noreply.github.com'
-          git rm .github/trigger/rebuild-welcome-successor
           git add \
             packages/coding-agent/CHANGELOG.md \
             packages/coding-agent/src/modes/components/welcome.ts \
             packages/coding-agent/src/modes/interactive-mode.ts \
             packages/coding-agent/test/welcome-viewport.test.ts
           git commit -m 'fix(coding-agent): align welcome and composer gutters'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
-      - name: Report success
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: 'WELCOME_SUCCESSOR_VERIFIED',
-            });
+          git push --force origin HEAD:successor/welcome-composer-gutter-current-v2
