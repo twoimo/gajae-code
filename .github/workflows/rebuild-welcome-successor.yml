@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   rebuild:
@@ -142,21 +143,14 @@ jobs:
           changelog_path.write_text(changelog)
           PY
 
-      - name: Install dependencies
-        if: steps.gate.outputs.run == 'true'
-        run: bun install --frozen-lockfile
-
-      - name: Format changed files
+      - name: Install, format, and verify
         if: steps.gate.outputs.run == 'true'
         run: |
+          bun install --frozen-lockfile
           bunx biome check --write \
             packages/coding-agent/src/modes/components/welcome.ts \
             packages/coding-agent/src/modes/interactive-mode.ts \
             packages/coding-agent/test/welcome-viewport.test.ts
-
-      - name: Run focused regressions
-        if: steps.gate.outputs.run == 'true'
-        run: |
           bun test --timeout 30000 packages/coding-agent/test/welcome-viewport.test.ts
           bun test --timeout 30000 packages/coding-agent/test/interactive-mode-editor-component.test.ts --test-name-pattern 'welcome|viewport-bound|composer'
           bun --cwd=packages/coding-agent run check
@@ -165,6 +159,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
+          git rm -f .github/trigger/rebuild-welcome-successor
           git add \
             packages/coding-agent/CHANGELOG.md \
             packages/coding-agent/src/modes/components/welcome.ts \
@@ -172,3 +167,16 @@ jobs:
             packages/coding-agent/test/welcome-viewport.test.ts
           git commit -m 'fix(coding-agent): align welcome and composer gutters'
           git push --force origin HEAD:successor/welcome-composer-gutter-current-v2
+          git push --force origin HEAD:verified/welcome-composer-gutter
+
+      - name: Report success
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: 'WELCOME_SUCCESSOR_VERIFIED',
+            });
