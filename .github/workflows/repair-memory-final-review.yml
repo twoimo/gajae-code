@@ -2,7 +2,7 @@ name: Repair memory final review blockers
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened]
 
 permissions:
   contents: write
@@ -34,22 +34,22 @@ jobs:
         with:
           bun-version: '1.3'
 
-      - name: Add direct Windows accounting regressions
+      - name: Apply exact review fixes
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('packages/coding-agent/test/tools/resource-gc.test.ts')
-          text = path.read_text()
+          test_path = Path('packages/coding-agent/test/tools/resource-gc.test.ts')
+          text = test_path.read_text()
 
-          memory_limit_import = 'import { resolveEffectiveMemoryLimit } from "../../src/runtime/memory-limit";\n'
           settings_import = 'import { resetSettingsForTest, Settings } from "../../src/config/settings";\n'
-          if memory_limit_import not in text:
+          limit_import = 'import { resolveEffectiveMemoryLimit } from "../../src/runtime/memory-limit";\n'
+          if limit_import not in text:
               if settings_import not in text:
                   raise SystemExit('settings import anchor missing')
-              text = text.replace(settings_import, settings_import + memory_limit_import, 1)
+              text = text.replace(settings_import, settings_import + limit_import, 1)
 
           seam = '\t__sampleWindowsJobMemoryForTest,\n'
           import_anchor = '\t__sampleLinuxCgroupHierarchyForTest,\n'
@@ -59,7 +59,7 @@ jobs:
               text = text.replace(import_anchor, import_anchor + seam, 1)
 
           marker = '});\ndescribe("resource GC controller", () => {'
-          regression = r''' });
+          regression = r'''});
 
 describe("Windows Job memory sampling", () => {
 	const GIB = 1024 ** 3;
@@ -79,29 +79,23 @@ describe("Windows Job memory sampling", () => {
 		});
 	}
 
-	it("keeps uncapped Job commit charge separate from the physical-RAM domain", () => {
+	it("keeps uncapped Job commit charge separate from physical RAM", () => {
 		const snapshot = uncappedCommitSnapshot();
 		expect(snapshot).not.toBeNull();
 		expect(snapshot?.parentBytes).toBe(PARENT_BYTES);
-
-		const jobCommit = snapshot?.domains?.find(domain => domain.source === "windows_job");
-		expect(jobCommit).toEqual({
+		expect(snapshot?.domains).toContainEqual({
 			hardCapBytes: Number.MAX_SAFE_INTEGER,
 			totalUsageBytes: 20 * GIB,
 			source: "windows_job",
 		});
-
-		const rss = snapshot?.domains?.find(
-			domain => domain.source === "windows_process_job_limit" && domain.hardCapBytes === HOST_BYTES,
-		);
-		expect(rss).toEqual({
+		expect(snapshot?.domains).toContainEqual({
 			hardCapBytes: HOST_BYTES,
 			totalUsageBytes: PARENT_BYTES,
 			source: "windows_process_job_limit",
 		});
 	});
 
-	it("does not clamp a commit-domain policy cap to physical RAM when commit exceeds RAM", () => {
+	it("does not clamp a commit-domain policy cap to physical RAM", () => {
 		const snapshot = uncappedCommitSnapshot();
 		expect(snapshot).not.toBeNull();
 		const policyLimitBytes = 24 * GIB;
@@ -110,14 +104,10 @@ describe("Windows Job memory sampling", () => {
 			hardCapBytes: pressure.hardCapBytes,
 			policyLimitBytes,
 		});
-
 		expect(pressure.source).toBe("windows_job");
-		expect(pressure.totalUsageBytes).toBe(20 * GIB);
 		expect(limit.effectiveBytes).toBe(policyLimitBytes);
 		expect(limit.effectiveBytes).toBeGreaterThan(HOST_BYTES);
-		const usageRatio = pressure.totalUsageBytes / limit.effectiveBytes!;
-		expect(usageRatio).toBeCloseTo(20 / 24, 8);
-		expect(usageRatio).toBeLessThan(1);
+		expect(pressure.totalUsageBytes / limit.effectiveBytes!).toBeCloseTo(20 / 24, 8);
 	});
 });
 
@@ -126,14 +116,31 @@ describe("resource GC controller", () => {'''
               if marker not in text:
                   raise SystemExit('Windows test insertion anchor missing')
               text = text.replace(marker, regression, 1)
+          test_path.write_text(text)
 
-          path.write_text(text)
+          dts_path = Path('packages/natives/native/index.d.ts')
+          dts = dts_path.read_text()
+          comment = '''/**
+ * macOS computer-use controller.
+ *
+ * This declaration and the named JS export are available on every platform so
+ * consumers can import them portably; the native controller itself is built
+ * only on macOS.
+ */
+'''
+          if 'macOS computer-use controller.' not in dts:
+              anchor = '/* eslint-disable */\nexport declare class ComputerController'
+              if anchor not in dts:
+                  raise SystemExit('ComputerController declaration anchor missing')
+              dts = dts.replace(anchor, '/* eslint-disable */\n' + comment + 'export declare class ComputerController', 1)
+          dts_path.write_text(dts)
           PY
 
-      - name: Restore generated native declarations
+      - name: Install, format, and verify generated output
         if: steps.gate.outputs.run == 'true'
-        shell: bash
         run: |
+          bun install --frozen-lockfile
+          bunx biome check --write packages/coding-agent/test/tools/resource-gc.test.ts
           bun packages/natives/scripts/gen-enums.ts
           cp packages/natives/native/index.d.ts /tmp/index.generated.d.ts
           cp packages/natives/native/index.js /tmp/index.generated.js
@@ -142,15 +149,7 @@ describe("resource GC controller", () => {'''
           cmp /tmp/index.generated.js packages/natives/native/index.js
           grep -F "macOS computer-use controller." packages/natives/native/index.d.ts
 
-      - name: Format changed test
-        if: steps.gate.outputs.run == 'true'
-        run: bunx biome check --write packages/coding-agent/test/tools/resource-gc.test.ts
-
-      - name: Install dependencies
-        if: steps.gate.outputs.run == 'true'
-        run: bun install --frozen-lockfile
-
-      - name: Run memory regression suites
+      - name: Run focused verification
         if: steps.gate.outputs.run == 'true'
         run: |
           bun test --timeout 30000 \
@@ -163,24 +162,18 @@ describe("resource GC controller", () => {'''
             packages/coding-agent/test/cli-memory-guard-native-smoke.test.ts \
             packages/natives/test/memory-guard-native.test.ts \
             packages/natives/test/memory-guard-build-wiring.test.ts
-
-      - name: Run package checks
-        if: steps.gate.outputs.run == 'true'
-        run: |
           bun --cwd=packages/coding-agent run check
           bun --cwd=packages/natives run check
 
-      - name: Commit verified final fixes
+      - name: Commit verified repair
         if: steps.gate.outputs.run == 'true'
         shell: bash
         run: |
           git config user.name "twoimo"
           git config user.email "32544727+twoimo@users.noreply.github.com"
-          git rm .github/trigger/memory-final-review
-          git add \
-            packages/coding-agent/test/tools/resource-gc.test.ts \
-            packages/natives/native/index.d.ts \
-            packages/natives/native/index.js
+          git rm -f .github/trigger/memory-final-review
+          git rm -f .github/workflows/memory-final-self-repair.yml || true
+          git add packages/coding-agent/test/tools/resource-gc.test.ts packages/natives/native/index.d.ts packages/natives/native/index.js
           git commit -m "test(coding-agent): cover Windows memory accounting"
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
 
