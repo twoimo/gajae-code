@@ -19,35 +19,18 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Apply closed-PR net diff to current dev
-        id: apply
-        continue-on-error: true
+      - name: Rebuild closed-PR net diff on current dev
         shell: bash
         run: |
           git config user.name 'twoimo'
           git config user.email '32544727+twoimo@users.noreply.github.com'
+          git remote add upstream https://github.com/Yeachan-Heo/gajae-code.git || true
+          git fetch --no-tags upstream dev
           git fetch --no-tags origin backup/malformed-settings-e5f15e86
+          git reset --hard upstream/dev
           git diff --binary 96f64a8e22eacf496742c87b0be2a38f1821ba91..origin/backup/malformed-settings-e5f15e86 > /tmp/settings-successor.patch
-          if ! git apply --3way --index /tmp/settings-successor.patch; then
-            git diff --name-only --diff-filter=U | sort > /tmp/settings-conflicts.txt
-            git diff --cc > /tmp/settings-conflict-diff.txt
-            exit 1
-          fi
-
-      - name: Upload conflict evidence
-        if: steps.apply.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: settings-successor-conflicts-${{ github.run_id }}
-          path: |
-            /tmp/settings-conflicts.txt
-            /tmp/settings-conflict-diff.txt
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Stop after conflict capture
-        if: steps.apply.outcome == 'failure'
-        run: exit 1
+          git apply --3way --index /tmp/settings-successor.patch
+          test -z "$(git diff --name-only --diff-filter=U)"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -64,7 +47,8 @@ jobs:
             git add "${changed[@]}"
           fi
 
-      - run: bun test --timeout 30000 packages/coding-agent/test/modes/components/settings-selector-pet.test.ts
+      - name: Re-run exact prior blocker
+        run: bun test --timeout 30000 packages/coding-agent/test/modes/components/settings-selector-pet.test.ts
 
       - name: Run malformed-settings control suite
         run: |
@@ -76,16 +60,12 @@ jobs:
             packages/coding-agent/test/modes/components/settings-selector-pet.test.ts \
             packages/coding-agent/test/modes/components/thinking-selector.test.ts \
             packages/coding-agent/test/startup-update-contract.test.ts
-
-      - name: Run package check and build
-        run: |
           bun --cwd=packages/coding-agent run check
           bun --cwd=packages/coding-agent run build
 
-      - name: Commit verified successor
+      - name: Publish verified clean successor
         shell: bash
         run: |
-          git rm .github/trigger/rebuild-settings-successor
           git add -A
           git commit -m 'fix(coding-agent): harden malformed settings recovery'
-          git push origin HEAD:successor/malformed-settings-recovery-current
+          git push --force origin HEAD:successor/malformed-settings-recovery-current
