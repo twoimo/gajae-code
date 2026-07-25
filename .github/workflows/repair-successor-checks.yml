@@ -1,0 +1,85 @@
+name: Repair successor checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.event.pull_request.head.repo.full_name == github.repository && (github.event.pull_request.head.ref == 'successor/telegram-tool-activity-clean' || github.event.pull_request.head.ref == 'successor/model-preset-default-action-clean')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+
+      - run: bun install --frozen-lockfile
+
+      - name: Repair Telegram formatting
+        if: github.event.pull_request.head.ref == 'successor/telegram-tool-activity-clean'
+        run: bunx biome check --write packages/coding-agent/test/notifications-telegram-daemon.test.ts
+
+      - name: Repair model preset callback types
+        if: github.event.pull_request.head.ref == 'successor/model-preset-default-action-clean'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('packages/coding-agent/test/model-selector-profiles-redteam.test.ts')
+          text = path.read_text()
+          replacements = {
+              'const renameSelector = createSelector(selection => renamed.push(selection));': '''const renameSelector = createSelector(selection => {
+\t\t\trenamed.push(selection);
+\t\t});''',
+              'const deleteSelector = createSelector(selection => deleted.push(selection));': '''const deleteSelector = createSelector(selection => {
+\t\t\tdeleted.push(selection);
+\t\t});''',
+          }
+          for old, new in replacements.items():
+              if old in text:
+                  text = text.replace(old, new, 1)
+              elif new not in text:
+                  raise SystemExit(f'model callback anchor mismatch: {old}')
+          path.write_text(text)
+          PY
+          bunx biome check --write packages/coding-agent/test/model-selector-profiles-redteam.test.ts
+
+      - name: Run branch-focused verification
+        shell: bash
+        run: |
+          if [ "${{ github.event.pull_request.head.ref }}" = 'successor/telegram-tool-activity-clean' ]; then
+            bun test --timeout 30000 packages/coding-agent/test/notifications-telegram-daemon.test.ts --test-name-pattern 'terminal submission rejection'
+          else
+            bun test --timeout 30000 \
+              packages/coding-agent/test/model-selector-profiles.test.ts \
+              packages/coding-agent/test/model-selector-profiles-redteam.test.ts \
+              packages/coding-agent/test/model-preset-landing-redteam-qa.test.ts \
+              packages/coding-agent/test/cli-args-mpreset.test.ts
+          fi
+          bun --cwd=packages/coding-agent run check
+
+      - name: Commit repairs when needed
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name 'twoimo'
+          git config user.email '32544727+twoimo@users.noreply.github.com'
+          git add packages/coding-agent/test/notifications-telegram-daemon.test.ts packages/coding-agent/test/model-selector-profiles-redteam.test.ts
+          git commit -m 'fix(coding-agent): satisfy successor checks'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
