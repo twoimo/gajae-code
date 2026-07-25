@@ -14161,6 +14161,76 @@ describe("Telegram tool activity capability and routing", () => {
 		expect(bot.calls.filter(call => call.method === "sendMessage")).toHaveLength(2);
 		expect(bot.calls.filter(call => call.method === "editMessageText")).toHaveLength(1);
 	});
+	test.each(["threaded", "flat"] as const)(
+		"legacy-v1 %s terminal submission rejection retires exact settlement before reuse",
+		async route => {
+			const bot = new FakeBotApi();
+			if (route === "flat") {
+				const originalCall = bot.call.bind(bot);
+				bot.call = async (method, body, options) => {
+					if (method === "createForumTopic") {
+						bot.calls.push({ method, body, options });
+						return { ok: false, error_code: 400, description: "forum topics are disabled" };
+					}
+					return await originalCall(method, body, options);
+				};
+			}
+			const daemon = new TelegramNotificationDaemon({
+				settings: settings(tempAgentDir()),
+				ownerId: "owner",
+				botToken: "tok",
+				chatId: "42",
+				botApi: bot,
+				toolActivity: { enabled: true },
+			});
+			const session = richSession();
+			await daemon.handleSessionMessage(session, {
+				type: "hello",
+				capabilities: [LEGACY_TOOL_ACTIVITY_CAPABILITY],
+			});
+			await daemon.handleSessionMessage(session, {
+				type: "identity_header",
+				sessionId: "S",
+				repo: "repo",
+				branch: "branch",
+			});
+			bot.calls = [];
+			const toolCallId = `terminal-rejected-${route}`;
+			const key = `S:tool:${toolCallId}`;
+			const startFrame = {
+				type: "tool_activity",
+				sessionId: "S",
+				toolCallId,
+				toolName: "read",
+				phase: "started",
+			};
+			await daemon.handleSessionMessage(session, startFrame);
+			const runtime = daemon as unknown as {
+				legacyToolStarts: Map<string, unknown>;
+				liveMessages: Map<string, number>;
+				toolActivityOwners: Map<string, unknown>;
+				submitPool: (item: unknown) => boolean;
+			};
+			expect(runtime.legacyToolStarts.has(key)).toBe(true);
+			expect(runtime.liveMessages.has(key)).toBe(true);
+			const originalSubmitPool = runtime.submitPool.bind(daemon);
+			runtime.submitPool = () => false;
+			try {
+				await daemon.handleSessionMessage(session, { ...startFrame, phase: "completed" });
+			} finally {
+				runtime.submitPool = originalSubmitPool;
+			}
+			expect(runtime.legacyToolStarts.has(key)).toBe(false);
+			expect(runtime.liveMessages.has(key)).toBe(false);
+			expect(runtime.toolActivityOwners.has(key)).toBe(false);
+			const sendsBeforeReuse = bot.calls.filter(call => call.method === "sendMessage").length;
+			const editsBeforeReuse = bot.calls.filter(call => call.method === "editMessageText").length;
+			await daemon.handleSessionMessage(session, startFrame);
+			expect(runtime.legacyToolStarts.has(key)).toBe(true);
+			expect(bot.calls.filter(call => call.method === "sendMessage")).toHaveLength(sendsBeforeReuse + 1);
+			expect(bot.calls.filter(call => call.method === "editMessageText")).toHaveLength(editsBeforeReuse);
+		},
+	);
 	test("legacy-v1 unknown closes only an already-visible start as summary-free cancelled", async () => {
 		const bot = new FakeBotApi();
 		const daemon = new TelegramNotificationDaemon({

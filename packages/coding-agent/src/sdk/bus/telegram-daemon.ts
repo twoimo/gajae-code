@@ -6291,6 +6291,26 @@ export class TelegramNotificationDaemon {
 			this.settleLegacyToolStart(state, "failed");
 	}
 
+	private settleRejectedLegacyToolSubmission(
+		toolActivity: ToolActivityOwner | undefined,
+		legacyToolStart: LegacyToolStartSettlement | undefined,
+	): void {
+		if (toolActivity?.phase === "started") {
+			this.failLegacyToolStart(toolActivity);
+			return;
+		}
+		if (
+			toolActivity?.phase !== "terminal" ||
+			legacyToolStart === undefined ||
+			this.legacyToolStarts.get(legacyToolStart.key) !== legacyToolStart
+		)
+			return;
+		this.settleLegacyToolStart(legacyToolStart, "terminal");
+		this.liveMessages.delete(legacyToolStart.key);
+		if (this.toolActivityOwners.get(legacyToolStart.key) === legacyToolStart.owner)
+			this.toolActivityOwners.delete(legacyToolStart.key);
+	}
+
 	private cancelLegacyToolStartsForSession(session: SessionSocket): void {
 		for (const state of [...this.legacyToolStarts.values()]) {
 			if (state.owner.session !== session) continue;
@@ -6436,7 +6456,7 @@ export class TelegramNotificationDaemon {
 			},
 		});
 		if (!submitted) {
-			this.failLegacyToolStart(toolActivity);
+			this.settleRejectedLegacyToolSubmission(toolActivity, legacyStart);
 			return;
 		}
 		await this.flushPool();
@@ -7714,7 +7734,7 @@ export class TelegramNotificationDaemon {
 		if (send.identity && this.flatIdentitySent.has(sessionId)) return;
 		if (toolActivity && !this.toolActivityDeliveryIsCurrent(toolActivity)) return;
 		const legacyToolStart = toolActivity ? this.legacyToolStartForTerminal(toolActivity) : undefined;
-		this.submitPool({
+		const submitted = this.submitPool({
 			sessionId,
 			lane: send.lane,
 			coalesceKey: send.coalesceKey,
@@ -7725,6 +7745,10 @@ export class TelegramNotificationDaemon {
 				...(legacyToolStart ? { legacyToolStart } : {}),
 			},
 		});
+		if (!submitted) {
+			this.settleRejectedLegacyToolSubmission(toolActivity, legacyToolStart);
+			return;
+		}
 		await this.flushPool();
 		if (socketLease && !this.#leaseTokenAllows(socketLease)) return;
 		if (send.identity) this.flatIdentitySent.add(sessionId);
