@@ -3,6 +3,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { buildReleaseCompileArgs } from "../packages/coding-agent/scripts/compile-args";
+import { computeTelegramDaemonBuildMetadata } from "../packages/coding-agent/scripts/telegram-daemon-build-id";
+
 
 interface BinaryTarget {
 	id: string;
@@ -119,7 +121,8 @@ async function embedNative(target: BinaryTarget): Promise<void> {
 async function buildBinary(target: BinaryTarget): Promise<void> {
 	console.log(`Building ${target.outfile}...`);
 	await embedNative(target);
-	const compileArgs = buildReleaseCompileArgs(target.target, target.outfile);
+	const telegramBuild = await computeTelegramDaemonBuildMetadata({ repoRoot, target: target.target });
+	const compileArgs = buildReleaseCompileArgs(target.target, target.outfile, telegramBuild);
 	if (isDryRun) {
 		console.log(`DRY RUN ${compileArgs.join(" ")}`);
 		return;

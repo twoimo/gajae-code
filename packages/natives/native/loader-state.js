@@ -193,6 +193,22 @@ export function resolveLoaderCandidates({
 	}
 	return [...new Set(releaseCandidates)];
 }
+let loadedNativeAddonSelection = undefined;
+
+export function getLoadedNativeAddonSelection() {
+	return loadedNativeAddonSelection ? { ...loadedNativeAddonSelection } : undefined;
+}
+
+export function resetLoadedNativeAddonSelectionForTests() {
+	loadedNativeAddonSelection = undefined;
+}
+
+function candidateVariant(candidate) {
+	if (candidate.includes("-modern.node")) return "modern";
+	if (candidate.includes("-baseline.node")) return "baseline";
+	return "default";
+}
+
 
 /**
  * Deterministically try candidate paths in order using injected operations.
@@ -206,7 +222,7 @@ export function resolveLoaderCandidates({
  *   validateCandidate: (bindings: T, candidate: string) => void;
  *   describeCandidate: (candidate: string) => string;
  * }} input
- * @returns {{ bindings: T | null; errors: string[] }}
+ * @returns {{ bindings: T | null; candidate: string | null; errors: string[] }}
  */
 export function loadFromCandidates({ candidates, requireCandidate, validateCandidate, describeCandidate }) {
 	const errors = [];
@@ -214,14 +230,15 @@ export function loadFromCandidates({ candidates, requireCandidate, validateCandi
 		try {
 			const bindings = requireCandidate(candidate);
 			validateCandidate(bindings, candidate);
-			return { bindings, errors };
+			return { bindings, candidate, errors };
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			errors.push(`${describeCandidate(candidate)}: ${message}`);
 		}
 	}
-	return { bindings: null, errors };
+	return { bindings: null, candidate: null, errors };
 }
+
 
 /**
  * Decide whether a previously extracted embedded addon may be reused. A cached
@@ -532,7 +549,14 @@ export function loadNative() {
 		validateCandidate: (bindings, candidate) => validateLoadedBindings(ctx, bindings, candidate),
 		describeCandidate: candidate => candidate,
 	});
-	if (loaded.bindings) return loaded.bindings;
+	if (loaded.bindings && loaded.candidate) {
+		loadedNativeAddonSelection = {
+			candidate: loaded.candidate,
+			variant: candidateVariant(loaded.candidate),
+		};
+		return loaded.bindings;
+	}
+	loadedNativeAddonSelection = undefined;
 	errors.push(...loaded.errors);
 
 	if (!SUPPORTED_PLATFORMS.includes(ctx.platformTag)) {

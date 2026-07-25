@@ -2,10 +2,14 @@
 
 import * as path from "node:path";
 import { buildDevCompileArgs } from "./compile-args";
+import { computeTelegramDaemonBuildMetadata, normalizeTelegramDaemonBuildTarget } from "./telegram-daemon-build-id";
+
 
 const packageDir = path.join(import.meta.dir, "..");
 const outputPath = path.join(packageDir, "dist", "gjc");
 const nativeDir = path.join(packageDir, "..", "natives", "native");
+const repoRoot = path.join(packageDir, "../..");
+
 
 function shouldAdhocSignDarwinBinary(): boolean {
 	return process.platform === "darwin";
@@ -35,7 +39,9 @@ async function main(): Promise<void> {
 		await runCommand(["bun", "--cwd=../natives", "run", "embed:native"]);
 		try {
 			const buildEnv = shouldAdhocSignDarwinBinary() ? { ...Bun.env, BUN_NO_CODESIGN_MACHO_BINARY: "1" } : Bun.env;
-			await runCommand(buildDevCompileArgs(), buildEnv);
+			const target = normalizeTelegramDaemonBuildTarget();
+			const telegramBuild = await computeTelegramDaemonBuildMetadata({ repoRoot, target });
+			await runCommand(buildDevCompileArgs("dist/gjc", target, telegramBuild), buildEnv);
 
 			await stageWorkspaceNativeAddons();
 			// Bun 1.3.12 emits a truncated Mach-O signature on darwin builds.

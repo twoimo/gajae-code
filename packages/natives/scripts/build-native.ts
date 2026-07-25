@@ -146,18 +146,21 @@ async function installGeneratedBindings(outputDir: string): Promise<void> {
 	}
 }
 
-async function validateRecoveryFsBindings(): Promise<void> {
+const requiredGeneratedBindingSymbols = [
+	"RecoveryFsRoot",
+	"RecoveryFsIdentity",
+	"RecoveryFsResult",
+	"openRecoveryFsRoot",
+	"repairOwnerOnlyPathSecurityExpected",
+	"verifyOwnerOnlyPathSecurityExpected",
+	"probeWindowsJobMemory",
+] as const;
+
+async function validateGeneratedBindings(): Promise<void> {
 	const bindings = await Bun.file(path.join(nativeDir, "index.d.ts")).text();
-	for (const symbol of [
-		"RecoveryFsRoot",
-		"RecoveryFsIdentity",
-		"RecoveryFsResult",
-		"openRecoveryFsRoot",
-		"repairOwnerOnlyPathSecurityExpected",
-		"verifyOwnerOnlyPathSecurityExpected",
-	]) {
+	for (const symbol of requiredGeneratedBindingSymbols) {
 		if (!bindings.includes(symbol)) {
-			throw new Error(`napi build did not generate the required recovery filesystem binding: ${symbol}`);
+			throw new Error(`napi build did not generate the required binding: ${symbol}`);
 		}
 	}
 }
@@ -247,7 +250,7 @@ try {
 	}
 
 	await installGeneratedBindings(buildOutputDir);
-	await validateRecoveryFsBindings();
+	await validateGeneratedBindings();
 
 	await Bun.write(
 		`${canonicalAddonPath}.build.json`,

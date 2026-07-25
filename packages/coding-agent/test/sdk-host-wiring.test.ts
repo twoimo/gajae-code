@@ -971,6 +971,55 @@ test("/notify on fences teardown and permits a later same-ID replacement runtime
 		prototype.start = startServer;
 	}
 });
+test("/notify on recreates a missing current-session endpoint", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-notify-reconcile-"));
+	dirs.push(cwd);
+	const sessionId = `notify-reconcile-${Date.now()}`;
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+	const messages: Array<{ message: string; level: string }> = [];
+	const sessionContext = {
+		...context(cwd, sessionId),
+		ui: { notify: (message: string, level: string) => messages.push({ message, level }) },
+	};
+	process.env.GJC_NOTIFICATIONS = "1";
+	const handlers = start(sessionContext, undefined, () => {}, false, commands);
+	const endpoint = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	try {
+		await waitFor(() => fs.existsSync(endpoint), "initial notification endpoint");
+		fs.rmSync(endpoint);
+		await commands.get("notify")!.handler("on", sessionContext);
+		expect(fs.existsSync(endpoint)).toBe(true);
+		expect(messages.at(-1)).toEqual({ message: "Notifications enabled for this session.", level: "info" });
+	} finally {
+		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
+	}
+});
+
+test("a duplicate same-session shutdown is repaired by the surviving runtime's /notify on", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-notify-duplicate-"));
+	dirs.push(cwd);
+	const sessionId = `notify-duplicate-${Date.now()}`;
+	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+	const messages: Array<{ message: string; level: string }> = [];
+	const sessionContext = {
+		...context(cwd, sessionId),
+		ui: { notify: (message: string, level: string) => messages.push({ message, level }) },
+	};
+	process.env.GJC_NOTIFICATIONS = "1";
+	const handlers = start(sessionContext, undefined, () => {}, false, commands);
+	const endpoint = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	try {
+		await waitFor(() => fs.existsSync(endpoint), "duplicate session endpoint");
+		// A second same-ID process can remove this shared discovery record during
+		// its shutdown; the surviving process must not trust its local active flag.
+		fs.rmSync(endpoint);
+		await commands.get("notify")!.handler("on", sessionContext);
+		expect(fs.existsSync(endpoint)).toBe(true);
+		expect(messages.at(-1)).toEqual({ message: "Notifications enabled for this session.", level: "info" });
+	} finally {
+		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
+	}
+});
 
 test("SDK host replays file attachment data as base64 while passing raw bytes to N-API", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-host-file-replay-"));

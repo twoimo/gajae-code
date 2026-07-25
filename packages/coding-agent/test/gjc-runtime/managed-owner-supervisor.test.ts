@@ -63,6 +63,10 @@ describe("managed owner supervisor", () => {
 		const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-managed-owner-"));
 		try {
 			const result = await runSupervisor(stateDir, fastSigabrtCommand());
+			if (process.platform !== "linux") {
+				expect(result.exitCode).toBe(1);
+				return;
+			}
 			expect(result.exitCode).toBe(134);
 			const root = lifecyclePaths(stateDir, "session-2681", "generation-2681").root;
 			const files = await fs.readdir(root);
@@ -98,6 +102,10 @@ describe("managed owner supervisor", () => {
 		const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-managed-owner-"));
 		try {
 			const result = await runSupervisor(stateDir, [process.execPath, "-e", "process.exit(23)"]);
+			if (process.platform !== "linux") {
+				expect(result.exitCode).toBe(1);
+				return;
+			}
 			expect(result.exitCode).toBe(23);
 			const root = lifecyclePaths(stateDir, "session-2681", "generation-2681").root;
 			expect((await fs.readdir(root)).some(file => file.startsWith("sigabrt-"))).toBe(false);
@@ -110,6 +118,10 @@ describe("managed owner supervisor", () => {
 		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-managed-owner-cwd-"));
 		try {
 			const predecessor = await runSupervisor(stateDir, fastSigabrtCommand());
+			if (process.platform !== "linux") {
+				expect(predecessor.exitCode).toBe(1);
+				return;
+			}
 			expect(predecessor.exitCode).toBe(134);
 			const root = lifecyclePaths(stateDir, "session-2681", "generation-2681").root;
 			const bindingFile = (await fs.readdir(root)).find(

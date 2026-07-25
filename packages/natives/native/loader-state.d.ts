@@ -10,6 +10,12 @@ export interface EmbeddedAddon {
 	files: EmbeddedAddonFile[];
 }
 
+export interface LoadedNativeAddonSelection {
+	candidate: string;
+	variant: "modern" | "baseline" | "default";
+}
+
+
 export interface DetectCompiledBinaryInput {
 	embeddedAddon: EmbeddedAddon | null | undefined;
 	env: Record<string, string | undefined>;
@@ -66,10 +72,15 @@ export interface LoadFromCandidatesInput<T> {
 
 export interface LoadFromCandidatesResult<T> {
 	bindings: T | null;
+	candidate: string | null;
 	errors: string[];
 }
 
 export function loadFromCandidates<T>(input: LoadFromCandidatesInput<T>): LoadFromCandidatesResult<T>;
+
+export function getLoadedNativeAddonSelection(): LoadedNativeAddonSelection | undefined;
+export function resetLoadedNativeAddonSelectionForTests(): void;
+
 
 export interface CachedEmbeddedExtractionIsFreshInput {
 	targetPath: string;

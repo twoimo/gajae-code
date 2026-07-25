@@ -1,3 +1,9 @@
+import {
+	buildTelegramDaemonDefineFlags,
+	normalizeTelegramDaemonBuildTarget,
+	type TelegramDaemonBuildMetadata,
+} from "./telegram-daemon-build-id";
+
 export interface CompileArgOptions {
 	root: string;
 	entrypoints: string[];
@@ -17,6 +23,14 @@ export const compileAutoloadDisableFlags = [
 const compiledDefineFlags = ['process.env.PI_COMPILED="true"'];
 const releaseDefineFlags = [...compiledDefineFlags, 'process.env.GJC_BUILD_CHANNEL="release"'];
 const devDefineFlags = [...compiledDefineFlags, 'process.env.GJC_BUILD_CHANNEL="dev"'];
+
+function withTelegramDaemonDefines(
+	defines: readonly string[],
+	metadata: TelegramDaemonBuildMetadata | undefined,
+): string[] {
+	return metadata ? [...defines, ...buildTelegramDaemonDefineFlags(metadata)] : [...defines];
+}
+
 
 export const compiledExternalPackages = ["mupdf"];
 
@@ -46,24 +60,32 @@ export const devEntrypoints = [
 	"./src/sdk/bus/chat-daemon-cli.ts",
 ];
 
-export function buildReleaseCompileArgs(target: string, outfile: string): string[] {
+export function buildReleaseCompileArgs(
+	target: string,
+	outfile: string,
+	telegramBuild?: TelegramDaemonBuildMetadata,
+): string[] {
 	return buildCompileArgs({
 		root: ".",
 		entrypoints: releaseEntrypoints,
 		outfile,
 		target,
-		defines: releaseDefineFlags,
-
+		defines: withTelegramDaemonDefines(releaseDefineFlags, telegramBuild),
 		externals: compiledExternalPackages,
 	});
 }
 
-export function buildDevCompileArgs(outfile = "dist/gjc"): string[] {
+export function buildDevCompileArgs(
+	outfile = "dist/gjc",
+	target: string = normalizeTelegramDaemonBuildTarget(),
+	telegramBuild?: TelegramDaemonBuildMetadata,
+): string[] {
 	return buildCompileArgs({
 		root: "../..",
 		entrypoints: devEntrypoints,
 		outfile,
-		defines: devDefineFlags,
+		target,
+		defines: withTelegramDaemonDefines(devDefineFlags, telegramBuild),
 		externals: compiledExternalPackages,
 	});
 }

@@ -127,6 +127,11 @@ describe("managed owner admission", () => {
 			const root = lifecyclePaths(stateDir, "session-2681", "generation-2681").root;
 			await writeBinding(root, "exact-token");
 			const result = await admit(stateDir, "exact-token");
+			if (process.platform !== "linux") {
+				expect(result.admitted).toBe(false);
+				expect(result.exitCode).toBe(75);
+				return;
+			}
 			expect(result.admitted).toBe(true);
 			expect(result.exitCode).toBe(0);
 			for (const patch of [
@@ -189,6 +194,10 @@ describe("managed owner admission", () => {
 			const dirty = path.join(cwd, "dirty.ts");
 			await fs.writeFile(dirty, "export const dirty = true;\n");
 			const result = await recover(stateDir, cwd, "predecessor", transcript);
+			if (process.platform !== "linux") {
+				expect(result).toEqual({ kind: "blocked", exitCode: 75 });
+				return;
+			}
 			expect(result).toEqual({ kind: "handoff", exitCode: 75 });
 			expect(await fs.readFile(dirty, "utf8")).toBe("export const dirty = true;\n");
 			expect(await fs.readFile(goals, "utf8")).toBe(beforeGoals);

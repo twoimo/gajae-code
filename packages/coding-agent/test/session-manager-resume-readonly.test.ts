@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { deleteSessionPickerCandidate } from "@gajae-code/coding-agent/cli/session-picker";
 import {
 	createReadonlySessionManager,
+	getRecentSessionDisplay,
 	parseSessionEntries,
 	type ResumeSessionIdentity,
 	resolveResumableSession,
@@ -868,6 +869,28 @@ describe("active managed picker root", () => {
 		expect(opened.kind).toBe("opened");
 		if (opened.kind === "error") throw new Error("Expected strict open");
 		await opened.manager.close();
+	});
+	it("includes nested project .gjc transcripts in managed resume inventory", async () => {
+		const root = makeTempDir();
+		const agentDir = path.join(root, "custom-agent");
+		const cwd = path.join(root, "workspace");
+		const transcriptDir = path.join(cwd, ".gjc", "rlm", "run-1", "agent-session");
+		const runtimeDir = path.join(cwd, ".gjc", "_session-runtime", "token-logs");
+		fs.mkdirSync(transcriptDir, { recursive: true });
+		fs.mkdirSync(runtimeDir, { recursive: true });
+		const transcriptPath = path.join(transcriptDir, "project-session.jsonl");
+		fs.writeFileSync(
+			transcriptPath,
+			sessionText("project-session").replace('"cwd":"/cwd"', '"cwd":"C:\\\\old\\\\workspace"'),
+		);
+		fs.writeFileSync(path.join(runtimeDir, "token-log.jsonl"), '{"type":"usage","input":1}\n');
+
+		const listed = await SessionManager.listManagedForResumePickerReadOnly(cwd, agentDir);
+
+		expect(listed.map(session => session.id)).toContain("project-session");
+		expect(listed.find(session => session.id === "project-session")?.path).toBe(transcriptPath);
+		expect(listed.some(session => session.path.endsWith("token-log.jsonl"))).toBe(false);
+		expect(getRecentSessionDisplay(listed).some(session => session.name === "resume")).toBe(true);
 	});
 	it("does not let an outside terminal breadcrumb override an explicit resume directory", async () => {
 		const root = makeTempDir();

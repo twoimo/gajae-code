@@ -457,6 +457,7 @@ export function shouldRegisterNotificationsExtension(input: {
 	 */
 	spawnedByGjc?: boolean;
 }): boolean {
+	if (input.env.GJC_TEAM_WORKER_ID) return false;
 	if (
 		!isNotificationHostEligible({
 			env: input.env,

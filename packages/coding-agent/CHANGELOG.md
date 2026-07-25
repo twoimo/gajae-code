@@ -10,6 +10,7 @@
 ### Fixed
 - Repeated byte-identical stale SDK broker locks no longer cause startup to loop when a prior tombstone exists.
 - Ralplan no longer re-asks for execution approval when the user already explicitly named `ultragoal` or `team` in the current turn; that naming is the consent.
+- Switching sessions through `/resume` now completes that session's legacy `local://` migration before synchronous artifact path resolution.
 
 - Ordinary `ask` calls now normalize a provider-emitted `deepInterview: null` placeholder instead of misclassifying it as malformed Round-0 intent recovery data and rejecting it before coercion.
 - Documented that custom OpenAI-compatible models omit vision by default: when `input` is unset, GJC treats the model as text-only and strips images with `[image omitted: model does not support vision]`. Vision backends must set `input: [text, image]` in `models.yml`.

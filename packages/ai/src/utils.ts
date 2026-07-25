@@ -259,6 +259,19 @@ function isResponsesImageDetail(value: unknown): value is ResponsesImageDetail {
 	return value === "auto" || value === "low" || value === "high";
 }
 
+function isReplayableResponsesImageUrl(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return (
+			url.protocol === "https:" ||
+			url.protocol === "http:" ||
+			(url.protocol === "data:" && value.startsWith("data:image/"))
+		);
+	} catch {
+		return false;
+	}
+}
+
 function normalizeResponsesImageUrlForReplay(value: unknown): NormalizedResponsesImageUrl {
 	if (typeof value === "string") return { imageUrl: value.toWellFormed() };
 	if (value && typeof value === "object" && "url" in value && typeof value.url === "string") {
@@ -274,15 +287,23 @@ function normalizeResponsesImageUrlForReplay(value: unknown): NormalizedResponse
 function sanitizeResponsesMessageContentForReplay(content: unknown): unknown {
 	if (typeof content === "string") return neutralizeReservedControlTokens(content.toWellFormed());
 	if (!Array.isArray(content)) return content;
-	return content.map(part => {
-		if (!part || typeof part !== "object") return part;
+	return content.flatMap(part => {
+		if (!part || typeof part !== "object") return [part];
 		const sanitizedPart = { ...(part as Record<string, unknown>) };
 		if ("text" in sanitizedPart) {
 			sanitizedPart.text = normalizeResponsesMessageTextForReplay(sanitizedPart.text);
 		}
 		if ("image_url" in sanitizedPart) {
 			const normalizedImageUrl = normalizeResponsesImageUrlForReplay(sanitizedPart.image_url);
-			sanitizedPart.image_url = normalizedImageUrl.imageUrl;
+			if (!isReplayableResponsesImageUrl(normalizedImageUrl.imageUrl)) {
+				if (typeof sanitizedPart.file_id === "string" && sanitizedPart.file_id.length > 0) {
+					delete sanitizedPart.image_url;
+				} else {
+					return [];
+				}
+			} else {
+				sanitizedPart.image_url = normalizedImageUrl.imageUrl;
+			}
 			if (sanitizedPart.type === "image_url") {
 				sanitizedPart.type = "input_image";
 			}
@@ -292,7 +313,7 @@ function sanitizeResponsesMessageContentForReplay(content: unknown): unknown {
 				delete sanitizedPart.detail;
 			}
 		}
-		return sanitizedPart;
+		return [sanitizedPart];
 	});
 }
 

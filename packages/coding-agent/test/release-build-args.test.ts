@@ -3,6 +3,12 @@ import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 
 import { buildDevCompileArgs, buildReleaseCompileArgs, releaseEntrypoints } from "../scripts/compile-args";
+import {
+	buildTelegramDaemonDefineFlags,
+	normalizeTelegramDaemonBuildTarget,
+	type TelegramDaemonBuildMetadata,
+} from "../scripts/telegram-daemon-build-id";
+
 
 const releaseArgs = buildReleaseCompileArgs("bun-darwin-arm64", "packages/coding-agent/binaries/gjc-darwin-arm64");
 
@@ -15,6 +21,18 @@ function valuesAfter(args: string[], flag: string): string[] {
 	}
 	return values;
 }
+
+function parseTelegramBuildMetadata(args: readonly string[]): TelegramDaemonBuildMetadata {
+	const defines = valuesAfter([...args], "--define");
+	const buildId = defines.find(define => define.startsWith("process.env.GJC_TELEGRAM_DAEMON_BUILD_ID="));
+	const buildTarget = defines.find(define => define.startsWith("process.env.GJC_TELEGRAM_DAEMON_BUILD_TARGET="));
+	if (!buildId || !buildTarget) throw new Error(`missing Telegram daemon build defines: ${defines.join(", ")}`);
+	return {
+		buildId: JSON.parse(buildId.split("=", 2)[1]!),
+		buildTarget: JSON.parse(buildTarget.split("=", 2)[1]!),
+	};
+}
+
 
 describe("release build compile args", () => {
 	it("keeps minify and names flags in the release config", () => {
@@ -47,6 +65,21 @@ describe("release build compile args", () => {
 		expect(devDefines).toContain('process.env.PI_COMPILED="true"');
 		expect(devDefines).toContain('process.env.GJC_BUILD_CHANNEL="dev"');
 	});
+
+	it("maps the dev compile target from the current host taxonomy", () => {
+		expect(valuesAfter(buildDevCompileArgs(), "--target")).toEqual([normalizeTelegramDaemonBuildTarget()]);
+	});
+
+	it("appends Telegram daemon build metadata defines when provided", () => {
+		const metadata = { buildId: "abc123", buildTarget: "bun-darwin-arm64" } satisfies TelegramDaemonBuildMetadata;
+		const args = buildDevCompileArgs("dist/gjc", metadata.buildTarget, metadata);
+		expect(valuesAfter(args, "--define")).toEqual([
+			'process.env.PI_COMPILED="true"',
+			'process.env.GJC_BUILD_CHANNEL="dev"',
+			...buildTelegramDaemonDefineFlags(metadata),
+		]);
+	});
+
 
 	it("includes worker entrypoints in release args", () => {
 		expect(releaseEntrypoints).toContain("./packages/stats/src/sync-worker.ts");
@@ -86,11 +119,15 @@ describe("release build compile args", () => {
 		const buildLines = stdout.split("\n").filter(line => line.includes("bun build --compile"));
 		expect(buildLines.length).toBeGreaterThan(0);
 		for (const line of buildLines) {
-			const target = valuesAfter(line.replace(/^DRY RUN /, "").split(" "), "--target")[0];
-			const outfile = valuesAfter(line.replace(/^DRY RUN /, "").split(" "), "--outfile")[0];
+			const parts = line.replace(/^DRY RUN /, "").split(" ");
+			const target = valuesAfter(parts, "--target")[0];
+			const outfile = valuesAfter(parts, "--outfile")[0];
 			expect(target).toBeDefined();
 			expect(outfile).toBeDefined();
-			expect(line).toBe(`DRY RUN ${buildReleaseCompileArgs(target as string, outfile as string).join(" ")}`);
+			const telegramBuild = parseTelegramBuildMetadata(parts);
+			expect(line).toBe(
+				`DRY RUN ${buildReleaseCompileArgs(target as string, outfile as string, telegramBuild).join(" ")}`,
+			);
 		}
 	});
 });

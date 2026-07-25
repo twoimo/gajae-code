@@ -38,7 +38,7 @@ import type { NotificationSessionReconcileResult, NotificationSessionStatus } fr
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext, SessionManager } from "../session/session-manager";
-import { getRecentSessions, getSessionMessageEntryId } from "../session/session-manager";
+import { getRecentSessionDisplay, getSessionMessageEntryId } from "../session/session-manager";
 import type { LspStartupServerInfo } from "../tools";
 import { formatPhaseDisplayName } from "../tools/todo-write";
 import type { EventBus } from "../utils/event-bus";
@@ -622,14 +622,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const modelName = this.session.model?.name ?? "Unknown";
 		const providerName = this.session.model?.provider ?? "Unknown";
 
-		// Get recent sessions
-		const recentSessions = await logger.time("InteractiveMode.init:recentSessions", () =>
-			getRecentSessions(this.sessionManager.getSessionDir()).then(sessions =>
-				sessions.map(s => ({
-					name: s.name,
-					timeAgo: s.timeAgo,
-				})),
-			),
+		// Get recent sessions from the same inventory used by /resume.
+		const recentSessions = await logger.time("InteractiveMode.init:recentSessions", async () =>
+			getRecentSessionDisplay(await this.sessionManager.listForResumePickerReadOnly()),
 		);
 
 		const startupQuiet = settings.get("startup.quiet");

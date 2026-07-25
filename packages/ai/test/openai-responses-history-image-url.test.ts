@@ -99,4 +99,36 @@ describe("OpenAI responses history image replay", () => {
 			{ role: "user", content: [{ type: "input_text", text: "follow-up user" }] },
 		]);
 	});
+
+	it("drops unavailable resident image placeholders before replaying native history", async () => {
+		const model = getBundledModel<"openai-codex-responses">("openai-codex", "gpt-5.2-codex");
+		const historyItems: Record<string, unknown>[] = [
+			{
+				type: "message",
+				role: "user",
+				content: [
+					{ type: "input_text", text: "Attached image(s) from tool result:" },
+					{
+						type: "input_image",
+						image_url:
+							"[Session resident imageUrl blob missing: sha256:d29da4fc9b6d692a2ce8a6990d72316f1cabaaee5c7a39ee43444391caffb3ff; original content unavailable]",
+						detail: "auto",
+					},
+				],
+			},
+		];
+
+		const payload = await captureCodexPayload(model, {
+			messages: [makeCodexAssistantMessage(historyItems), { role: "user", content: "retry", timestamp: Date.now() }],
+		});
+
+		expect(payload.input).toEqual([
+			{
+				type: "message",
+				role: "user",
+				content: [{ type: "input_text", text: "Attached image(s) from tool result:" }],
+			},
+			{ role: "user", content: [{ type: "input_text", text: "retry" }] },
+		]);
+	});
 });

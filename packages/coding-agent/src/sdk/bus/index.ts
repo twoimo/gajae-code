@@ -2798,12 +2798,21 @@ export function createNotificationsExtension(
 	} = {},
 ): void {
 	const lifecycleStartupCapability = lifecycleStartupCapabilityForApi(api);
+	let settingsOverride = options.settings;
+	const refreshSettingsForCwd = async (cwd: string): Promise<void> => {
+		if (!options.settings || resolveSettings(settingsOverride).cfg.enabled) return;
+		try {
+			settingsOverride = await Settings.loadForScope({ cwd });
+		} catch {
+			// Keep the current settings snapshot when the workspace cannot be reloaded.
+		}
+	};
 	const runtimes = new Map<string, SessionRuntime>();
 	const controller =
 		options.controller ??
 		new NotificationSessionController({
 			eligible: true,
-			getConfig: () => resolveSettings(options.settings).cfg,
+			getConfig: () => resolveSettings(settingsOverride).cfg,
 		});
 
 	// Failed terminal teardown remains fenced from normal runtime lookup while the
@@ -3001,7 +3010,7 @@ export function createNotificationsExtension(
 	}
 
 	function isNotificationEligibleContext(ctx: ExtensionContext): boolean {
-		return ctx.sessionMetadata?.kind !== "sub";
+		return !process.env.GJC_TEAM_WORKER_ID && ctx.sessionMetadata?.kind !== "sub";
 	}
 
 	function canDeliverAsync(runtime: SessionRuntime, generation: number): boolean {
@@ -3017,7 +3026,7 @@ export function createNotificationsExtension(
 	async function startSession(ctx: ExtensionContext): Promise<SessionStartResult> {
 		const id = sessionId(ctx);
 		const lifecycleRequestId = safeLifecycleRequestId(process.env.GJC_LIFECYCLE_REQUEST_ID);
-		const { settings, cfg, settingsAvailable } = resolveSettings(options.settings);
+		const { settings, cfg, settingsAvailable } = resolveSettings(settingsOverride);
 		const notificationsEnabledForSession = controller.query(ctx).effectiveEnabled;
 		const sdkEnabledForSession =
 			(options.sdkHostModeSupported ?? true) && shouldHostSdk(settings, isNotificationEligibleContext(ctx));
@@ -4300,21 +4309,35 @@ export function createNotificationsExtension(
 		}
 	}
 
+	const hasUsableEndpoint = (runtime: SessionRuntime, cwd: string): boolean =>
+		!runtime.stopping &&
+		runtime.host.started &&
+		!runtime.serverStopped &&
+		fs.existsSync(path.join(cwd, ".gjc", "state", "sdk", `${runtime.id}.json`));
+
 	const sessionRuntime: NotificationSessionRuntime<ExtensionContext> = {
-		isRunning: binding => runtimes.get(binding.sessionId)?.notificationsActive === true,
+		isRunning: binding => {
+			const runtime = runtimes.get(binding.sessionId);
+			return runtime ? hasUsableEndpoint(runtime, binding.cwd) : false;
+		},
 		start: async binding => {
 			if (sessionStartPromises.has(binding.sessionId)) {
 				const result = await startSession(binding.context);
 				if (result.status !== "started" && result.status !== "already") return result.status;
 				const runtime = runtimes.get(binding.sessionId);
-				if (!runtime || sessionId(binding.context) !== binding.sessionId || activeRuntimeId !== binding.sessionId) {
+				if (
+					!runtime ||
+					!hasUsableEndpoint(runtime, binding.cwd) ||
+					sessionId(binding.context) !== binding.sessionId ||
+					activeRuntimeId !== binding.sessionId
+				) {
 					return "failed";
 				}
 				return "started";
 			}
 			const runtime = runtimes.get(binding.sessionId);
-			if (runtime) {
-				return "started";
+			if (runtime && !hasUsableEndpoint(runtime, binding.cwd)) {
+				await stopSession(binding.sessionId, "session", runtime);
 			}
 			const result = await startSession(binding.context);
 			return result.status === "started" || result.status === "already" ? "started" : result.status;
@@ -4349,7 +4372,7 @@ export function createNotificationsExtension(
 			for (const processControl of runtime.deferredInboundControls.splice(0)) processControl();
 		},
 		ensureTelegramDaemon: async binding => {
-			const { settings, settingsAvailable } = resolveSettings(options.settings);
+			const { settings, settingsAvailable } = resolveSettings(settingsOverride);
 			if (!settingsAvailable || !settings) return "blocked_identity";
 			try {
 				return await ensureTelegramOwner(settings, binding.cwd, binding.sessionId);
@@ -4365,7 +4388,8 @@ export function createNotificationsExtension(
 		async handler(args: string, ctx: ExtensionCommandContext): Promise<void> {
 			const id = sessionId(ctx);
 			const command = args.trim().split(/\s+/, 1)[0]?.toLowerCase() || "status";
-			const resolved = resolveSettings(options.settings);
+			if (command === "on") await refreshSettingsForCwd(ctx.cwd);
+			const resolved = resolveSettings(settingsOverride);
 			const enabledWithoutLocalOff = isSessionNotificationsEnabled({
 				cfg: resolved.cfg,
 				env: process.env,

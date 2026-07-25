@@ -207,6 +207,8 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 
 		expect(candidates.indexOf(local)).toBeLessThan(candidates.indexOf(optional));
 		expect(loaded.bindings).toEqual({ __piNativesVCurrent: expect.any(Function) });
+		expect(loaded.candidate).toBe(local);
+
 		expect(loaded.errors).toEqual([]);
 	});
 
@@ -225,6 +227,8 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 		});
 
 		expect(loaded.bindings).toEqual({ __piNativesVCurrent: expect.any(Function) });
+		expect(loaded.candidate).toBe(local);
+
 		expect(attempted).toEqual([local]);
 	});
 
@@ -240,6 +244,8 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 		});
 
 		expect(loaded.bindings).toEqual({ __piNativesVCurrent: expect.any(Function) });
+		expect(loaded.candidate).toBe(local);
+
 		expect(loaded.errors).toEqual([`${optional}: missing current version sentinel`]);
 	});
 
@@ -257,6 +263,8 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 		});
 
 		expect(loaded.bindings).toEqual({ __piNativesVCurrent: expect.any(Function) });
+		expect(loaded.candidate).toBe(optional);
+
 		expect(loaded.errors).toEqual([`${local}: not found`]);
 	});
 
@@ -270,6 +278,8 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 		});
 
 		expect(loaded.bindings).toEqual({ __piNativesVCurrent: expect.any(Function) });
+		expect(loaded.candidate).toBe(optional);
+
 		expect(loaded.errors).toEqual([]);
 	});
 
@@ -284,6 +294,8 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 		});
 
 		expect(loaded.bindings).toBeNull();
+		expect(loaded.candidate).toBeNull();
+
 		expect(loaded.errors).toEqual([
 			`${staleOptional}: missing current version sentinel`,
 			`${staleLegacy}: missing current version sentinel`,
@@ -302,6 +314,7 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 		});
 
 		expect(loaded.bindings).toEqual({ __piNativesVCurrent: expect.any(Function) });
+		expect(loaded.candidate).toBe(baseline);
 		expect(loaded.errors).toEqual([`${modern}: missing current version sentinel`]);
 	});
 

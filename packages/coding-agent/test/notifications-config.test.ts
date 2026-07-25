@@ -1236,6 +1236,21 @@ describe("notifications config", () => {
 		expect(shouldRegisterNotificationsExtension({ cfg: PRIMARY_GLOBAL_CFG, env: {} })).toBe(true);
 	});
 
+	test("team worker sessions never register notifications", () => {
+		expect(
+			shouldRegisterNotificationsExtension({
+				cfg: GLOBAL_CFG,
+				env: { GJC_TEAM_WORKER_ID: "worker-1" },
+			}),
+		).toBe(false);
+		expect(
+			shouldRegisterNotificationsExtension({
+				cfg: GLOBAL_CFG,
+				env: { GJC_TEAM_WORKER_ID: "worker-1", GJC_NOTIFICATIONS: "1" },
+			}),
+		).toBe(false);
+	});
+
 	test("explicit /session_create opt-in outranks sessionScope=primary suppression", () => {
 		// GJC_NOTIFICATIONS=1 is exactly what Telegram /session_create and cold
 		// /session_resume launch with, so their bidirectional topic survives.
@@ -1901,6 +1916,52 @@ describe("notifications config", () => {
 			expect(fs.existsSync(endpoint)).toBe(false);
 		} finally {
 			if (!shutdownCompleted) await sessionShutdown({}, context);
+		}
+	}, 30000);
+	test("/notify on refreshes an initially unconfigured settings snapshot from disk", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notification-refresh-"));
+		tempDirs.push(cwd);
+		const sessionId = "session-refresh";
+		const staleSettings = Settings.isolated({ "notifications.enabled": false });
+		const refreshedSettings = Settings.isolated({
+			"notifications.enabled": true,
+			"notifications.telegram.botToken": "123456:temporary-test-token",
+			"notifications.telegram.chatId": "temporary-chat",
+		});
+		const loadForScope = vi.spyOn(Settings, "loadForScope").mockResolvedValue(refreshedSettings);
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void> | void>();
+		let notify: { handler(args: string, ctx: ExtensionCommandContext): Promise<void> | void } | undefined;
+		const messages: Array<{ message: string; level: string }> = [];
+		const api = {
+			on(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) {
+				handlers.set(event, handler);
+			},
+			registerCommand(
+				name: string,
+				command: { handler(args: string, ctx: ExtensionCommandContext): Promise<void> | void },
+			) {
+				if (name === "notify") notify = command;
+			},
+		} as unknown as ExtensionAPI;
+		const context = {
+			cwd,
+			sessionManager: {
+				getSessionId: () => sessionId,
+				getSessionName: () => "refresh harness",
+			},
+			ui: { notify: (message: string, level: string) => messages.push({ message, level }) },
+		} as unknown as ExtensionCommandContext;
+		createNotificationsExtension(api, { settings: staleSettings, ensureTelegramDaemon: async () => "ready" });
+		const endpoint = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+		try {
+			if (!notify) throw new Error("notifications extension did not register its command");
+			await notify.handler("on", context);
+			expect(loadForScope).toHaveBeenCalledWith({ cwd });
+			expect(fs.existsSync(endpoint)).toBe(true);
+			expect(messages.at(-1)).toEqual({ message: "Notifications enabled for this session.", level: "info" });
+		} finally {
+			loadForScope.mockRestore();
+			await handlers.get("session_shutdown")?.({}, context);
 		}
 	}, 30000);
 

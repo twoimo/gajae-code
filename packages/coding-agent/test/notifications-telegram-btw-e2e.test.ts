@@ -176,6 +176,96 @@ test("real notifications extension rejects an in-flight /btw response after reco
 	}
 }, 30_000);
 
+test("real notifications extension forwards inbound topic messages through sendUserMessage and consumes reactions on turn_start", async () => {
+	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-btw-inbound-e2e-"));
+	const cwd = path.join(agentDir, "repo");
+	const sessionId = "btw-inbound-e2e";
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>();
+	const delivered: Array<{ content: unknown; options: unknown }> = [];
+	const settings = isolatedSettings(agentDir);
+	const ctx = {
+		cwd,
+		sessionManager: {
+			getSessionId: () => sessionId,
+			getSessionName: () => "Inbound E2E",
+			getArtifactsDir: () => cwd,
+			getCwd: () => cwd,
+		},
+		getContextUsage: () => undefined,
+		getModel: () => undefined,
+		isIdle: () => true,
+		getPendingMessageCounts: () => ({ steering: 0, followUp: 0, nextTurn: 0 }),
+	} as never;
+	const bot = new Bot();
+	const daemon = new TelegramNotificationDaemon({
+		settings,
+		ownerId: "owner",
+		botToken: "token",
+		chatId: "42",
+		botApi: bot,
+		fs: fs.promises as unknown as TelegramDaemonFs,
+		pidAlive: () => true,
+		rich: { enabled: true },
+	});
+	try {
+		createNotificationsExtension(
+			{
+				on: (event: string, handler: (event: unknown, context: unknown) => Promise<unknown>) =>
+					handlers.set(event, handler),
+				registerCommand: () => {},
+				sendUserMessage: async (content: unknown, options: unknown) => {
+					delivered.push({ content, options });
+				},
+			} as never,
+			{
+				settings,
+				ensureTelegramDaemon: async input => {
+					await registerNotificationRoot(input);
+					return "attached";
+				},
+			},
+		);
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		await daemon.scanRoots();
+		await waitFor(
+			() =>
+				daemon.sessions.get(sessionId)?.ephemeralCapable === true &&
+				(daemon.sessions.get(sessionId)?.hostGeneration ?? 0) >= 1 &&
+				bot.count("createForumTopic") === 1,
+			"extension daemon capability replay",
+		);
+		await daemon.handleTelegramUpdate({
+			update_id: 12,
+			message: {
+				message_id: 120,
+				chat: { id: 42 },
+				message_thread_id: THREAD_ID,
+				text: "inbound topic message",
+			},
+		});
+		await waitFor(() => delivered.length === 1, "sendUserMessage delivery");
+		expect(delivered).toHaveLength(1);
+		expect(delivered[0]).toEqual({ content: "inbound topic message", options: undefined });
+		await waitFor(() => bot.count("setMessageReaction") === 1, "queued reaction");
+		expect(bot.calls.at(-1)?.body).toMatchObject({
+			message_id: 120,
+			reaction: [{ type: "emoji", emoji: "👀" }],
+		});
+		await handlers.get("turn_start")!({ type: "turn_start" }, ctx);
+		await waitFor(() => bot.count("setMessageReaction") === 2, "consumed reaction");
+		expect(bot.calls.at(-1)?.body).toMatchObject({
+			message_id: 120,
+			reaction: [{ type: "emoji", emoji: "✅" }],
+		});
+	} finally {
+		if (handlers.has("session_shutdown")) await handlers.get("session_shutdown")!({ type: "session_shutdown" }, ctx);
+		daemon.requestStop();
+		await sleep(40);
+		await stopDetachedBroker(agentDir);
+		await fs.promises.rm(agentDir, { recursive: true, force: true });
+	}
+}, 30_000);
+
 test("/btw travels through NotificationServer and a real WebSocket with one strict terminal dispatch", async () => {
 	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-btw-e2e-"));
 	try {

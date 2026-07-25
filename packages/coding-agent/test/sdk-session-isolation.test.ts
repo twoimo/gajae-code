@@ -155,6 +155,59 @@ describe("createAgentSession session storage isolation", () => {
 			await session.dispose();
 		}
 	}, 20_000);
+	it("migrates a switched managed session's legacy local root before path resolution", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `gjc-sdk-local-switch-${Snowflake.next()}-`));
+		tempDirs.push(tempDir);
+		const cwd = path.join(tempDir, "project");
+		const agentDir = path.join(tempDir, "agent");
+		fs.mkdirSync(cwd, { recursive: true });
+
+		const destination = SessionManager.managedDestination(cwd, agentDir);
+		const initialManager = SessionManager.create(cwd, destination);
+		initialManager.appendMessage({ role: "user", content: "initial session", timestamp: Date.now() });
+		await initialManager.flush();
+
+		const switchedManager = SessionManager.create(cwd, destination);
+		switchedManager.appendMessage({ role: "user", content: "switched session", timestamp: Date.now() });
+		await switchedManager.flush();
+		const switchedFile = switchedManager.getSessionFile();
+		const switchedArtifactsDir = switchedManager.getArtifactsDir();
+		if (!switchedFile || !switchedArtifactsDir) throw new Error("Expected switched managed session paths");
+		await switchedManager.close();
+
+		const legacyLocalRoot = path.join(switchedArtifactsDir, "local");
+		fs.mkdirSync(legacyLocalRoot, { recursive: true, mode: 0o700 });
+		fs.writeFileSync(path.join(legacyLocalRoot, "switched.md"), "preserved", { mode: 0o600 });
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			sessionManager: initialManager,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+		});
+
+		try {
+			expect(await session.switchSession(switchedFile)).toBe(true);
+			const localOptions = {
+				getArtifactsDir: () => initialManager.getArtifactsDir(),
+				isManagedDestination: () => initialManager.isManagedDestination(),
+				getManagedLegacyLocalMigrationSource: () => initialManager.getManagedLegacyLocalMigrationSource(),
+				getSessionId: () => initialManager.getSessionId(),
+			};
+			const switchedPath = resolveLocalUrlToPath("local://switched.md", localOptions);
+			expect(fs.readFileSync(switchedPath, "utf8")).toBe("preserved");
+			expect(fs.existsSync(legacyLocalRoot)).toBe(false);
+		} finally {
+			await session.dispose();
+		}
+	}, 20_000);
 	it("initializes a default local root without shadowing an explicit owner", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `gjc-sdk-local-owner-${Snowflake.next()}-`));
 		tempDirs.push(tempDir);
