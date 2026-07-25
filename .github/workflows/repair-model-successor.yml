@@ -33,6 +33,18 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare idempotent current-dev repair wrappers
+        shell: bash
+        run: |
+          cp repair-source/.github/repair/settings-successor.py \
+            repair-source/.github/repair/settings-successor-base.py
+          cp repair-source/.github/repair/settings-successor-current.py \
+            repair-source/.github/repair/settings-successor.py
+          cp repair-source/.github/repair/memory-guard-final.py \
+            repair-source/.github/repair/memory-guard-final-base.py
+          cp repair-source/.github/repair/memory-guard-final-current.py \
+            repair-source/.github/repair/memory-guard-final.py
+
       - name: Check one-shot trigger
         id: gate
         working-directory: work
