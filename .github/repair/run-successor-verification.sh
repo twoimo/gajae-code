@@ -123,7 +123,11 @@ PY
     git apply --3way --index /tmp/settings-successor.patch
     test -z "$(git diff --name-only --diff-filter=U)"
 
-    python3 "$REPAIR_ROOT/.github/repair/settings-successor-base.py"
+    python3 "$REPAIR_ROOT/.github/repair/settings-successor.py"
+    grep -F '#reasoningControlContextGeneration = 0;' \
+      packages/coding-agent/src/session/agent-session.ts
+    grep -F '#setAgentModelWithReasoningContext(model: Model): void' \
+      packages/coding-agent/src/session/agent-session.ts
     git add -A
     test -z "$(git diff --name-only --diff-filter=U)"
 
@@ -197,7 +201,6 @@ PY
     cmp /tmp/native-index.generated.d.ts packages/natives/native/index.d.ts
     cmp /tmp/native-index.generated.js packages/natives/native/index.js
     grep -F "macOS computer-use controller." packages/natives/native/index.d.ts
-    rm -f packages/natives/native/*.node
 
     mapfile -t changed_ts < <({ git diff --cached --name-only -- '*.ts' '*.tsx'; git diff --name-only -- '*.ts' '*.tsx'; } | sort -u)
     if [[ ${#changed_ts[@]} -gt 0 ]]; then
@@ -205,8 +208,6 @@ PY
       git add -- "${changed_ts[@]}"
     fi
     cargo fmt --all
-    git add -A
-    capture_product_files /tmp/memory-product-files
 
     bun test --timeout 30000 \
       packages/coding-agent/test/runtime/memory-limit.test.ts \
@@ -223,6 +224,9 @@ PY
     cargo check -p pi-natives
     bun --cwd=packages/natives test
 
+    rm -f packages/natives/native/*.node
+    git add -A
+    capture_product_files /tmp/memory-product-files
     commit_captured_files /tmp/memory-product-files \
       "feat(coding-agent): add coherent memory pressure observability"
     git commit --allow-empty -m "test(coding-agent): verify memory pressure successor"
