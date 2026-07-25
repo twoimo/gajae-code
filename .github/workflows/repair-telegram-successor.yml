@@ -36,8 +36,38 @@ jobs:
           git reset --hard upstream/dev
           if ! git apply --3way --index /tmp/telegram-successor.patch; then
             git diff --name-only --diff-filter=U | sort > /tmp/telegram-conflicts.txt
-            git diff --cc > /tmp/telegram-conflict-diff.txt
-            exit 1
+            if [ "$(cat /tmp/telegram-conflicts.txt)" = "packages/coding-agent/src/sdk/bus/index.ts" ]; then
+              python3 - <<'PY'
+          from pathlib import Path
+          path = Path('packages/coding-agent/src/sdk/bus/index.ts')
+          text = path.read_text()
+          start = text.find('<<<<<<< ours\n')
+          if start < 0:
+              raise SystemExit('expected Telegram shutdown conflict marker missing')
+          separator = text.find('=======\n', start)
+          end = text.find('>>>>>>> theirs\n', separator)
+          if separator < 0 or end < 0:
+              raise SystemExit('malformed Telegram shutdown conflict')
+          ours = text[start + len('<<<<<<< ours\n'):separator]
+          theirs = text[separator + len('=======\n'):end]
+          if 'terminalizeInFlightTools(rt, id, "unknown")' not in ours:
+              raise SystemExit('upstream shutdown settlement anchor changed')
+          if 'terminalizeInFlightTools(rt, id, "cancelled")' not in theirs:
+              raise SystemExit('successor shutdown settlement anchor changed')
+          resolved = ours.replace(
+              'terminalizeInFlightTools(rt, id, "unknown")',
+              'terminalizeInFlightTools(rt, id, "cancelled")',
+              1,
+          )
+          text = text[:start] + resolved + text[end + len('>>>>>>> theirs\n'):]
+          path.write_text(text)
+          PY
+              git add packages/coding-agent/src/sdk/bus/index.ts
+              test -z "$(git diff --name-only --diff-filter=U)"
+            else
+              git diff --cc > /tmp/telegram-conflict-diff.txt
+              exit 1
+            fi
           fi
 
       - name: Report application conflicts
@@ -72,6 +102,7 @@ jobs:
           bun install --frozen-lockfile
           bunx biome check --write \
             packages/coding-agent/src/sdk/bus/telegram-daemon.ts \
+            packages/coding-agent/src/sdk/bus/index.ts \
             packages/coding-agent/test/notifications-telegram-daemon.test.ts
           cargo fmt --all
           git add -A
