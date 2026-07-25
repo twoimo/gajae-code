@@ -44,6 +44,21 @@ jobs:
             repair-source/.github/repair/memory-guard-final-base.py
           cp repair-source/.github/repair/memory-guard-final-current.py \
             repair-source/.github/repair/memory-guard-final.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('repair-source/.github/repair/run-successor-verification.sh')
+          text = path.read_text()
+          old = '''    python3 "$REPAIR_ROOT/.github/repair/settings-successor.py"
+    grep -F '#reasoningControlContextGeneration = 0;' \\
+'''
+          new = '''    python3 "$REPAIR_ROOT/.github/repair/settings-successor.py"
+    python3 "$REPAIR_ROOT/.github/repair/settings-agent-session-state.py"
+    grep -F '#reasoningControlContextGeneration = 0;' \\
+'''
+          if old not in text:
+              raise SystemExit('settings runner post-repair anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Check one-shot trigger
         id: gate
