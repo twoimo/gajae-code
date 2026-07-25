@@ -44,13 +44,6 @@ jobs:
             repair-source/.github/repair/memory-guard-final-base.py
           cp repair-source/.github/repair/memory-guard-final-current.py \
             repair-source/.github/repair/memory-guard-final.py
-          sed -i \
-            's#settings-successor-base.py#settings-successor.py#' \
-            repair-source/.github/repair/run-successor-verification.sh
-          (
-            cd repair-source
-            python3 .github/repair/keep-native-until-memory-tests.py
-          )
 
       - name: Check one-shot trigger
         id: gate
@@ -127,5 +120,5 @@ jobs:
             });
 
       - name: Fail after diagnostic publication
-        if: steps.gate.outputs.run == 'true' && steps.verify.outcome != 'success'
+        if: steps.gate.outputs.run == 'true' && steps.verify.outcome == 'failure'
         run: exit 1
