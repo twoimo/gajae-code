@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `/model` preset selection now offers `Set as default` as the first action while retaining `Apply for this session`, custom preset rename, and delete actions.
+
 ### Fixed
 
 - Restricted role-agent `bash` now accepts literal mid-word tildes, so git revision syntax such as `git diff HEAD~1` no longer has to be quoted. Bash performs tilde expansion only at the start of a word, so word-initial forms (`~`, `~/path`, `~user`) remain blocked.
