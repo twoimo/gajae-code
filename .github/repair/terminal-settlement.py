@@ -31,11 +31,10 @@ new_helper = old_helper + '''
 \t\t\tthis.toolActivityOwners.delete(legacyToolStart.key);
 \t}
 '''
-if source.count(old_helper) != 1:
-    if "settleRejectedLegacyToolSubmission" not in source:
+if "private settleRejectedLegacyToolSubmission(" not in source:
+    if source.count(old_helper) != 1:
         raise SystemExit("failLegacyToolStart anchor mismatch")
-else:
-    source = source.replace(old_helper, new_helper)
+    source = source.replace(old_helper, new_helper, 1)
 
 old_threaded = '''\t\tif (!submitted) {
 \t\t\tthis.failLegacyToolStart(toolActivity);
