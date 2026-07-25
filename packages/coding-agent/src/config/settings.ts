@@ -363,6 +363,7 @@ export class Settings implements NotificationSettingsReader {
 	/** Pending debounced ordinary save; its queue slot is reserved immediately. */
 	#saveTimer?: NodeJS.Timeout;
 	#savePromise?: Promise<void>;
+	#changeListeners = new Set<(path: SettingPath) => void>();
 	#pendingSaveSlot?: PendingSaveSlot;
 
 	/** Legacy fallback migration warnings emitted once per settings instance. */
@@ -522,6 +523,11 @@ export class Settings implements NotificationSettingsReader {
 		return structuredClone(this.#schemaReport);
 	}
 
+	onChanged(listener: (path: SettingPath) => void): () => void {
+		this.#changeListeners.add(listener);
+		return () => this.#changeListeners.delete(listener);
+	}
+
 	/**
 	 * Set a setting value (sync).
 	 * Updates global settings and reserves its background persistence slot before
@@ -555,6 +561,7 @@ export class Settings implements NotificationSettingsReader {
 
 		const hook = SETTING_HOOKS[path];
 		if (hook) hook(value, prev);
+		for (const listener of this.#changeListeners) listener(path);
 	}
 
 	/**
@@ -579,6 +586,7 @@ export class Settings implements NotificationSettingsReader {
 
 		const hook = SETTING_HOOKS[path];
 		if (hook) hook(this.get(path), prev);
+		for (const listener of this.#changeListeners) listener(path);
 	}
 
 	/**

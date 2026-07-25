@@ -2102,6 +2102,44 @@
 			},
 			"additionalProperties": false
 		},
+		"memoryGuard": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean",
+					"default": false
+				},
+				"checkIntervalMs": {
+					"type": "number",
+					"default": 30000
+				},
+				"gcThresholdPercent": {
+					"type": "number",
+					"default": 70
+				},
+				"restartThresholdPercent": {
+					"type": "number",
+					"default": 85
+				},
+				"restartThresholdWindowMs": {
+					"type": "number",
+					"default": 90000
+				},
+				"cooldownMs": {
+					"type": "number",
+					"default": 600000
+				},
+				"parentReserveMb": {
+					"type": "number",
+					"default": 1024
+				},
+				"policyLimitMb": {
+					"type": "number",
+					"default": 0
+				}
+			},
+			"additionalProperties": false
+		},
 		"computer": {
 			"type": "object",
 			"properties": {

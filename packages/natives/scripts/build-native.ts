@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { $ } from "bun";
 import { detectHostAvx2Support } from "../../../scripts/host-detect";
+import { assertRequiredSymbols } from "./embed-guard";
 import { generateEnumExports } from "./gen-enums";
 
 const repoRoot = path.join(import.meta.dir, "../../..");
@@ -171,22 +172,25 @@ export interface NativePublishDiagnostic {
 	await Bun.write(declarationPath, `${bindings.trimEnd()}\n${declaration}`);
 }
 
-async function validateRecoveryFsBindings(): Promise<void> {
+const requiredGeneratedBindingSymbols = [
+	"RecoveryFsRoot",
+	"RecoveryFsIdentity",
+	"RecoveryFsResult",
+	"NativePublishDiagnostic",
+	"NativePublishSyncFailure",
+	"openRecoveryFsRoot",
+	"repairOwnerOnlyPathSecurityExpected",
+	"verifyOwnerOnlyPathSecurityExpected",
+	"probeWindowsJobMemory",
+] as const;
+
+export function validateGeneratedBindingSource(bindings: string): void {
+	assertRequiredSymbols(bindings, requiredGeneratedBindingSymbols);
+}
+
+async function validateGeneratedBindings(): Promise<void> {
 	const bindings = await Bun.file(path.join(nativeDir, "index.d.ts")).text();
-	for (const symbol of [
-		"RecoveryFsRoot",
-		"RecoveryFsIdentity",
-		"RecoveryFsResult",
-		"NativePublishDiagnostic",
-		"NativePublishSyncFailure",
-		"openRecoveryFsRoot",
-		"repairOwnerOnlyPathSecurityExpected",
-		"verifyOwnerOnlyPathSecurityExpected",
-	]) {
-		if (!bindings.includes(symbol)) {
-			throw new Error(`napi build did not generate the required recovery filesystem binding: ${symbol}`);
-		}
-	}
+	validateGeneratedBindingSource(bindings);
 }
 
 type NativeBuildProfile = "local" | "ci" | "dist";
@@ -282,7 +286,7 @@ try {
 
 	await generateEnumExports();
 	await ensurePublishDiagnosticDeclaration();
-	await validateRecoveryFsBindings();
+	await validateGeneratedBindings();
 
 	console.log("Build complete.");
 } finally {
