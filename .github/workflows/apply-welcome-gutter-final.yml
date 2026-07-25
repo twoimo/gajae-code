@@ -1,0 +1,90 @@
+name: Apply final welcome gutter repair
+
+on:
+  push:
+    branches:
+      - successor/welcome-composer-gutter-clean
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: successor/welcome-composer-gutter-clean
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Apply final owner-requested repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          welcome_path = Path("packages/coding-agent/src/modes/components/welcome.ts")
+          welcome = welcome_path.read_text()
+          old = '''\t\tif (outputRows === 1) {
+          \t\t\treturn lines;
+          \t\t}
+          '''
+          new = '''\t\tif (outputRows === 1) {
+          \t\t\treturn this.#withRightGutter(lines, rightGutterWidth);
+          \t\t}
+          '''
+          if old in welcome:
+              welcome = welcome.replace(old, new, 1)
+          elif new not in welcome:
+              raise SystemExit("one-row welcome return anchor mismatch")
+          welcome_path.write_text(welcome)
+
+          test_path = Path("packages/coding-agent/test/welcome-viewport.test.ts")
+          tests = test_path.read_text()
+          marker = '\tit("splits the forge and details columns evenly on wide viewports", () => {'
+          regression = '''\tit("reserves the composer gutter in the one-row constrained fallback", () => {
+          \t\tconst welcome = new WelcomeComponent("1.2.3", "test-model", "test-provider", [], [], "ascii", {
+          \t\t\trightGutterWidth: 1,
+          \t\t\tgetViewportRows: () => 1,
+          \t\t\tgetReservedBottomRows: () => 0,
+          \t\t});
+          \t\tconst lines = welcome.render(100).map(stripRenderControls);
+
+          \t\texpect(lines).toHaveLength(1);
+          \t\texpect(visibleWidth(lines[0]!)).toBe(100);
+          \t\texpect(lines[0]!.endsWith(" ")).toBe(true);
+          \t\texpect(visibleWidth(lines[0]!.trimEnd())).toBe(99);
+          \t});
+
+          '''
+          if "reserves the composer gutter in the one-row constrained fallback" not in tests:
+              if tests.count(marker) != 1:
+                  raise SystemExit("welcome viewport test insertion anchor mismatch")
+              tests = tests.replace(marker, regression + marker, 1)
+          test_path.write_text(tests)
+          PY
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Format changed files
+        run: bunx biome check --write packages/coding-agent/src/modes/components/welcome.ts packages/coding-agent/test/welcome-viewport.test.ts
+
+      - name: Run focused regression
+        run: bun test --timeout 30000 packages/coding-agent/test/welcome-viewport.test.ts packages/coding-agent/test/interactive-mode-editor-component.test.ts
+
+      - name: Run package check
+        run: bun --cwd=packages/coding-agent run check
+
+      - name: Commit verified repair and remove staging workflow
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          git rm .github/workflows/apply-welcome-gutter-final.yml
+          git add packages/coding-agent/src/modes/components/welcome.ts packages/coding-agent/test/welcome-viewport.test.ts
+          git commit -m "fix(coding-agent): cover one-row welcome gutter"
+          git push origin HEAD:successor/welcome-composer-gutter-clean
