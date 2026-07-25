@@ -60,6 +60,7 @@ jobs:
           git diff --binary 5cd97b6611a56b4df75b9151e9f28691c28d7f98..origin/backup/memory-guard-426ca8d1 > /tmp/memory-successor.patch
           if ! git apply --3way --index /tmp/memory-successor.patch; then
             git diff --name-only --diff-filter=U > /tmp/memory-conflicts.txt
+            git diff --cc > /tmp/memory-conflict-diff.txt
             exit 1
           fi
 
@@ -72,11 +73,14 @@ jobs:
             const paths = fs.existsSync('/tmp/memory-conflicts.txt')
               ? fs.readFileSync('/tmp/memory-conflicts.txt', 'utf8').trim()
               : '(patch failed before conflict enumeration)';
+            const diff = fs.existsSync('/tmp/memory-conflict-diff.txt')
+              ? fs.readFileSync('/tmp/memory-conflict-diff.txt', 'utf8').slice(0, 45000)
+              : '';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `MEMORY_REBUILD_FAILED\n\n${paths}`,
+              body: `MEMORY_REBUILD_FAILED\n\n${paths}\n\n\`\`\`diff\n${diff}\n\`\`\``,
             });
             core.setFailed('Memory feature patch application failed');
 
@@ -92,31 +96,38 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         if: steps.gate.outputs.run == 'true'
+        with:
+          bun-version: '1.3.14'
 
       - name: Install dependencies
         if: steps.gate.outputs.run == 'true'
         working-directory: work
         run: bun install --frozen-lockfile
 
-      - name: Regenerate the native declaration from the actual generator
+      - name: Regenerate native declarations from the actual generator
         if: steps.gate.outputs.run == 'true'
         working-directory: work
         shell: bash
         run: |
           bun --cwd=packages/natives run build
-          git add packages/natives/index.d.ts
-          git checkout -- packages/natives/index.js 2>/dev/null || true
-          git clean -fd packages/natives/native 2>/dev/null || true
+          cp packages/natives/native/index.d.ts /tmp/native-index.generated.d.ts
+          cp packages/natives/native/index.js /tmp/native-index.generated.js
+          bun packages/natives/scripts/gen-enums.ts
+          cmp /tmp/native-index.generated.d.ts packages/natives/native/index.d.ts
+          cmp /tmp/native-index.generated.js packages/natives/native/index.js
+          grep -F "macOS computer-use controller." packages/natives/native/index.d.ts
+          git add packages/natives/native/index.d.ts packages/natives/native/index.js
+          rm -f packages/natives/native/*.node
 
       - name: Format changed sources
         if: steps.gate.outputs.run == 'true'
         working-directory: work
         shell: bash
         run: |
-          changed_ts=$(git diff --name-only -- '*.ts' '*.tsx')
-          if [ -n "$changed_ts" ]; then
-            bunx biome check --write $changed_ts
-            git add $changed_ts
+          mapfile -t changed_ts < <(git diff --name-only -- '*.ts' '*.tsx')
+          if [ ${#changed_ts[@]} -gt 0 ]; then
+            bunx biome check --write "${changed_ts[@]}"
+            git add "${changed_ts[@]}"
           fi
           cargo fmt --all
           git add -A
@@ -154,7 +165,9 @@ jobs:
             packages/coding-agent/test/tools/resource-gc.test.ts \
             packages/coding-agent/test/tools/resource-gc-redteam.test.ts \
             packages/coding-agent/test/gjc-runtime/linux-proc.test.ts \
-            packages/coding-agent/test/cli-memory-guard-native-smoke.test.ts
+            packages/coding-agent/test/cli-memory-guard-native-smoke.test.ts \
+            packages/natives/test/memory-guard-native.test.ts \
+            packages/natives/test/memory-guard-build-wiring.test.ts
 
       - name: Run package, schema, and native checks
         id: package
