@@ -1,0 +1,159 @@
+name: Repair reviewed successors
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  repair:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.pull_request.head.ref == 'successor/telegram-tool-activity-current-v2' ||
+       github.event.pull_request.head.ref == 'successor/memory-guard-current-v4')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3'
+
+      - name: Apply Telegram review fixes
+        if: github.event.pull_request.head.ref == 'successor/telegram-tool-activity-current-v2'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('packages/coding-agent/CHANGELOG.md')
+          text = path.read_text()
+          entry = '- Telegram per-tool activity is now opt-in and remains durably controllable with `/toolactivity on|off` or the Notifications preferences UI; disabling it suppresses tool start/completion success and error bubbles without hiding assistant, ask, or session notifications.'
+
+          text = text.replace(entry + '\n', '')
+          unreleased = '## [Unreleased]\n'
+          if unreleased not in text:
+              raise SystemExit('Unreleased section missing')
+          prefix, rest = text.split(unreleased, 1)
+          if '### Changed\n' in rest.split('\n## [', 1)[0]:
+              section, tail = rest.split('### Changed\n', 1)
+              rest = section + '### Changed\n\n' + entry + '\n' + tail.lstrip('\n')
+          else:
+              rest = '\n### Changed\n\n' + entry + '\n' + rest.lstrip('\n')
+          path.write_text(prefix + unreleased + rest)
+          PY
+
+      - name: Apply memory review fixes
+        if: github.event.pull_request.head.ref == 'successor/memory-guard-current-v4'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          source = Path('packages/coding-agent/src/tools/resource-gc.ts')
+          text = source.read_text()
+          old = '''\t\tif (limit !== null && usage !== null) {\n\t\t\tconst zeroLimit = limit.kind === "finite" && limit.bytes === 0;\n\t\t\tdomains.push({\n\t\t\t\thardCapBytes: limit.kind === "unlimited" ? hostBytes : Math.min(hostBytes, Math.max(1, limit.bytes)),\n\t\t\t\ttotalUsageBytes: zeroLimit ? Math.max(1, usage) : usage,\n\t\t\t\tsource,\n\t\t\t});\n\t\t}\n'''
+          new = '''\t\tif (limit !== null && usage !== null && (limit.kind === "unlimited" || limit.bytes > 0)) {\n\t\t\tdomains.push({\n\t\t\t\thardCapBytes: limit.kind === "unlimited" ? hostBytes : Math.min(hostBytes, limit.bytes),\n\t\t\t\ttotalUsageBytes: usage,\n\t\t\t\tsource,\n\t\t\t});\n\t\t}\n'''
+          if old not in text:
+              if new not in text:
+                  raise SystemExit('cgroup zero-limit block not found')
+          else:
+              text = text.replace(old, new, 1)
+          source.write_text(text)
+
+          test = Path('packages/coding-agent/test/tools/resource-gc.test.ts')
+          t = test.read_text()
+          old_test = '''\t\t\tawait expect(\n\t\t\t\t__sampleLinuxCgroupHierarchyForTest(mountLine(53, "/", zeroMount), "/app", "cgroup2", 5000, 100),\n\t\t\t).resolves.toMatchObject({\n\t\t\t\thardCapBytes: 1,\n\t\t\t\ttotalUsageBytes: 100,\n\t\t\t});\n'''
+          new_test = '''\t\t\tawait expect(\n\t\t\t\t__sampleLinuxCgroupHierarchyForTest(mountLine(53, "/", zeroMount), "/app", "cgroup2", 5000, 100),\n\t\t\t).resolves.toBeNull();\n'''
+          if old_test not in t:
+              if new_test not in t:
+                  raise SystemExit('zero-limit regression assertion not found')
+          else:
+              t = t.replace(old_test, new_test, 1)
+          test.write_text(t)
+          PY
+
+          git restore --source=41d6850cabd16629a14170f8b446090a7fafd117 -- \
+            packages/coding-agent/src/prompts/agent-fragments/ralplan-persistence.md \
+            packages/coding-agent/src/prompts/agent-fragments/restricted-bash.md \
+            packages/coding-agent/src/prompts/system/rlm-research.md \
+            packages/coding-agent/src/prompts/system/system-prompt.md \
+            packages/coding-agent/src/prompts/tools/bash.md \
+            packages/coding-agent/src/prompts/tools/cron.md
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify Telegram successor
+        if: github.event.pull_request.head.ref == 'successor/telegram-tool-activity-current-v2'
+        shell: bash
+        run: |
+          bunx biome check --write packages/coding-agent/CHANGELOG.md
+          bun test --timeout 30000 \
+            packages/coding-agent/test/notifications-tool-activity.test.ts \
+            packages/coding-agent/test/notifications-telegram-daemon.test.ts \
+            packages/coding-agent/test/sdk-host.test.ts \
+            packages/coding-agent/test/sdk-host-wiring.test.ts \
+            scripts/telegram-daemon-generation-guard.test.ts
+          bun scripts/telegram-daemon-generation-guard.ts --validate-current-tree
+          bun --cwd=packages/coding-agent run check
+          cargo fmt --all -- --check
+
+      - name: Verify memory successor
+        if: github.event.pull_request.head.ref == 'successor/memory-guard-current-v4'
+        shell: bash
+        run: |
+          bunx biome check --write \
+            packages/coding-agent/src/tools/resource-gc.ts \
+            packages/coding-agent/test/tools/resource-gc.test.ts
+          bun test --timeout 30000 \
+            packages/coding-agent/test/runtime/memory-limit.test.ts \
+            packages/coding-agent/test/runtime/memory-domain.test.ts \
+            packages/coding-agent/test/runtime/memory-guard.test.ts \
+            packages/coding-agent/test/tools/resource-gc.test.ts \
+            packages/coding-agent/test/tools/resource-gc-redteam.test.ts \
+            packages/coding-agent/test/gjc-runtime/linux-proc.test.ts \
+            packages/coding-agent/test/cli-memory-guard-native-smoke.test.ts \
+            packages/natives/test/memory-guard-native.test.ts \
+            packages/natives/test/memory-guard-build-wiring.test.ts
+          bun packages/natives/scripts/gen-enums.ts
+          git diff --exit-code -- packages/natives/native/index.d.ts packages/natives/native/index.js
+          bun --cwd=packages/coding-agent run check
+          bun --cwd=packages/natives run check
+          cargo fmt --all -- --check
+
+      - name: Commit verified repair
+        shell: bash
+        run: |
+          git config user.name "twoimo"
+          git config user.email "32544727+twoimo@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+          git add -A
+          if [ "${{ github.event.pull_request.head.ref }}" = "successor/telegram-tool-activity-current-v2" ]; then
+            git commit -m "fix(notifications): refresh tool activity successor"
+          else
+            git commit -m "fix(coding-agent): harden cgroup zero limits"
+          fi
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Report success
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `SUCCESSOR_REPAIR_OK ${context.payload.pull_request.head.ref}`,
+            });
