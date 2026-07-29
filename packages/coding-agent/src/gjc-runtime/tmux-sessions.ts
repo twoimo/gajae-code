@@ -383,7 +383,7 @@ function psmuxAuthorityEnvironments(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv[]
 		const ambientAvailable = path.isAbsolute(ambient.command)
 			? fsSync.existsSync(ambient.command)
 			: Bun.which(ambient.command) !== null;
-		const shouldDiscoverPersisted = ambient.isPsmux || !ambientAvailable;
+		const shouldDiscoverPersisted = ambient.isPsmux || (!ambient.viaExplicitOverride && !ambientAvailable);
 		if (shouldDiscoverPersisted) {
 			const stateDirs = explicitStateDir ? [explicitStateDir] : canonicalProviderStateDirs(process.cwd());
 			const authorities = stateDirs.flatMap(stateDir => {
