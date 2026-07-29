@@ -4,6 +4,7 @@ import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Process } from "@gajae-code/natives";
+import { managedSecurityFailureClassification } from "../session/internal/managed-session-storage";
 import { readLinuxProcStartTime, readLinuxProcStartTimeSync } from "./linux-proc";
 import { resolveGjcTmuxBinary } from "./psmux-detect";
 import { GJC_DIR, GJC_SESSION_PREFIX, tmuxRuntimeSessionPath } from "./session-layout";
@@ -377,12 +378,33 @@ function psmuxAuthorityEnvironments(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv[]
 	const explicitStateDir =
 		env[GJC_TMUX_OWNER_STATE_DIR_ENV]?.trim() ??
 		(env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] ? path.dirname(env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV]) : "");
+	const ambient = resolveGjcTmuxBinary({ env });
 	if (process.platform === "win32") {
-		const stateDirs = explicitStateDir ? [explicitStateDir] : canonicalProviderStateDirs(process.cwd());
-		const authorities = stateDirs.flatMap(stateDir => listGjcTmuxProviderAuthoritiesSync(stateDir));
-		if (authorities.length > 0) return authorities.map(authority => environmentForProviderAuthority(env, authority));
+		const ambientAvailable = path.isAbsolute(ambient.command)
+			? fsSync.existsSync(ambient.command)
+			: Bun.which(ambient.command) !== null;
+		const shouldDiscoverPersisted = ambient.isPsmux || !ambientAvailable;
+		if (shouldDiscoverPersisted) {
+			const stateDirs = explicitStateDir ? [explicitStateDir] : canonicalProviderStateDirs(process.cwd());
+			const authorities = stateDirs.flatMap(stateDir => {
+				try {
+					return listGjcTmuxProviderAuthoritiesSync(stateDir);
+				} catch (error) {
+					const classification = managedSecurityFailureClassification(error);
+					const message =
+						typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
+							? error.message
+							: "";
+					const foreignOwner = classification === "owner_mismatch" || message.endsWith(": owner_mismatch");
+					if (!explicitStateDir && foreignOwner) return [];
+					throw error;
+				}
+			});
+			if (authorities.length > 0)
+				return authorities.map(authority => environmentForProviderAuthority(env, authority));
+		}
 	}
-	if (resolveGjcTmuxBinary({ env }).isPsmux) throw new Error("gjc_tmux_provider_authority_unavailable");
+	if (ambient.isPsmux) throw new Error("gjc_tmux_provider_authority_unavailable");
 	return [env];
 }
 
