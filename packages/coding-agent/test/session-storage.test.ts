@@ -356,7 +356,7 @@ describe("FileSessionStorage.deleteSessionWithArtifacts", () => {
 		});
 	});
 
-	describe("managed async lock release", () => {
+	describe("managed lock ownership-loss finalization", () => {
 		it("releases a normal lock and preserves a successor introduced before release", async () => {
 			const root = managedDirectoryRoot(tempDir);
 			const lock = await acquireManagedLock(tempDir, "release", root);
@@ -367,7 +367,21 @@ describe("FileSessionStorage.deleteSessionWithArtifacts", () => {
 			const retired = `${raced.path}.${raced.attemptId}.moved`;
 			fs.renameSync(raced.path, retired);
 			fs.writeFileSync(raced.path, `${JSON.stringify({ attemptId: "successor" })}\n`, { mode: 0o600 });
+			expect(() => raced.assertOwned()).toThrow("migration_busy");
 			await expect(raced.release()).rejects.toThrow("migration_busy");
+			expect(JSON.parse(fs.readFileSync(raced.path, "utf8"))).toEqual({ attemptId: "successor" });
+			fs.unlinkSync(raced.path);
+			fs.unlinkSync(retired);
+		});
+		it("finalizes a synchronous loser without retiring its successor", () => {
+			const root = managedDirectoryRoot(tempDir);
+			const raced = acquireManagedLockSync(tempDir, "sync-successor", root);
+			const retired = `${raced.path}.${raced.attemptId}.moved`;
+			fs.renameSync(raced.path, retired);
+			fs.writeFileSync(raced.path, `${JSON.stringify({ attemptId: "successor" })}\n`, { mode: 0o600 });
+
+			expect(() => raced.assertOwned()).toThrow("migration_busy");
+			expect(() => raced.release()).toThrow("migration_busy");
 			expect(JSON.parse(fs.readFileSync(raced.path, "utf8"))).toEqual({ attemptId: "successor" });
 			fs.unlinkSync(raced.path);
 			fs.unlinkSync(retired);
@@ -899,12 +913,11 @@ describe("FileSessionStorage.deleteSessionVerified artifact-first", () => {
 				plannedArtifactsPath,
 				plannedTranscriptPath: path.join(tempDir, ".gjc-delete-tree-root-transcript"),
 			});
-			if (result.kind !== "cleanup_pending" || result.phase !== "artifacts")
-				throw new Error("Expected pending tree cleanup");
+			if (result.kind !== "artifacts_removed" || result.phase !== "artifacts")
+				throw new Error("Expected artifact-retired receipt");
 			expect(remove).not.toHaveBeenCalled();
-			expect(result.detachedArtifactsPath).toBe(plannedArtifactsPath);
-			expect(await fsp.stat(artifactsDir).catch(() => undefined)).toBeUndefined();
 			expect(await fsp.stat(plannedArtifactsPath)).toBeDefined();
+			expect(await fsp.stat(artifactsDir).catch(() => undefined)).toBeUndefined();
 		} finally {
 			remove.mockRestore();
 		}

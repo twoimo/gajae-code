@@ -419,6 +419,19 @@ function snapshotDirectoryTree(pathname: string): NativeDirectoryTreeSnapshot {
 function removeDirectoryTreeExact(pathname: string, snapshot: NativeDirectoryTreeSnapshot): NativeExactUnlinkResult {
 	return nativeDirectoryTreeApi().exactRemoveDirectoryTree(pathname, snapshot);
 }
+function isProvenEmptyRetainedArtifactRoot(pathname: string, expected: NativeDirectoryTreeSnapshot): boolean {
+	const captured = nativeDirectoryTreeApi().snapshotDirectoryTree(pathname);
+	if (!captured.ok || !captured.snapshot || captured.snapshot.entries.length !== 1) return false;
+	const [root] = captured.snapshot.entries;
+	return (
+		root.relativePath === "" &&
+		root.kind === "directory" &&
+		captured.snapshot.rootDev === expected.rootDev &&
+		captured.snapshot.rootIno === expected.rootIno &&
+		root.dev === expected.rootDev &&
+		root.ino === expected.rootIno
+	);
+}
 
 function exactUnlinkFailure(result: NativeExactUnlinkResult): SessionDeleteVerificationError {
 	if (result.ok) throw new Error("Expected exact unlink failure");
@@ -938,6 +951,8 @@ export class FileSessionStorage implements SessionStorage {
 						"artifacts",
 						"Native artifact removal returned an unauthorized root",
 					);
+				if (isProvenEmptyRetainedArtifactRoot(retainedRoot, expectedArtifactsTree))
+					return { kind: "artifacts_removed", phase: "artifacts", transcriptIdentity };
 				return {
 					kind: "cleanup_pending",
 					phase: "artifacts",
@@ -1043,6 +1058,8 @@ export class FileSessionStorage implements SessionStorage {
 					if (descriptor !== undefined) fs.closeSync(descriptor);
 				}
 			}
+			if (isProvenEmptyRetainedArtifactRoot(detach.detachedPath, artifactsTree))
+				return { kind: "artifacts_removed", phase: "artifacts", transcriptIdentity };
 			if (!detach.ok) {
 				return {
 					kind: "cleanup_pending",
@@ -1066,6 +1083,8 @@ export class FileSessionStorage implements SessionStorage {
 						"artifacts",
 						"Native artifact removal returned an unauthorized root",
 					);
+				if (isProvenEmptyRetainedArtifactRoot(retainedRoot, artifactsTree))
+					return { kind: "artifacts_removed", phase: "artifacts", transcriptIdentity };
 				return {
 					kind: "cleanup_pending",
 					phase: "artifacts",

@@ -1825,29 +1825,35 @@ export async function acquireManagedLock(
 			const lockIdentity = fs.fstatSync(fd, { bigint: true });
 			let released = false;
 			let descriptorClosed = false;
+			let heartbeat: ReturnType<typeof setInterval> | undefined;
 			const closeDescriptor = (): void => {
 				if (descriptorClosed) return;
 				fs.closeSync(fd);
 				descriptorClosed = true;
+			};
+			const finalizeOwnershipLoss = (): void => {
+				if (released || descriptorClosed) return;
+				released = true;
+				if (heartbeat) clearInterval(heartbeat);
+				closeDescriptor();
 			};
 			const assertOwned = (): void => {
 				const current = parseLock(lockPath);
 				let named: fs.BigIntStats;
 				try {
 					named = fs.lstatSync(lockPath, { bigint: true });
-				} catch {
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") finalizeOwnershipLoss();
 					throw new Error("migration_busy");
 				}
-				if (
-					released ||
-					descriptorClosed ||
-					!current ||
-					!sameFileIdentity(lockIdentity, named) ||
-					current.attemptId !== attemptId
-				)
+				const ownershipLost =
+					!sameFileIdentity(lockIdentity, named) || (current !== undefined && current.attemptId !== attemptId);
+				if (released || descriptorClosed || !current || ownershipLost) {
+					if (ownershipLost) finalizeOwnershipLoss();
 					throw new Error("migration_busy");
+				}
 			};
-			const heartbeat = setInterval(() => {
+			heartbeat = setInterval(() => {
 				try {
 					assertOwned();
 					const now = Date.now();
@@ -1926,22 +1932,31 @@ export function acquireManagedLockSync(
 			const lockIdentity = fs.fstatSync(fd, { bigint: true });
 			let released = false;
 			let descriptorClosed = false;
+			const closeDescriptor = (): void => {
+				if (descriptorClosed) return;
+				fs.closeSync(fd);
+				descriptorClosed = true;
+			};
+			const finalizeOwnershipLoss = (): void => {
+				if (released || descriptorClosed) return;
+				released = true;
+				closeDescriptor();
+			};
 			const assertOwned = (): void => {
 				const current = parseLock(lockPath);
 				let named: fs.BigIntStats;
 				try {
 					named = fs.lstatSync(lockPath, { bigint: true });
-				} catch {
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") finalizeOwnershipLoss();
 					throw new Error("migration_busy");
 				}
-				if (
-					released ||
-					descriptorClosed ||
-					!current ||
-					!sameFileIdentity(lockIdentity, named) ||
-					current.attemptId !== attemptId
-				)
+				const ownershipLost =
+					!sameFileIdentity(lockIdentity, named) || (current !== undefined && current.attemptId !== attemptId);
+				if (released || descriptorClosed || !current || ownershipLost) {
+					if (ownershipLost) finalizeOwnershipLoss();
 					throw new Error("migration_busy");
+				}
 			};
 			return {
 				path: lockPath,
@@ -1949,13 +1964,11 @@ export function acquireManagedLockSync(
 				assertOwned,
 				release(): void {
 					try {
+						assertOwned();
 						retireManagedLockExact(lockPath, { lockIdentity, attemptId });
 					} finally {
 						released = true;
-						if (!descriptorClosed) {
-							fs.closeSync(fd);
-							descriptorClosed = true;
-						}
+						closeDescriptor();
 					}
 				},
 			};
