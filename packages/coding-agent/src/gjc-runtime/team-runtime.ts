@@ -4408,11 +4408,24 @@ async function continueStalledGjcTeamWorkers(
 		reservation.prompt_sha256 = createHash("sha256").update(continuationPrompt).digest("hex");
 		const reservationPath = path.join(journalDir, `attempt-0${attempt}.reservation.json`);
 		try {
-			await createJsonNoClobber(
-				reservationPath,
-				reservation,
-				stateWriterOptions(reservationPath, "state", "continuation-reservation"),
-			);
+			await withGjcTeamTaskMutation(taskStore(dir), async () => {
+				const reservationReason = await validateGjcContinuationEligibility(
+					dir,
+					config,
+					worker,
+					task,
+					heartbeat.last_turn_at,
+					staleMs,
+					env,
+					new Date(currentTimeMs() + GJC_TEAM_CONTINUATION_DISPATCH_TIMEOUT_MS + holdMs).toISOString(),
+				);
+				if (reservationReason) throw new Error(`continuation_reservation_${reservationReason}`);
+				await createJsonNoClobber(
+					reservationPath,
+					reservation,
+					stateWriterOptions(reservationPath, "state", "continuation-reservation"),
+				);
+			});
 		} catch (error) {
 			if (error instanceof AlreadyExistsError) continue;
 			throw error;
@@ -4437,19 +4450,21 @@ async function continueStalledGjcTeamWorkers(
 		);
 		if (revalidationReason) {
 			const skippedPath = path.join(journalDir, `attempt-0${attempt}.outcome.json`);
-			await createJsonNoClobber(
-				skippedPath,
-				{
-					schema_version: 1,
-					incident_hash: incident,
-					attempt,
-					reservation_sha256: gjcContinuationReservationDigest(reservation),
-					recorded_at: now(),
-					result: "skipped",
-					reason: revalidationReason,
-				},
-				stateWriterOptions(skippedPath, "state", "continuation-outcome"),
-			);
+			await withGjcTeamTaskMutation(taskStore(dir), async () => {
+				await createJsonNoClobber(
+					skippedPath,
+					{
+						schema_version: 1,
+						incident_hash: incident,
+						attempt,
+						reservation_sha256: gjcContinuationReservationDigest(reservation),
+						recorded_at: now(),
+						result: "skipped",
+						reason: revalidationReason,
+					},
+					stateWriterOptions(skippedPath, "state", "continuation-outcome"),
+				);
+			});
 			return;
 		}
 		try {
@@ -4547,31 +4562,58 @@ async function continueStalledGjcTeamWorkers(
 			};
 		}
 		const outcomePath = path.join(journalDir, `attempt-0${attempt}.outcome.json`);
-		try {
-			await createJsonNoClobber(
-				outcomePath,
-				{
-					schema_version: 1,
-					incident_hash: incident,
+		await withGjcTeamTaskMutation(taskStore(dir), async () => {
+			if (result === "sent") {
+				const outcomeAuthorityReason = await validateGjcContinuationAckAuthority(
+					dir,
+					config,
+					worker,
+					task,
+					heartbeat.last_turn_at,
+					staleMs,
+					env,
+					reservation,
+					incident,
 					attempt,
-					reservation_sha256: gjcContinuationReservationDigest(reservation),
-					recorded_at: now(),
-					result,
-					reason: outcomeReason,
-					...(tmuxExitCode === undefined ? {} : { tmux_exit_code: tmuxExitCode }),
-					...(result === "sent" && dispatchedAt && dispatchHoldUntil
-						? { dispatched_at: dispatchedAt, hold_until: dispatchHoldUntil }
-						: {}),
-					...(tmuxError ? { tmux_error: tmuxError } : {}),
-				},
-				stateWriterOptions(outcomePath, "state", "continuation-outcome"),
-			);
-		} catch (error) {
-			if (!(error instanceof AlreadyExistsError)) throw error;
-			const existing = await readContinuationJson<Record<string, unknown>>(outcomePath);
-			if (!isValidGjcContinuationOutcome(existing, reservation, incident, attempt))
-				throw new Error(`invalid_continuation_outcome:${incident}:${attempt}`);
-		}
+				);
+				const ack = await readContinuationJson<Record<string, unknown>>(
+					path.join(journalDir, `attempt-0${attempt}.ack.json`),
+				);
+				if (outcomeAuthorityReason || !isValidGjcContinuationAck(ack, reservation, incident, attempt)) {
+					result = "unknown";
+					outcomeReason = outcomeAuthorityReason
+						? `continuation_${outcomeAuthorityReason}`
+						: "tmux_exit_zero_unacknowledged";
+					dispatchedAt = undefined;
+					dispatchHoldUntil = undefined;
+				}
+			}
+			try {
+				await createJsonNoClobber(
+					outcomePath,
+					{
+						schema_version: 1,
+						incident_hash: incident,
+						attempt,
+						reservation_sha256: gjcContinuationReservationDigest(reservation),
+						recorded_at: now(),
+						result,
+						reason: outcomeReason,
+						...(tmuxExitCode === undefined ? {} : { tmux_exit_code: tmuxExitCode }),
+						...(result === "sent" && dispatchedAt && dispatchHoldUntil
+							? { dispatched_at: dispatchedAt, hold_until: dispatchHoldUntil }
+							: {}),
+						...(tmuxError ? { tmux_error: tmuxError } : {}),
+					},
+					stateWriterOptions(outcomePath, "state", "continuation-outcome"),
+				);
+			} catch (error) {
+				if (!(error instanceof AlreadyExistsError)) throw error;
+				const existing = await readContinuationJson<Record<string, unknown>>(outcomePath);
+				if (!isValidGjcContinuationOutcome(existing, reservation, incident, attempt))
+					throw new Error(`invalid_continuation_outcome:${incident}:${attempt}`);
+			}
+		});
 		return;
 	}
 }
@@ -4584,9 +4626,9 @@ export async function monitorGjcTeam(
 	const dir = await findTeamDir(teamName, cwd, env);
 	const config = await readConfig(dir);
 	const previous = await readJsonFile<GjcTeamMonitorSnapshot>(monitorSnapshotPath(dir));
+	await continueStalledGjcTeamWorkers(dir, config, env);
 	await withGjcTeamTaskMutation(taskStore(dir), async capability => {
 		const config = await readConfig(dir);
-		await continueStalledGjcTeamWorkers(dir, config, env);
 		await reconcileGjcTeamStaleClaimsUnlocked(workerOrchestrationRuntime, teamName, dir, config, env, capability);
 		await computeLifecycleNudges(config, dir, cwd, env);
 	});

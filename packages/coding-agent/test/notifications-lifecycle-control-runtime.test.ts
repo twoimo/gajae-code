@@ -1499,6 +1499,7 @@ describe("lifecycle control runtime", () => {
 		expect(calls).toContain("@gjc-owner-server-key");
 		expect(calls).not.toContain("GJC_OWNER_");
 		expect(calls).toContain("GJC_MANAGED_OWNER_COMMAND_JSON=");
+		expect(calls).toContain("--internal-managed-owner-supervisor");
 		expect(calls).toContain("abc123");
 		expect(calls).not.toContain("gjc-lifecycle-owner-isolation");
 		expect(calls).toContain("@gjc-project");

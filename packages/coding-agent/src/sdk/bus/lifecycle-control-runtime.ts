@@ -68,6 +68,7 @@ import {
 	type GjcTmuxSessionStatus,
 	listGjcTmuxSessions,
 } from "../../gjc-runtime/tmux-sessions";
+import { buildWindowsPowerShellInnerCommand } from "../../gjc-runtime/windows-powershell-command";
 import { processIncarnation } from "../broker/process-incarnation";
 import type {
 	LifecycleErrorReason,
@@ -1245,7 +1246,7 @@ export function daemonSpawnCreate(
 			[GJC_COORDINATOR_SESSION_STATE_FILE_ENV]: sessionStateFile,
 		};
 		if (ids.startupPromptRef) commonChildEnv.GJC_STARTUP_PROMPT_REF = ids.startupPromptRef;
-		if (platform !== "win32") {
+		if (platform !== "linux" && platform !== "win32") {
 			if (frame.target.kind === "plain_dir") fs.mkdirSync(cwd, { recursive: true });
 			const command = `cd ${shellQuote(cwd)} && exec env ${directLifecycleEnvArguments(commonChildEnv)} gjc ${args.map(shellQuote).join(" ")}`;
 			await completeNonLinuxLifecycleSpawn({
@@ -1259,8 +1260,9 @@ export function daemonSpawnCreate(
 				readProcessIncarnation: opts.processIncarnation ?? processIncarnation,
 			});
 		} else {
-			const provider = resolveGjcTmuxProviderContext({ binary: tmuxBinary, env });
-			if (!provider.binary.isPsmux) throw new Error("gjc_lifecycle_windows_psmux_required");
+			const provider = resolveGjcTmuxProviderContext({ binary: tmuxBinary, env, platform });
+			if (platform === "win32" && (!provider.binary.isPsmux || !provider.namespace))
+				throw new Error("gjc_lifecycle_windows_psmux_required");
 			const stateDir = path.dirname(sessionStateFile);
 			const previousBaseline = await captureOwnerGenerationBaseline(stateDir, ids.intendedSessionId);
 			const predecessor = resolveManagedOwnerPredecessorSync(stateDir, ids.intendedSessionId, previousBaseline);
@@ -1271,11 +1273,12 @@ export function daemonSpawnCreate(
 				generation,
 			});
 			persistGjcTmuxProviderAuthoritySync(authority);
+			const ownerServerKey = platform === "win32" ? provider.namespace! : "default";
 			const childEnv: Record<string, string> = {
 				...commonChildEnv,
 				[GJC_TMUX_OWNER_GENERATION_ENV]: generation,
 				[GJC_TMUX_OWNER_STATE_DIR_ENV]: stateDir,
-				[GJC_TMUX_OWNER_SERVER_KEY_ENV]: authority.namespace ?? "default",
+				[GJC_TMUX_OWNER_SERVER_KEY_ENV]: ownerServerKey,
 				GJC_MANAGED_OWNER_COMMAND_JSON: JSON.stringify(["gjc", ...args]),
 				[MANAGED_OWNER_RUN_ID_ENV]: crypto.randomUUID(),
 				[MANAGED_OWNER_INCARNATION_ENV]: crypto.randomUUID(),
@@ -1289,9 +1292,16 @@ export function daemonSpawnCreate(
 						}
 					: {}),
 			};
-			const command = `cd ${shellQuote(cwd)} && exec env ${Object.entries(childEnv)
-				.map(([key, value]) => `${key}=${shellQuote(value)}`)
-				.join(" ")} gjc ${shellQuote(MANAGED_OWNER_SUPERVISOR_ARG)}`;
+			const command =
+				platform === "win32"
+					? buildWindowsPowerShellInnerCommand({
+							command: ["gjc"],
+							args: [MANAGED_OWNER_SUPERVISOR_ARG],
+							environment: childEnv,
+						})
+					: `cd ${shellQuote(cwd)} && exec env ${Object.entries(childEnv)
+							.map(([key, value]) => `${key}=${shellQuote(value)}`)
+							.join(" ")} gjc ${shellQuote(MANAGED_OWNER_SUPERVISOR_ARG)}`;
 			await completeLifecycleSpawnTransaction({
 				authority,
 				env,
@@ -1310,9 +1320,7 @@ export function daemonSpawnCreate(
 						"#{session_id}",
 						"-s",
 						name,
-						"sh",
-						"-c",
-						command,
+						...(platform === "win32" ? [command] : ["sh", "-c", command]),
 					]),
 				],
 				ownerIsolationProbe: opts.ownerIsolationProbe,
@@ -1532,7 +1540,7 @@ export function daemonResumeSession(
 			[GJC_COORDINATOR_SESSION_ID_ENV]: resumeId,
 			[GJC_COORDINATOR_SESSION_STATE_FILE_ENV]: sessionStateFile,
 		};
-		if (platform !== "win32") {
+		if (platform !== "linux" && platform !== "win32") {
 			const command = `cd ${shellQuote(resolvedResumeCwd)} && exec env ${directLifecycleEnvArguments(commonChildEnv)} gjc ${shellQuote("--resume")} ${shellQuote(resumeId)}`;
 			await completeNonLinuxLifecycleSpawn({
 				tmux: tmuxBinary.command,
@@ -1545,19 +1553,22 @@ export function daemonResumeSession(
 				readProcessIncarnation: opts.processIncarnation ?? processIncarnation,
 			});
 		} else {
-			const provider = resolveGjcTmuxProviderContext({ binary: tmuxBinary, env });
-			if (!provider.binary.isPsmux) throw new Error("gjc_lifecycle_windows_psmux_required");
+			const provider = resolveGjcTmuxProviderContext({ binary: tmuxBinary, env, platform });
+			if (platform === "win32" && (!provider.binary.isPsmux || !provider.namespace))
+				throw new Error("gjc_lifecycle_windows_psmux_required");
 			const stateDir = path.dirname(sessionStateFile);
 			const previousBaseline = await captureOwnerGenerationBaseline(stateDir, resumeId);
 			const predecessor = resolveManagedOwnerPredecessorSync(stateDir, resumeId, previousBaseline);
 			const generation = crypto.randomUUID();
 			if (previousBaseline.state !== "current") throw new Error("gjc_tmux_provider_authority_unavailable");
 			const authority = bindGjcTmuxProviderAuthority(
-				readGjcTmuxProviderAuthoritySync({
-					stateDir,
-					sessionId: resumeId,
-					generation: previousBaseline.generation,
-				}),
+				platform === "win32"
+					? readGjcTmuxProviderAuthoritySync({
+							stateDir,
+							sessionId: resumeId,
+							generation: previousBaseline.generation,
+						})
+					: provider,
 				{ stateDir, sessionId: resumeId, generation },
 			);
 			persistGjcTmuxProviderAuthoritySync(authority);
@@ -1565,7 +1576,7 @@ export function daemonResumeSession(
 				...commonChildEnv,
 				[GJC_TMUX_OWNER_GENERATION_ENV]: generation,
 				[GJC_TMUX_OWNER_STATE_DIR_ENV]: stateDir,
-				[GJC_TMUX_OWNER_SERVER_KEY_ENV]: authority.namespace ?? "default",
+				[GJC_TMUX_OWNER_SERVER_KEY_ENV]: platform === "win32" ? authority.namespace! : "default",
 				GJC_MANAGED_OWNER_COMMAND_JSON: JSON.stringify(["gjc", "--resume", resumeId]),
 				[MANAGED_OWNER_RUN_ID_ENV]: crypto.randomUUID(),
 				[MANAGED_OWNER_INCARNATION_ENV]: crypto.randomUUID(),
@@ -1579,9 +1590,16 @@ export function daemonResumeSession(
 						}
 					: {}),
 			};
-			const command = `cd ${shellQuote(resolvedResumeCwd)} && exec env ${Object.entries(childEnv)
-				.map(([key, value]) => `${key}=${shellQuote(value)}`)
-				.join(" ")} gjc ${shellQuote(MANAGED_OWNER_SUPERVISOR_ARG)}`;
+			const command =
+				platform === "win32"
+					? buildWindowsPowerShellInnerCommand({
+							command: ["gjc"],
+							args: [MANAGED_OWNER_SUPERVISOR_ARG],
+							environment: childEnv,
+						})
+					: `cd ${shellQuote(resolvedResumeCwd)} && exec env ${Object.entries(childEnv)
+							.map(([key, value]) => `${key}=${shellQuote(value)}`)
+							.join(" ")} gjc ${shellQuote(MANAGED_OWNER_SUPERVISOR_ARG)}`;
 			await completeLifecycleSpawnTransaction({
 				authority,
 				env,
@@ -1600,9 +1618,7 @@ export function daemonResumeSession(
 						"#{session_id}",
 						"-s",
 						name,
-						"sh",
-						"-c",
-						command,
+						...(platform === "win32" ? [command] : ["sh", "-c", command]),
 					]),
 				],
 				ownerIsolationProbe: opts.ownerIsolationProbe,
