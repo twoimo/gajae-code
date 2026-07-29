@@ -66,7 +66,7 @@ import { ownerPidFromOwnerId, runDaemonInternal, runDaemonSmoke } from "../src/s
 import { NOTIFICATION_PROTOCOL_VERSION } from "../src/sdk/bus/telegram-daemon-contract";
 import { TelegramDaemonController } from "../src/sdk/bus/telegram-daemon-control";
 import type { InboundAttachment } from "../src/sdk/bus/threaded-inbound";
-import { parseTopicRegistryState } from "../src/sdk/bus/topic-registry";
+import { parseTopicRegistryState, type TopicRegistryState } from "../src/sdk/bus/topic-registry";
 
 const THREADED_FALLBACK_NOTICE =
 	"Flat Telegram private chat supports outbound notifications and inline ask buttons only. Enable Threaded Mode in @BotFather > Bot Settings > Threads Settings for free-text replies and session commands.";
@@ -21119,4 +21119,70 @@ test("CAS retry exhaustion retains the latest strict shared-authority winner", a
 			},
 		},
 	});
+});
+test("CAS winner advance after accepted create publishes the exact archive fence before one compensation", async () => {
+	FakeWs.instances = [];
+	const bot = new FakeBotApi();
+	let state: TopicRegistryState = { version: 2, registryGeneration: 0, topics: {} };
+	let endpointKey = "";
+	let endpointDigest = "";
+	let endpointGeneration = 0;
+	const authority = {
+		read: async () => state,
+		compareAndSet: async (expectedGeneration: number, next: TopicRegistryState) => {
+			if (expectedGeneration === 0) {
+				state = next;
+				return true;
+			}
+			if (expectedGeneration === 1) {
+				state = { version: 2, registryGeneration: 2, topics: {} };
+				return false;
+			}
+			if (expectedGeneration === 2) {
+				expect(next.topics.S).toMatchObject({
+					topicId: "2",
+					creationLeaseEpoch: 0,
+					authorityState: "archive_pending",
+					archiveHostId: "local-host",
+					archiveLeaseEpoch: next.topics.S?.authorityEpoch,
+					endpointKey,
+					endpointDigest,
+					endpointGeneration,
+				});
+				state = next;
+				return true;
+			}
+			if (expectedGeneration === 3) {
+				state = next;
+				return true;
+			}
+			return false;
+		},
+	};
+	const daemon = new TelegramNotificationDaemon({
+		settings: settings(tempAgentDir()),
+		ownerId: "owner",
+		botToken: "token",
+		chatId: "42",
+		botApi: bot,
+		WebSocketImpl: FakeWs as never,
+		installationHostId: "local-host",
+		topicRegistryAuthority: authority,
+	});
+	const session = daemon.connectSession("S", "ws://session", "token");
+	endpointKey = session.endpointKey;
+	endpointDigest = session.endpointDigest;
+	endpointGeneration = session.hostGeneration;
+
+	await expect((daemon as any).ensureTopic("S", "topic", session)).rejects.toThrow("shared topic authority conflict");
+
+	expect(state.topics.S).toMatchObject({
+		topicId: "2",
+		creationLeaseEpoch: 0,
+		authorityState: "inactive",
+		archiveHostId: "local-host",
+	});
+	expect(bot.calls.filter(call => call.method === "closeForumTopic").map(call => call.body.message_thread_id)).toEqual(
+		[2],
+	);
 });
