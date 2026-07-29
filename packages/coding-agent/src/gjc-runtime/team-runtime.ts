@@ -9,6 +9,11 @@ import type { GcPidProbe, GcRecord } from "./gc-runtime";
 import { modeStatePath, sessionIdFromDirName, sessionReportsDir, teamStateRoot } from "./session-layout";
 import { resolveGjcSessionForWrite, writeSessionActivityMarker } from "./session-resolution";
 import {
+	GJC_COORDINATOR_SESSION_ID_ENV,
+	GJC_TMUX_OWNER_GENERATION_ENV,
+	GJC_TMUX_OWNER_STATE_DIR_ENV,
+} from "./session-state-sidecar";
+import {
 	AlreadyExistsError,
 	appendJsonl as appendJsonlAudited,
 	appendText,
@@ -2625,16 +2630,24 @@ export function probeGjcTeamAvailability(
 	env: NodeJS.ProcessEnv = process.env,
 ): { available: true } | { available: false; reason: string } {
 	try {
-		const provider = resolveGjcTmuxProviderContext({ env });
-		if (provider.binary.isPsmux) throw new Error("gjc_team_tmux_provider_authority_unavailable");
+		const stateDir = env[GJC_TMUX_OWNER_STATE_DIR_ENV]?.trim();
+		const sessionId = env[GJC_COORDINATOR_SESSION_ID_ENV]?.trim();
+		const generation = env[GJC_TMUX_OWNER_GENERATION_ENV]?.trim();
+		const authority =
+			stateDir && sessionId && generation && hasGjcTmuxProviderAuthoritySync({ stateDir, sessionId, generation })
+				? readGjcTmuxProviderAuthoritySync({ stateDir, sessionId, generation })
+				: null;
+		const provider = authority ?? resolveGjcTmuxProviderContext({ env });
+		if (provider.binary.isPsmux && !authority) throw new Error("gjc_team_tmux_provider_authority_unavailable");
 		readCurrentTmuxLeaderContext(
 			provider.command,
 			env,
-			bindGjcTmuxProviderAuthority(provider, {
-				stateDir: process.cwd(),
-				sessionId: "team-probe",
-				generation: "probe",
-			}),
+			authority ??
+				bindGjcTmuxProviderAuthority(provider, {
+					stateDir: process.cwd(),
+					sessionId: "team-probe",
+					generation: "probe",
+				}),
 			false,
 		);
 		return { available: true };

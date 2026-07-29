@@ -73,6 +73,13 @@ function rejectUnsafeToken(value: string, name: string): string {
 	return trimmed;
 }
 
+function requireSafePathComponent(value: string, name: string): string {
+	const trimmed = value.trim();
+	if (trimmed === "." || trimmed === ".." || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(trimmed))
+		throw new Error(`gjc_tmux_provider_invalid_${name}`);
+	return trimmed;
+}
+
 function randomNamespace(): string {
 	return `gjc-${crypto.randomBytes(16).toString("hex")}`;
 }
@@ -146,12 +153,18 @@ function assertCurrentGeneration(root: string, sessionId: string, generation: st
 	} catch {
 		throw new Error("gjc_tmux_provider_authority_generation_unavailable");
 	}
+	const record = payload as Record<string, unknown>;
+	const publishedAt = record.published_at;
 	if (
 		!payload ||
 		typeof payload !== "object" ||
-		(payload as Record<string, unknown>).schema_version !== 1 ||
-		(payload as Record<string, unknown>).session_id !== sessionId ||
-		(payload as Record<string, unknown>).generation !== generation
+		Array.isArray(payload) ||
+		Object.keys(record).sort().join(",") !== "generation,published_at,schema_version,session_id" ||
+		record.schema_version !== 1 ||
+		record.session_id !== sessionId ||
+		record.generation !== generation ||
+		typeof publishedAt !== "string" ||
+		!Number.isFinite(Date.parse(publishedAt))
 	)
 		throw new Error("gjc_tmux_provider_authority_generation_mismatch");
 }
@@ -163,8 +176,8 @@ export function hasGjcTmuxProviderAuthoritySync(input: {
 }): boolean {
 	if (authorityPlatform() !== "win32") return false;
 	const stateDir = path.resolve(input.stateDir);
-	const sessionId = rejectUnsafeToken(input.sessionId, "session_id");
-	const generation = rejectUnsafeToken(input.generation, "generation");
+	const sessionId = requireSafePathComponent(input.sessionId, "session_id");
+	const generation = requireSafePathComponent(input.generation, "generation");
 	const root = rootFor({ stateDir, sessionId, generation });
 	const generationFile = path.join(root, "generation.json");
 	const authorityFile = path.join(root, authorityName(generation));
@@ -239,8 +252,8 @@ export function bindGjcTmuxProviderAuthority(
 	return Object.freeze({
 		...context,
 		stateDir: path.resolve(stateDir),
-		sessionId: rejectUnsafeToken(input.sessionId, "session_id"),
-		generation: rejectUnsafeToken(input.generation, "generation"),
+		sessionId: requireSafePathComponent(input.sessionId, "session_id"),
+		generation: requireSafePathComponent(input.generation, "generation"),
 	});
 }
 
@@ -300,8 +313,8 @@ export function readGjcTmuxProviderAuthoritySync(input: {
 	generation: string;
 }): ProviderAuthority {
 	const stateDir = path.resolve(input.stateDir);
-	const sessionId = rejectUnsafeToken(input.sessionId, "session_id");
-	const generation = rejectUnsafeToken(input.generation, "generation");
+	const sessionId = requireSafePathComponent(input.sessionId, "session_id");
+	const generation = requireSafePathComponent(input.generation, "generation");
 	const root = rootFor({ stateDir, sessionId, generation });
 	requireWindowsAuthorityPlatform();
 	const managedRoot = prepareWindowsAuthorityRoot(root);
@@ -340,7 +353,7 @@ export function listGjcTmuxProviderAuthoritiesSync(stateDirInput: string): Provi
 	for (const entry of entries) {
 		if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
 		try {
-			const sessionId = rejectUnsafeToken(entry.name, "session_id");
+			const sessionId = requireSafePathComponent(entry.name, "session_id");
 			const root = rootFor({ stateDir, sessionId, generation: "enumerate" });
 			const generationSnapshot = captureManagedFileNoFollow(path.join(root, "generation.json"));
 			const generationPayload = JSON.parse(new TextDecoder().decode(generationSnapshot.bytes)) as {
@@ -349,11 +362,12 @@ export function listGjcTmuxProviderAuthoritiesSync(stateDirInput: string): Provi
 			};
 			if (typeof generationPayload.generation !== "string" || generationPayload.session_id !== sessionId)
 				throw new Error("gjc_tmux_provider_authority_generation_mismatch");
+			const generation = requireSafePathComponent(generationPayload.generation, "generation");
 			authorities.push(
 				readGjcTmuxProviderAuthoritySync({
 					stateDir,
 					sessionId,
-					generation: generationPayload.generation,
+					generation,
 				}),
 			);
 		} catch {

@@ -26,6 +26,7 @@ import {
 	buildTmuxProviderCommand,
 	GJC_TMUX_BRANCH_OPTION,
 	GJC_TMUX_BRANCH_SLUG_OPTION,
+	GJC_TMUX_COMMAND_ENV,
 	GJC_TMUX_OWNER_GENERATION_OPTION,
 	GJC_TMUX_OWNER_SERVER_KEY_OPTION,
 	GJC_TMUX_PROFILE_OPTION,
@@ -187,6 +188,7 @@ function environmentForProviderAuthority(
 	if (!authority) return env;
 	return {
 		...env,
+		[GJC_TMUX_COMMAND_ENV]: authority.command,
 		[GJC_TMUX_OWNER_STATE_DIR_ENV]: authority.stateDir,
 		[GJC_COORDINATOR_SESSION_ID_ENV]: authority.sessionId,
 		[GJC_TMUX_OWNER_GENERATION_ENV]: authority.generation,
@@ -348,17 +350,17 @@ function listRawTmuxSessionNames(env: NodeJS.ProcessEnv = process.env): string[]
 	return runListSessions("#{session_name}", env).map(line => line.split("\t")[0] ?? line);
 }
 function psmuxAuthorityEnvironments(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv[] {
-	if (!resolveGjcTmuxBinary({ env }).isPsmux || psmuxAuthorityFromEnv(env)) return [env];
+	const explicitAuthority = psmuxAuthorityFromEnv(env);
+	if (explicitAuthority) return [environmentForProviderAuthority(env, explicitAuthority)];
 	const stateDir =
 		env[GJC_TMUX_OWNER_STATE_DIR_ENV]?.trim() ??
 		(env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] ? path.dirname(env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV]) : "");
-	if (!stateDir) throw new Error("gjc_tmux_provider_authority_unavailable");
-	return listGjcTmuxProviderAuthoritiesSync(stateDir).map(authority => ({
-		...env,
-		[GJC_TMUX_OWNER_STATE_DIR_ENV]: authority.stateDir,
-		[GJC_COORDINATOR_SESSION_ID_ENV]: authority.sessionId,
-		[GJC_TMUX_OWNER_GENERATION_ENV]: authority.generation,
-	}));
+	if (stateDir && process.platform === "win32") {
+		const authorities = listGjcTmuxProviderAuthoritiesSync(stateDir);
+		if (authorities.length > 0) return authorities.map(authority => environmentForProviderAuthority(env, authority));
+	}
+	if (resolveGjcTmuxBinary({ env }).isPsmux) throw new Error("gjc_tmux_provider_authority_unavailable");
+	return [env];
 }
 
 export function listGjcTmuxSessions(env: NodeJS.ProcessEnv = process.env): GjcTmuxSessionStatus[] {
@@ -1159,8 +1161,8 @@ async function readProcessStartTime(pid: number): Promise<string | null> {
 function exactManagedOwnerSupervisor(supervisorPid: number, supervisorStartTime: string): Process {
 	const supervisor = Process.fromPid(supervisorPid);
 	if (!supervisor) throw new Error("managed_owner_supervisor_unverifiable");
-	if (process.platform === "linux" && supervisor.incarnation !== `linux:${supervisorStartTime}`)
-		throw new Error("managed_owner_supervisor_incarnation_mismatch");
+	const expectedIncarnation = process.platform === "linux" ? `linux:${supervisorStartTime}` : supervisorStartTime;
+	if (supervisor.incarnation !== expectedIncarnation) throw new Error("managed_owner_supervisor_incarnation_mismatch");
 	return supervisor;
 }
 
@@ -1463,7 +1465,7 @@ export function attachGjcTmuxSession(sessionName: string, env: NodeJS.ProcessEnv
 			...(authority
 				? buildTmuxProviderCommand(authority, "attach-session", [
 						"-t",
-						buildGjcTmuxExactSessionTarget(session.name, { env: sessionEnv }),
+						buildGjcTmuxExactSessionTarget(session.name, { binary: authority.binary }),
 					])
 				: ["attach-session", "-t", buildGjcTmuxExactSessionTarget(session.name, { env: sessionEnv })]),
 		],

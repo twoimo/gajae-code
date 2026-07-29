@@ -55,9 +55,13 @@ import {
 
 const TEAM_CLI = path.resolve(import.meta.dir, "../../src/cli.ts");
 
-async function runTeamApiCli(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runTeamApiCli(
+	args: string[],
+	options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
 	const child = Bun.spawn([process.execPath, TEAM_CLI, "team", "api", ...args], {
-		env: { ...process.env, NO_COLOR: "1" },
+		cwd: options.cwd,
+		env: { ...process.env, ...options.env, NO_COLOR: "1" },
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -4449,6 +4453,36 @@ describe("stalled worker continuation protocol", () => {
 			incident_hash: incident,
 			attempt: 1,
 		});
+		expect(outcome).toMatchObject({ result: "sent", reason: "tmux_sent" });
+	}, 30_000);
+	it("allows a spawned receiver CLI ACK while continuation waits outside the mutation fence", async () => {
+		const fixture = await prepareContinuation("continuation-spawned-cli-ack-team");
+		let acked = false;
+		__setGjcTeamRuntimeTestSeamsForTests({
+			nowMs: fixture.now,
+			continuationTmuxDispatch: async (command, args) => {
+				fixture.dispatches.push({ command, args: [...args] });
+				return { exitCode: 0 };
+			},
+			continuationAckPoll: async () => {
+				if (acked) return;
+				const prompt = fixture.dispatches.at(-1)?.args.find(arg => arg.includes("worker-continuation-ack"));
+				const match = prompt?.match(/--input '([^']+)' --json\.$/);
+				if (!match) throw new Error("expected generated continuation ACK command");
+				const ack = await runTeamApiCli(["worker-continuation-ack", "--input", match[1]!, "--json"], {
+					cwd: cleanupRoot!,
+					env: fixture.env,
+				});
+				if (ack.exitCode !== 0) throw new Error(`spawned continuation ACK failed: ${ack.stderr}`);
+				acked = true;
+			},
+		});
+		await fixture.monitor();
+		expect(acked).toBe(true);
+		const continuationRoot = path.join(fixture.stateDir, "workers", "worker-1", "continuations");
+		const [incident] = await fs.readdir(continuationRoot);
+		if (!incident) throw new Error("expected continuation incident");
+		const outcome = await Bun.file(path.join(continuationRoot, incident, "attempt-01.outcome.json")).json();
 		expect(outcome).toMatchObject({ result: "sent", reason: "tmux_sent" });
 	}, 30_000);
 	it("aborts ACK polling when claim authority changes after dispatch", async () => {
