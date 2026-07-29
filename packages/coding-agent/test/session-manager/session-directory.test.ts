@@ -2193,6 +2193,21 @@ describe("managed session write protocol", () => {
 		expect(
 			(await fs.readdir(tombstones)).some(name => name.includes(`.cleanup-artifacts_removed-${newestAttempt}.`)),
 		).toBe(true);
+		const retirementName = (await fs.readdir(tombstones)).find(name =>
+			name.includes(`.cleanup-artifacts_removed-${newestAttempt}.`),
+		);
+		if (!retirementName) throw new Error("Missing artifact retirement receipt");
+		const retirement = JSON.parse(await fs.readFile(path.join(tombstones, retirementName), "utf8")) as {
+			pendingReceiptDigest?: unknown;
+			retainedArtifactsAuthorities?: unknown;
+		};
+		expect(retirement.pendingReceiptDigest).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+		expect(retirement.retainedArtifactsAuthorities).toEqual([
+			expect.objectContaining({ role: "detached" }),
+			expect.objectContaining({ role: "successor" }),
+			expect.objectContaining({ role: "placeholder" }),
+			expect.objectContaining({ role: "unknown" }),
+		]);
 		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
 		if (restarted.kind !== "resolved") throw new Error(restarted.message);
 		expect((await prepareManagedSessionScopeForWrite(restarted.scope)).kind).toBe("resolved");
