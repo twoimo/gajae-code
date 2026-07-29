@@ -998,15 +998,7 @@ export class FileSessionStorage implements SessionStorage {
 
 		const artifactsDir = transcriptPath.slice(0, -6);
 		const artifactsIdentity = this.#optionalDirectoryIdentity(artifactsDir);
-		if (artifactsRemoved && artifactsIdentity) {
-			throw new SessionDeleteVerificationError(
-				"artifacts",
-				"Artifact path reappeared after durable artifact-phase completion",
-			);
-		}
-		if (!artifactsIdentity && expectedArtifactsIdentity && !detachedArtifactsPath && !artifactsRemoved) {
-			// Absence at the original path alone is not completion: native recursive removal
-			// may retain the planned root or its deterministic `.removing` final-stage root.
+		if (!detachedArtifactsPath) {
 			for (const pathname of [plannedArtifactsPath, artifactRemovalRoot]) {
 				try {
 					fs.lstatSync(pathname);
@@ -1024,6 +1016,16 @@ export class FileSessionStorage implements SessionStorage {
 						);
 				}
 			}
+		}
+		if (artifactsRemoved && artifactsIdentity) {
+			throw new SessionDeleteVerificationError(
+				"artifacts",
+				"Artifact path reappeared after durable artifact-phase completion",
+			);
+		}
+		if (!artifactsIdentity && expectedArtifactsIdentity && !detachedArtifactsPath && !artifactsRemoved) {
+			// Absence at the original path alone is not completion: planned roots were
+			// checked without following links above.
 			durablyRecordArtifactPhase();
 			return { kind: "artifacts_removed", phase: "artifacts", transcriptIdentity };
 		}

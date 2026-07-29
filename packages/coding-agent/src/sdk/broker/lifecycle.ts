@@ -2469,6 +2469,15 @@ function cleanupIdentity(
 	};
 }
 
+function cleanupReplayPathState(pathname: string | undefined): "absent" | "present" | "invalid" {
+	if (!pathname) return "absent";
+	try {
+		return fsSync.lstatSync(pathname).isSymbolicLink() ? "invalid" : "present";
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "invalid";
+	}
+}
+
 function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerResponse {
 	const transcriptIdentity = cleanupIdentity(cleanup.transcriptIdentity);
 	if (
@@ -2510,11 +2519,22 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 					path.dirname(cleanup.artifactTree.detachedPath) !== path.dirname(cleanup.transcriptPath))))
 	)
 		return fail("terminal_uncertain", "Cleanup replay has invalid preauthorized quarantine paths.");
+	const replayPaths = [
+		cleanup.transcriptPath,
+		cleanup.detachedTranscriptPath,
+		plannedTranscriptPath,
+		cleanup.detachedArtifactsPath,
+		plannedArtifactsPath,
+		plannedArtifactsPath ? `${plannedArtifactsPath}.removing` : undefined,
+		cleanup.transcriptPath.slice(0, -6),
+	];
+	if (replayPaths.some(candidate => cleanupReplayPathState(candidate) === "invalid"))
+		return fail("terminal_uncertain", "Cleanup replay encountered an invalid preauthorized path.");
 	if (
 		cleanup.phase === "transcript" &&
 		cleanup.artifactsRemoved === true &&
 		![cleanup.transcriptPath, cleanup.detachedTranscriptPath, plannedTranscriptPath].some(
-			candidate => typeof candidate === "string" && fsSync.existsSync(candidate),
+			candidate => cleanupReplayPathState(candidate) === "present",
 		)
 	)
 		return { ok: true, result: { sessionId: cleanup.sessionId } };
@@ -2527,21 +2547,21 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 					? `${plannedArtifactsPath}.removing`
 					: undefined;
 	const recoveredDetachedArtifactsPath =
-		cleanup.detachedArtifactsPath && fsSync.existsSync(cleanup.detachedArtifactsPath)
+		cleanupReplayPathState(cleanup.detachedArtifactsPath) === "present"
 			? cleanup.detachedArtifactsPath
-			: artifactRemovingPath && fsSync.existsSync(artifactRemovingPath)
+			: cleanupReplayPathState(artifactRemovingPath) === "present"
 				? artifactRemovingPath
 				: plannedArtifactsPath &&
-						!fsSync.existsSync(cleanup.transcriptPath.slice(0, -6)) &&
-						fsSync.existsSync(plannedArtifactsPath)
+						cleanupReplayPathState(cleanup.transcriptPath.slice(0, -6)) === "absent" &&
+						cleanupReplayPathState(plannedArtifactsPath) === "present"
 					? plannedArtifactsPath
 					: undefined;
 	const recoveredDetachedTranscriptPath =
-		cleanup.detachedTranscriptPath && fsSync.existsSync(cleanup.detachedTranscriptPath)
+		cleanupReplayPathState(cleanup.detachedTranscriptPath) === "present"
 			? cleanup.detachedTranscriptPath
 			: plannedTranscriptPath &&
-					!fsSync.existsSync(cleanup.transcriptPath) &&
-					fsSync.existsSync(plannedTranscriptPath)
+					cleanupReplayPathState(cleanup.transcriptPath) === "absent" &&
+					cleanupReplayPathState(plannedTranscriptPath) === "present"
 				? plannedTranscriptPath
 				: undefined;
 	return {
