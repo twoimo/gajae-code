@@ -1484,13 +1484,14 @@ type RetainedArtifactsRootReceipt = {
 };
 
 function retainedArtifactsRootReceipt(receipt: CleanupReceipt): RetainedArtifactsRootReceipt | undefined {
-	const pathname = deterministicRemovalRoot(receipt.plannedArtifactsPath);
-	if (!fs.existsSync(pathname)) return undefined;
+	const pathname = receipt.detachedArtifactsPath;
+	if (!pathname || !fs.existsSync(pathname)) return undefined;
 	if (!receipt.expectedArtifactsIdentity) throw new Error("durability_failed");
 	const identity = artifactIdentityAt(pathname);
 	if (!identity || !sameArtifactRootIdentity(identity, receipt.expectedArtifactsIdentity))
 		throw new Error("durability_failed");
 	const tree = snapshotArtifactTree(pathname);
+	if (!artifactTreePayloadAbsent(tree)) throw new Error("binding_invalid");
 	return { path: pathname, identity, tree };
 }
 
@@ -1502,8 +1503,8 @@ function retainedArtifactsRootMatches(record: Record<string, unknown>): boolean 
 	const identity = retained.identity;
 	const tree = artifactTreeSnapshot(retained.tree);
 	if (
-		typeof record.plannedArtifactsPath !== "string" ||
-		retained.path !== deterministicRemovalRoot(record.plannedArtifactsPath) ||
+		typeof record.detachedArtifactsPath !== "string" ||
+		retained.path !== record.detachedArtifactsPath ||
 		!identity ||
 		typeof identity !== "object" ||
 		Array.isArray(identity) ||
@@ -1518,6 +1519,10 @@ function retainedArtifactsRootMatches(record: Record<string, unknown>): boolean 
 		typeof artifactIdentity.mtimeNs !== "string" ||
 		typeof artifactIdentity.sha256 !== "string"
 	)
+		throw new Error("durability_failed");
+	if (!artifactTreePayloadAbsent(tree)) throw new Error("durability_failed");
+	const expected = record.expectedArtifactsIdentity as Record<string, unknown> | undefined;
+	if (!expected || expected.dev !== artifactIdentity.dev || expected.ino !== artifactIdentity.ino)
 		throw new Error("durability_failed");
 	if (!fs.existsSync(retained.path)) return true;
 	const observed = artifactIdentityAt(retained.path);
@@ -1651,6 +1656,7 @@ async function publishCleanupArtifactsRemoved(
 	receipt: CleanupReceipt,
 	lock: ManagedStorageLock,
 ): Promise<void> {
+	assertRetainedArtifactsAuthorities(receipt);
 	const retainedArtifactsRoot = retainedArtifactsRootReceipt(receipt);
 	await publishManagedTombstone(
 		cleanupReceiptPath(tombstone, receipt.target, "artifacts_removed", receipt.attempt),
@@ -1812,28 +1818,39 @@ function artifactTreePayloadAbsent(snapshot: NativeDirectoryTreeSnapshot): boole
 	);
 }
 
-function assertRetainedArtifactsAuthority(pending: CleanupReceipt): void {
-	if (!pending.detachedArtifactsPath) return;
-	if (!pending.expectedArtifactsIdentity || !pending.expectedArtifactsTree) throw new Error("durability_failed");
-	try {
-		fs.lstatSync(pending.detachedArtifactsPath);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-		throw new Error("durability_failed");
+function assertRetainedArtifactsAuthorities(pending: CleanupReceipt): void {
+	const paths = [
+		pending.detachedArtifactsPath,
+		pending.retainedArtifactsSuccessorPath,
+		pending.retainedArtifactsPlaceholderPath,
+		pending.retainedArtifactsUnknownPath,
+	].filter((pathname): pathname is string => pathname !== undefined);
+	for (const pathname of paths) {
+		try {
+			fs.lstatSync(pathname);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw new Error("durability_failed");
+		}
+		if (pathname !== pending.detachedArtifactsPath) {
+			if (!retainedArtifactPayloadAbsent(pathname)) throw new Error("binding_invalid");
+			continue;
+		}
+		if (!pending.expectedArtifactsIdentity || !pending.expectedArtifactsTree) throw new Error("durability_failed");
+		const observed = artifactIdentityAt(pathname);
+		const observedTree = snapshotArtifactTree(pathname);
+		if (
+			!observed ||
+			!sameArtifactRootIdentity(observed, pending.expectedArtifactsIdentity) ||
+			(!sameArtifactTreeSnapshot(observedTree, pending.expectedArtifactsTree) &&
+				!artifactTreePayloadAbsent(observedTree))
+		)
+			throw new Error("binding_invalid");
 	}
-	const observed = artifactIdentityAt(pending.detachedArtifactsPath);
-	const observedTree = snapshotArtifactTree(pending.detachedArtifactsPath);
-	if (
-		!observed ||
-		!sameArtifactRootIdentity(observed, pending.expectedArtifactsIdentity) ||
-		(!sameArtifactTreeSnapshot(observedTree, pending.expectedArtifactsTree) &&
-			!artifactTreePayloadAbsent(observedTree))
-	)
-		throw new Error("binding_invalid");
 }
 
 function probePlannedCleanupDetach(target: RetiredTarget, pending: CleanupReceipt): CleanupReceipt {
-	assertRetainedArtifactsAuthority(pending);
+	assertRetainedArtifactsAuthorities(pending);
 
 	let detachedArtifactsPath = pending.detachedArtifactsPath;
 	let detachedTranscriptPath = pending.detachedTranscriptPath;
@@ -2004,6 +2021,12 @@ function pendingCleanupReceipt(
 					(record.detachedTranscriptPath !== undefined && !plannedPaths.has(record.detachedTranscriptPath)))
 			)
 				throw new Error("durability_failed");
+			if (
+				latest &&
+				cleanupArtifactsRemoved(scope, tombstone, target, latest.attempt) &&
+				!cleanupArtifactsRemoved(scope, tombstone, target, attempt)
+			)
+				throw new Error("durability_failed");
 			plannedPaths.add(record.plannedArtifactsPath as string);
 			plannedPaths.add(record.plannedTranscriptPath as string);
 			latest = {
@@ -2060,6 +2083,16 @@ function retainedArtifactPayloadAbsent(pathname: string): boolean {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
 		throw error;
 	}
+}
+function retainedArtifactsPayloadAbsent(receipt: CleanupReceipt): boolean {
+	return [
+		receipt.detachedArtifactsPath,
+		receipt.retainedArtifactsSuccessorPath,
+		receipt.retainedArtifactsPlaceholderPath,
+		receipt.retainedArtifactsUnknownPath,
+	]
+		.filter((pathname): pathname is string => pathname !== undefined)
+		.every(retainedArtifactPayloadAbsent);
 }
 
 function nextCleanupReceipt(target: RetiredTarget, pending: CleanupReceipt | undefined): CleanupReceipt {
@@ -2132,6 +2165,12 @@ async function publishCleanupPending(
 	receipt: CleanupReceipt,
 	lock: ManagedStorageLock,
 ): Promise<void> {
+	if (
+		receipt.attempt > 1 &&
+		cleanupArtifactsRemoved(scope, tombstone, receipt.target, receipt.attempt - 1) &&
+		!cleanupArtifactsRemoved(scope, tombstone, receipt.target, receipt.attempt)
+	)
+		await publishCleanupArtifactsRemoved(scope, tombstone, receipt, lock);
 	try {
 		await publishManagedTombstone(
 			cleanupReceiptPath(tombstone, receipt.target, "pending", receipt.attempt),
@@ -3025,7 +3064,7 @@ export async function reconcileManagedTombstones(
 						const pendingEvidence = cleanupPendingEvidence(retry, active, deletion);
 						await publishCleanupPending(scope, tombstone, pendingEvidence, lock);
 						if (deletion.phase === "artifacts") {
-							if (!retainedArtifactPayloadAbsent(deletion.detachedArtifactsPath)) continue;
+							if (!retainedArtifactsPayloadAbsent(pendingEvidence)) continue;
 							await publishCleanupArtifactsRemoved(scope, tombstone, pendingEvidence, lock);
 							deletion = await new FileSessionStorage().deleteSessionVerified({
 								sessionsRoot: scope.sessionsRoot,
@@ -3605,7 +3644,7 @@ export async function deleteManagedSessionCandidate(
 				const pendingEvidence = cleanupPendingEvidence(retry, active, deletion);
 				await publishCleanupPending(scope, tombstone, pendingEvidence, lock);
 				if (deletion.phase === "artifacts") {
-					if (!retainedArtifactPayloadAbsent(deletion.detachedArtifactsPath))
+					if (!retainedArtifactsPayloadAbsent(pendingEvidence))
 						return {
 							kind: "cleanup_pending",
 							tombstonePath: tombstone,

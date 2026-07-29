@@ -1956,6 +1956,9 @@ describe("managed session write protocol", () => {
 		const source = path.join(legacy, "crash-transcript-q1.jsonl");
 		await fs.mkdir(legacy, { recursive: true });
 		await fs.writeFile(source, transcript("crash-transcript-q1", cwd));
+		const artifacts = source.slice(0, -6);
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(path.join(artifacts, "artifact.txt"), "payload");
 		const listed = listManagedCandidates(scope);
 		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
 		const exactUnlink = native.exactUnlink;
@@ -2015,8 +2018,17 @@ describe("managed session write protocol", () => {
 					name => JSON.parse(syncFs.readFileSync(path.join(tombstones, name), "utf8")) as Record<string, unknown>,
 				);
 				const latest = records.sort((left, right) => Number(right.attempt) - Number(left.attempt))[0];
-				q2 = latest?.plannedTranscriptPath as string | undefined;
+				const removedAttempts = new Set(
+					syncFs
+						.readdirSync(tombstones)
+						.map(name => name.match(/\.cleanup-artifacts_removed-(\d+)\.json$/)?.[1])
+						.filter((attempt): attempt is string => attempt !== undefined)
+						.map(Number),
+				);
 				expect(latest?.attempt).toBe(Number(first.attempt) + 1);
+				if (removedAttempts.has(Number(latest!.attempt) - 1))
+					expect(removedAttempts.has(Number(latest!.attempt))).toBe(true);
+				q2 = latest?.plannedTranscriptPath as string | undefined;
 				expect(q2).toEqual(expect.any(String));
 				expect(q2).not.toBe(q1);
 				expect(latest?.detachedTranscriptPath).toBe(q1);
