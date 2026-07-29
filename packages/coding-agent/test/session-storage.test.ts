@@ -878,6 +878,37 @@ describe("FileSessionStorage.deleteSessionVerified artifact-first", () => {
 			expect(fs.existsSync(artifactsDir)).toBe(false);
 		},
 	);
+	it("durably records a retained artifact root before returning cleanup_pending", async () => {
+		const transcriptPath = await createTranscript("artifact-root-durability");
+		const artifactsDir = transcriptPath.slice(0, -6);
+		const plannedArtifactsPath = path.join(tempDir, ".gjc-delete-artifact-root-durability");
+		await fsp.mkdir(artifactsDir, { recursive: true });
+		await Bun.write(path.join(artifactsDir, "artifact.txt"), "payload");
+		const exactUnlink = native.exactUnlink;
+		const fsync = vi.spyOn(fs, "fsyncSync");
+		vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname === artifactsDir && identity.directory)
+				return { ok: false, code: "io_error", detachedPath: plannedArtifactsPath };
+			return exactUnlink(pathname, identity);
+		});
+
+		const result = await storage.deleteSessionVerified({
+			sessionsRoot: tempDir,
+			transcriptPath,
+			sessionId: "session-id",
+			cwd: tempDir,
+			transcriptIdentity: verifiedIdentity(transcriptPath),
+			plannedArtifactsPath,
+			plannedTranscriptPath: path.join(tempDir, ".gjc-delete-artifact-root-durability-transcript"),
+		});
+
+		expect(result).toMatchObject({
+			kind: "cleanup_pending",
+			phase: "artifacts",
+			detachedArtifactsPath: plannedArtifactsPath,
+		});
+		expect(fsync).toHaveBeenCalledTimes(process.platform === "win32" ? 0 : 1);
+	});
 
 	it("artifact rm failure returns cleanup_pending and leaves the transcript intact for retry", async () => {
 		const transcriptPath = await createTranscript("partial");
@@ -905,6 +936,7 @@ describe("FileSessionStorage.deleteSessionVerified artifact-first", () => {
 		expect(fs.existsSync(artifactsDir)).toBe(false);
 		expect(fs.existsSync(result.detachedArtifactsPath)).toBe(true);
 		expect(result.transcriptIdentity).toMatchObject({ dev: stat.dev, ino: stat.ino });
+		expect(await fsp.readFile(path.join(result.detachedArtifactsPath, "artifact.txt"), "utf8")).toBe("payload");
 	});
 
 	it("retains the persisted POSIX tree authority path when recursive removal fails", async () => {

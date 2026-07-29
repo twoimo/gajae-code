@@ -958,7 +958,12 @@ describe("managed session write protocol", () => {
 		await reconcileManagedTombstones(restarted.scope);
 		expect(await prepareManagedSessionScopeForWrite(restarted.scope)).toMatchObject({ kind: "resolved" });
 		await expect(fs.access(retainedRoot)).rejects.toMatchObject({ code: "ENOENT" });
-		expect(await fs.readdir(`${retainedRoot}.removing`)).toEqual([]);
+		expect(
+			await fs.readdir(`${retainedRoot}.removing`).catch(error => {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+				throw error;
+			}),
+		).toEqual([]);
 		await expect(fs.access(source)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
@@ -2129,6 +2134,126 @@ describe("managed session write protocol", () => {
 			expect(await fs.readFile(path.join(tombstones, name), "utf8")).toBe(content);
 		expect(await fs.lstat(retainedArtifactAuthority).catch(() => undefined)).toBeUndefined();
 		expect((await fs.readdir(tombstones)).some(name => name.includes(".cleanup-completed-"))).toBe(false);
+	});
+	it("binds artifact retirement publication to the newest cleanup attempt after a crash", async () => {
+		const { cwd, sessionsRoot, scope } = await fixture();
+		const legacy = legacyDirectory(sessionsRoot, cwd);
+		const source = path.join(legacy, "artifact-retirement-attempt.jsonl");
+		const artifacts = source.slice(0, -6);
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(source, transcript("artifact-retirement-attempt", cwd));
+		const listed = listManagedCandidates(scope);
+		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const removeDirectoryTree = native.exactRemoveDirectoryTree;
+		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockImplementation((pathname, snapshot) => {
+			if (pathname === artifacts) return removeDirectoryTree(pathname, snapshot);
+			removeDirectoryTree(pathname, snapshot);
+			return { ok: false, code: "cleanup_pending", detachedPath: pathname };
+		});
+		const deleteSessionVerified = FileSessionStorage.prototype.deleteSessionVerified;
+		let calls = 0;
+		const crash = vi.spyOn(FileSessionStorage.prototype, "deleteSessionVerified").mockImplementation(async function (
+			this: FileSessionStorage,
+			target,
+		) {
+			const result = await deleteSessionVerified.call(this, target);
+			if (calls++ === 1) throw new Error("crash_after_artifact_retirement_receipt");
+			return result;
+		});
+		try {
+			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "error",
+				code: "managed_storage_unsupported",
+			});
+		} finally {
+			crash.mockRestore();
+			remove.mockRestore();
+		}
+		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
+		const pending = await Promise.all(
+			(await fs.readdir(tombstones))
+				.filter(name => name.includes(".cleanup-pending-"))
+				.map(
+					async name => JSON.parse(await fs.readFile(path.join(tombstones, name), "utf8")) as { attempt: number },
+				),
+		);
+		const newestAttempt = Math.max(...pending.map(receipt => receipt.attempt));
+		expect(
+			(await fs.readdir(tombstones)).some(name => name.includes(`.cleanup-artifacts_removed-${newestAttempt}.`)),
+		).toBe(true);
+		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
+		if (restarted.kind !== "resolved") throw new Error(restarted.message);
+		expect((await prepareManagedSessionScopeForWrite(restarted.scope)).kind).toBe("resolved");
+		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
+	});
+
+	it("replays a retained transcript from the newest receipt after a pre-follow-up crash", async () => {
+		const { cwd, sessionsRoot, scope } = await fixture();
+		const legacy = legacyDirectory(sessionsRoot, cwd);
+		const source = path.join(legacy, "transcript-followup-attempt.jsonl");
+		const artifacts = source.slice(0, -6);
+		await fs.mkdir(artifacts, { recursive: true });
+		await fs.writeFile(source, transcript("transcript-followup-attempt", cwd));
+		const listed = listManagedCandidates(scope);
+		if (listed.kind !== "complete" || !listed.owned[0]) throw new Error("Missing candidate");
+		const removeDirectoryTree = native.exactRemoveDirectoryTree;
+		const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockImplementation((pathname, snapshot) => {
+			if (pathname === artifacts) return removeDirectoryTree(pathname, snapshot);
+			removeDirectoryTree(pathname, snapshot);
+			return { ok: false, code: "cleanup_pending", detachedPath: pathname };
+		});
+		const exactUnlink = native.exactUnlink;
+		const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (pathname !== source) return exactUnlink(pathname, identity);
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName!);
+			syncFs.renameSync(pathname, detachedPath);
+			return { ok: false, code: "cleanup_pending", detachedPath };
+		});
+		const deleteSessionVerified = FileSessionStorage.prototype.deleteSessionVerified;
+		const crash = vi.spyOn(FileSessionStorage.prototype, "deleteSessionVerified").mockImplementation(async function (
+			this: FileSessionStorage,
+			target,
+		) {
+			const result = await deleteSessionVerified.call(this, target);
+			if (result.kind === "cleanup_pending" && result.phase === "transcript")
+				throw new Error("crash_before_transcript_followup_receipt");
+			return result;
+		});
+		try {
+			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
+				kind: "error",
+				code: "managed_storage_unsupported",
+			});
+		} finally {
+			crash.mockRestore();
+			unlink.mockRestore();
+			remove.mockRestore();
+		}
+		const tombstones = path.join(scope.directoryPath, ".gjc-managed-session-internal", "tombstones");
+		const pending = await Promise.all(
+			(await fs.readdir(tombstones))
+				.filter(name => name.includes(".cleanup-pending-"))
+				.map(
+					async name =>
+						JSON.parse(await fs.readFile(path.join(tombstones, name), "utf8")) as {
+							attempt: number;
+							plannedTranscriptPath: string;
+						},
+				),
+		);
+		const newest = pending.sort((left, right) => right.attempt - left.attempt)[0];
+		if (!newest) throw new Error("Missing newest cleanup receipt");
+		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
+		expect(await fs.stat(newest.plannedTranscriptPath)).toBeDefined();
+		expect(await fs.readdir(tombstones)).toEqual(
+			expect.arrayContaining([expect.stringContaining(`.cleanup-artifacts_removed-${newest.attempt}.`)]),
+		);
+		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
+		if (restarted.kind !== "resolved") throw new Error(restarted.message);
+		await reconcileManagedTombstones(restarted.scope);
+		expect(await prepareManagedSessionScopeForWrite(restarted.scope)).toMatchObject({ kind: "resolved" });
+		expect(await fs.stat(newest.plannedTranscriptPath).catch(() => undefined)).toBeUndefined();
+		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
 	});
 	it("rejects a dangling replacement at retained artifact authority during fresh replay", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();

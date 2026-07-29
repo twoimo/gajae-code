@@ -1243,11 +1243,13 @@ describe("SDK broker identity and discovery", () => {
 		const broker = new Broker({ agentDir: dir });
 		const originalDelete = FileSessionStorage.prototype.deleteSessionVerified;
 		let detachedArtifactsPath: string | undefined;
+		let deleteCalls = 0;
 		await fs.mkdir(path.dirname(sessionPath), { recursive: true });
 		await fs.writeFile(sessionPath, `${JSON.stringify({ type: "session", id: sessionId, cwd })}\n`);
 		await broker.start();
 		FileSessionStorage.prototype.deleteSessionVerified = async target => {
-			detachedArtifactsPath = target.plannedArtifactsPath;
+			deleteCalls++;
+			detachedArtifactsPath = `${target.plannedArtifactsPath}.removing`;
 			if (!detachedArtifactsPath) throw new Error("Missing planned artifact path");
 			return {
 				kind: "cleanup_pending" as const,
@@ -1273,10 +1275,10 @@ describe("SDK broker identity and discovery", () => {
 					cleanup: {
 						phase: "artifacts",
 						sessionId,
-						cwd,
-						sessionsRoot: path.join(dir, "sessions"),
+						cwd: path.resolve(cwd),
+						sessionsRoot: path.resolve(dir, "sessions"),
 						transcriptPath: sessionPath,
-						metadataRoot: path.join(cwd, ".gjc", "state"),
+						metadataRoot: path.resolve(cwd, ".gjc", "state"),
 						artifactsIdentity: { dev: "7", ino: "8", size: 9, mtimeNs: "10", sha256: "a".repeat(64) },
 						transcriptIdentity: { dev: "5", ino: "6", size: 7, mtimeNs: "8", sha256: "b".repeat(64) },
 						detachedArtifactsPath,
@@ -1287,6 +1289,7 @@ describe("SDK broker identity and discovery", () => {
 				expect(pending.error.cleanup?.plannedArtifactsPath).toMatch(/\.gjc-delete-[\w-]+-artifacts$/);
 				expect(pending.error.cleanup?.plannedTranscriptPath).toMatch(/\.gjc-delete-[\w-]+-transcript$/);
 			}
+			expect(deleteCalls).toBe(1);
 			const retried = await broker.handleRequest(
 				"session.delete",
 				{ sessionId, sessionPath, cwd },
@@ -1294,9 +1297,12 @@ describe("SDK broker identity and discovery", () => {
 			);
 			expect(retried).toMatchObject({ ok: false, error: { code: "cleanup_pending" } });
 			if (!pending.ok && !retried.ok) {
-				expect(retried.error.cleanup?.plannedArtifactsPath).not.toBe(pending.error.cleanup?.plannedArtifactsPath);
-				expect(retried.error.cleanup?.detachedArtifactsPath).toBe(retried.error.cleanup?.plannedArtifactsPath);
+				expect(retried.error.cleanup?.plannedArtifactsPath).toBe(pending.error.cleanup?.plannedArtifactsPath);
+				expect(retried.error.cleanup?.detachedArtifactsPath).toBe(
+					`${retried.error.cleanup?.plannedArtifactsPath}.removing`,
+				);
 			}
+			expect(deleteCalls).toBe(2);
 			expect(await fs.readFile(sessionPath, "utf8")).toContain(sessionId);
 		} finally {
 			FileSessionStorage.prototype.deleteSessionVerified = originalDelete;
