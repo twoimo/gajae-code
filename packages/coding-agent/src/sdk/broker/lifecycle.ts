@@ -3260,26 +3260,11 @@ async function executeLifecycleResponse(
 				`Unable to delete saved session artifacts: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		const retainedArtifactsCleanup =
-			deleted.kind === "cleanup_pending" &&
-			deleted.phase === "artifacts" &&
-			deleted.detachedArtifactsPath !== undefined &&
-			cleanupTarget.plannedArtifactsPath !== undefined &&
-			(deleted.detachedArtifactsPath === cleanupTarget.plannedArtifactsPath ||
-				deleted.detachedArtifactsPath === `${cleanupTarget.plannedArtifactsPath}.removing`);
-		if (deleted.kind === "artifacts_removed" || retainedArtifactsCleanup) {
+		if (deleted.kind === "artifacts_removed") {
 			const transcriptPhaseCleanup = {
 				...preauthorizedCleanup,
 				phase: "transcript" as const,
 				artifactsRemoved: true,
-				...(deleted.kind === "cleanup_pending" && deleted.phase === "artifacts"
-					? {
-							detachedArtifactsPath: deleted.detachedArtifactsPath,
-							...(deleted.artifactsIdentity
-								? { artifactsIdentity: serializeCleanupIdentity(deleted.artifactsIdentity) }
-								: {}),
-						}
-					: {}),
 				...(preauthorizedCleanup.artifactTree
 					? { artifactTree: { ...preauthorizedCleanup.artifactTree, completed: true as const } }
 					: {}),

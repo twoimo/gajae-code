@@ -1273,10 +1273,10 @@ describe("SDK broker identity and discovery", () => {
 					cleanup: {
 						phase: "artifacts",
 						sessionId,
-						cwd,
-						sessionsRoot: path.join(dir, "sessions"),
+						cwd: path.resolve(cwd),
+						sessionsRoot: path.resolve(dir, "sessions"),
 						transcriptPath: sessionPath,
-						metadataRoot: path.join(cwd, ".gjc", "state"),
+						metadataRoot: path.resolve(cwd, ".gjc", "state"),
 						artifactsIdentity: { dev: "7", ino: "8", size: 9, mtimeNs: "10", sha256: "a".repeat(64) },
 						transcriptIdentity: { dev: "5", ino: "6", size: 7, mtimeNs: "8", sha256: "b".repeat(64) },
 						detachedArtifactsPath,

@@ -3575,48 +3575,13 @@ export async function deleteManagedSessionCandidate(
 					throw new Error("durability_failed");
 				const retry = nextCleanupReceipt(target, active);
 				await publishCleanupPending(scope, tombstone, cleanupPendingEvidence(retry, active, deletion), lock);
-				if (deletion.phase === "artifacts") {
-					// A typed retained artifact root proves durable canonical absence; advance
-					// to the transcript phase instead of stalling on the retained evidence.
-					await publishCleanupArtifactsRemoved(scope, tombstone, active, lock);
-					deletion = await new FileSessionStorage().deleteSessionVerified({
-						sessionsRoot: scope.sessionsRoot,
-						transcriptPath: target.path,
-						sessionId: target.sessionId,
-						cwd: target.cwd,
-						transcriptIdentity: target.identity,
-						plannedArtifactsPath: active.plannedArtifactsPath,
-						plannedTranscriptPath: active.plannedTranscriptPath,
-						detachedTranscriptPath: active.detachedTranscriptPath ?? observedPending?.detachedTranscriptPath,
-						retainedArtifactsSuccessorPath: active.retainedArtifactsSuccessorPath,
-						retainedArtifactsPlaceholderPath: active.retainedArtifactsPlaceholderPath,
-						retainedArtifactsUnknownPath: active.retainedArtifactsUnknownPath,
-						retainedTranscriptSuccessorPath: active.retainedTranscriptSuccessorPath,
-						retainedTranscriptPlaceholderPath: active.retainedTranscriptPlaceholderPath,
-						retainedTranscriptUnknownPath: active.retainedTranscriptUnknownPath,
-						artifactsRemoved: true,
-					});
-					if (deletion.kind === "cleanup_pending") {
-						const followup = nextCleanupReceipt(target, active);
-						await publishCleanupPending(
-							scope,
-							tombstone,
-							cleanupPendingEvidence(followup, active, deletion),
-							lock,
-						);
-						if (
-							deletion.phase !== "transcript" ||
-							deletion.detachedTranscriptPath !== active.plannedTranscriptPath
-						)
-							return {
-								kind: "cleanup_pending",
-								tombstonePath: tombstone,
-								phase: deletion.phase,
-								message:
-									"Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
-							};
-					}
-				}
+				if (deletion.phase === "artifacts")
+					return {
+						kind: "cleanup_pending",
+						tombstonePath: tombstone,
+						phase: deletion.phase,
+						message: "Exact artifact cleanup remains pending with retained-tree evidence.",
+					};
 				// A typed retained transcript quarantine is durable canonical-absence
 				// evidence — never a terminal byte-deletion claim; complete the receipt.
 			}

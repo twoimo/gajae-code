@@ -1595,9 +1595,9 @@ describe("managed session write protocol", () => {
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
 				kind: "cleanup_pending",
-				phase: "transcript",
+				phase: "artifacts",
 				tombstonePath: expect.stringContaining(".json"),
-				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+				message: "Exact artifact cleanup remains pending with retained-tree evidence.",
 			});
 		} finally {
 			remove.mockRestore();
@@ -1606,7 +1606,7 @@ describe("managed session write protocol", () => {
 		const restarted = resolveManagedScope({ cwd, agentDir: path.dirname(sessionsRoot), sessionsRoot });
 		if (restarted.kind !== "resolved") throw new Error(restarted.message);
 		expect(await prepareManagedSessionScopeForWrite(restarted.scope)).toMatchObject({ kind: "resolved" });
-		expect(await fs.stat(source)).toBeDefined();
+		expect(await fs.stat(source).catch(() => undefined)).toBeUndefined();
 	});
 	it("rejects a replacement retained deterministic .removing root during replay", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();
@@ -1636,9 +1636,9 @@ describe("managed session write protocol", () => {
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
 				kind: "cleanup_pending",
-				phase: "transcript",
+				phase: "artifacts",
 				tombstonePath: expect.stringContaining(".json"),
-				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+				message: "Exact artifact cleanup remains pending with retained-tree evidence.",
 			});
 		} finally {
 			remove.mockRestore();
@@ -1704,8 +1704,10 @@ describe("managed session write protocol", () => {
 		});
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
-				kind: "deleted",
+				kind: "cleanup_pending",
+				phase: "artifacts",
 				tombstonePath: expect.stringContaining(".json"),
+				message: "Exact artifact cleanup remains pending with retained-tree evidence.",
 			});
 		} finally {
 			remove.mockRestore();
@@ -1741,9 +1743,9 @@ describe("managed session write protocol", () => {
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
 				kind: "cleanup_pending",
-				phase: "transcript",
+				phase: "artifacts",
 				tombstonePath: expect.stringContaining(".json"),
-				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+				message: "Exact artifact cleanup remains pending with retained-tree evidence.",
 			});
 		} finally {
 			remove.mockRestore();
@@ -1820,9 +1822,9 @@ describe("managed session write protocol", () => {
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
 				kind: "cleanup_pending",
-				phase: "transcript",
+				phase: "artifacts",
 				tombstonePath: expect.stringContaining(".json"),
-				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+				message: "Exact artifact cleanup remains pending with retained-tree evidence.",
 			});
 			const firstReceipts = await Promise.all(
 				(await fs.readdir(tombstones))
@@ -1831,9 +1833,9 @@ describe("managed session write protocol", () => {
 			);
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
 				kind: "cleanup_pending",
-				phase: "transcript",
+				phase: "artifacts",
 				tombstonePath: expect.stringContaining(".json"),
-				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+				message: "Exact artifact cleanup remains pending with retained-tree evidence.",
 			});
 			for (const [name, content] of firstReceipts)
 				expect(await fs.readFile(path.join(tombstones, name), "utf8")).toBe(content);
@@ -1973,9 +1975,9 @@ describe("managed session write protocol", () => {
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
 				kind: "cleanup_pending",
-				phase: "transcript",
+				phase: "artifacts",
 				tombstonePath: expect.stringContaining(".json"),
-				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+				message: "Exact artifact cleanup remains pending with retained-tree evidence.",
 			});
 		} finally {
 			remove.mockRestore();
@@ -2043,7 +2045,7 @@ describe("managed session write protocol", () => {
 		for (const [name, content] of pendingReceipts)
 			expect(await fs.readFile(path.join(tombstones, name), "utf8")).toBe(content);
 		expect(await fs.lstat(retainedArtifactAuthority).catch(() => undefined)).toBeUndefined();
-		expect((await fs.readdir(tombstones)).some(name => name.includes(".cleanup-completed-"))).toBe(false);
+		expect((await fs.readdir(tombstones)).some(name => name.includes(".cleanup-completed-"))).toBe(true);
 	});
 	it("rejects a dangling replacement at retained artifact authority during fresh replay", async () => {
 		const { cwd, sessionsRoot, scope } = await fixture();
@@ -2069,9 +2071,9 @@ describe("managed session write protocol", () => {
 		try {
 			await expect(deleteManagedSessionCandidate(scope, listed.owned[0])).resolves.toMatchObject({
 				kind: "cleanup_pending",
-				phase: "transcript",
+				phase: "artifacts",
 				tombstonePath: expect.stringContaining(".json"),
-				message: "Exact cleanup remains pending because descriptor-bound final deletion is unavailable.",
+				message: "Exact artifact cleanup remains pending with retained-tree evidence.",
 			});
 		} finally {
 			remove.mockRestore();
