@@ -715,9 +715,10 @@ export class FilesystemTopicRegistryCasAuthority implements TopicRegistryCasAuth
 		return await withFileLock(
 			this.file,
 			async () => {
-				const current = await this.readLocked();
+				const { state: current, legacyRaw } = await this.#readLockedWithLegacy();
 				if (current.registryGeneration !== expectedGeneration) return false;
 				await ensureDir(this.fsImpl, path.dirname(this.file));
+				if (legacyRaw !== undefined) await this.#quarantineLegacyLocked(legacyRaw);
 				await writeTopicRegistryAtomic(this.fsImpl, this.file, next, this.platform, this.durableReplace);
 				return true;
 			},
@@ -726,19 +727,40 @@ export class FilesystemTopicRegistryCasAuthority implements TopicRegistryCasAuth
 	}
 
 	private async readLocked(): Promise<TopicRegistryState> {
+		return (await this.#readLockedWithLegacy()).state;
+	}
+
+	async #readLockedWithLegacy(): Promise<{ state: TopicRegistryState; legacyRaw?: unknown }> {
 		let raw: unknown;
 		try {
 			raw = JSON.parse(await this.fsImpl.readFile(this.file, "utf8"));
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT")
-				return { version: 2, registryGeneration: 0, topics: {} };
+				return { state: { version: 2, registryGeneration: 0, topics: {} } };
 			throw new Error("shared topic authority is malformed or unavailable");
 		}
+		const legacyRaw =
+			raw && typeof raw === "object" && !Array.isArray(raw) && !Object.hasOwn(raw as object, "version")
+				? raw
+				: undefined;
 		const state = parseTopicRegistryState(raw);
 		const generation = state?.registryGeneration;
 		if (state?.version !== 2 || generation === undefined || !Number.isSafeInteger(generation) || generation < 0)
 			throw new Error("shared topic authority is malformed or unsupported");
-		return { ...state, registryGeneration: generation };
+		return { state: { ...state, registryGeneration: generation }, ...(legacyRaw === undefined ? {} : { legacyRaw }) };
+	}
+
+	async #quarantineLegacyLocked(raw: unknown): Promise<void> {
+		const digest = crypto.createHash("sha256").update(JSON.stringify(raw)).digest("hex");
+		const quarantinePath = `${this.file}.legacy-quarantine.${digest}.json`;
+		try {
+			await this.fsImpl.readFile(quarantinePath, "utf8");
+			return;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+				throw new Error("shared topic authority is malformed or unavailable");
+		}
+		await writeTopicRegistryAtomic(this.fsImpl, quarantinePath, raw, this.platform, this.durableReplace);
 	}
 }
 
@@ -7396,7 +7418,12 @@ export class TelegramNotificationDaemon {
 				revokedAcceptedRecord !== undefined &&
 				revokedAcceptedRecord.topicId === acceptedTopicId &&
 				revokedAcceptedRecord.authorityState === "archive_pending" &&
-				!this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.runtime.now())
+				!this.topics.archiveAuthorityAllows(
+					sessionId,
+					this.installationHostId,
+					this.opts.chatId,
+					this.runtime.now(),
+				)
 			) {
 				this.topics.beginArchive(sessionId, this.installationHostId, this.runtime.now());
 				await this.persistTopics();
@@ -7522,11 +7549,17 @@ export class TelegramNotificationDaemon {
 			? existing
 			: this.topics.beginArchive(sessionId, this.installationHostId, this.runtime.now());
 		if (socketLease && !this.#deleteLeaseAllows(socketLease)) return "pre_dispatch_cancelled";
-		if (record && !this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.runtime.now()))
+		if (
+			record &&
+			!this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.opts.chatId, this.runtime.now())
+		)
 			return "pre_dispatch_cancelled";
 		if (!archiveFenceAlreadyPublished) await this.persistTopics();
 		if (socketLease && !this.#deleteLeaseAllows(socketLease)) return "pre_dispatch_cancelled";
-		if (record && !this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.runtime.now()))
+		if (
+			record &&
+			!this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.opts.chatId, this.runtime.now())
+		)
 			return "pre_dispatch_cancelled";
 		await this.#revokeAskAuthority(sessionId);
 		this.deleteMessageRoutes(sessionId);
@@ -7536,7 +7569,14 @@ export class TelegramNotificationDaemon {
 			record = this.topics.get(sessionId);
 			await this.persistTopics();
 			if (!record) return "settled";
-			if (!this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.runtime.now()))
+			if (
+				!this.topics.archiveAuthorityAllows(
+					sessionId,
+					this.installationHostId,
+					this.opts.chatId,
+					this.runtime.now(),
+				)
+			)
 				return "pre_dispatch_cancelled";
 		}
 		const removed = this.pool.removeWhere(item => item.sessionId === sessionId);
@@ -7548,7 +7588,14 @@ export class TelegramNotificationDaemon {
 		try {
 			await this.flushPool();
 			if (socketLease && !this.#deleteLeaseAllows(socketLease)) return "pre_dispatch_cancelled";
-			if (!this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.runtime.now()))
+			if (
+				!this.topics.archiveAuthorityAllows(
+					sessionId,
+					this.installationHostId,
+					this.opts.chatId,
+					this.runtime.now(),
+				)
+			)
 				return "pre_dispatch_cancelled";
 			const res = (await this.botApi.call("closeForumTopic", {
 				chat_id: this.opts.chatId,
@@ -7738,7 +7785,7 @@ export class TelegramNotificationDaemon {
 			record.endpointKey === binding?.endpointKey &&
 			record.endpointDigest === binding?.endpointDigest &&
 			record.endpointGeneration === binding?.endpointGeneration &&
-			this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.runtime.now())
+			this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.opts.chatId, this.runtime.now())
 		);
 	}
 

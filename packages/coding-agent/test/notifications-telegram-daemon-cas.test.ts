@@ -87,6 +87,37 @@ test("filesystem topic authority bootstraps, serializes competing hosts, and sur
 		}).read(),
 	).toEqual(next);
 });
+test("filesystem topic authority upgrades exact versionless generation-35 state through CAS and preserves its quarantine", async () => {
+	const { authority: registry, file } = authority();
+	const legacy = {
+		topics: {
+			session: {
+				topicId: "1",
+				topicOrigin: "daemon_created",
+				identitySent: true,
+				createdAt: 0,
+				chatId: "42",
+				endpointKey: "ws://endpoint",
+				endpointDigest: "digest",
+				authorityState: "active",
+			},
+		},
+	};
+	fs.writeFileSync(file, JSON.stringify(legacy));
+	expect(await registry.read()).toMatchObject({
+		version: 2,
+		registryGeneration: 0,
+		topics: { session: { authorityState: "legacy_quarantined" } },
+	});
+	const next = { version: 2 as const, registryGeneration: 1, topics: {} };
+	expect(await registry.compareAndSet(0, next)).toBe(true);
+	expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(next);
+	const quarantines = fs
+		.readdirSync(path.dirname(file))
+		.filter(name => name.startsWith("telegram-topics.json.legacy-quarantine."));
+	expect(quarantines).toHaveLength(1);
+	expect(JSON.parse(fs.readFileSync(path.join(path.dirname(file), quarantines[0]!), "utf8"))).toEqual(legacy);
+});
 
 test("filesystem topic authority fails closed for unavailable or malformed shared state", async () => {
 	const { authority: registry, file } = authority();

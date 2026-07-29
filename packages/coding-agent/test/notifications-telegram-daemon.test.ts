@@ -2947,11 +2947,11 @@ describe("telegram daemon", () => {
 			}),
 		);
 	}
-	test("keeps wire protocol 3 through generation 36 authority changes", () => {
+	test("keeps wire protocol 3 through generation 37 authority changes", () => {
 		expect(NOTIFICATION_PROTOCOL_VERSION).toBe(3);
-		// Generation 36 adds native filesystem and cross-host topic authority
-		// without changing the notification wire protocol.
-		expect(DAEMON_GENERATION).toBe(36);
+		// Generation 37 upgrades versionless shared authority and fences archive
+		// dispatch without changing the notification wire protocol.
+		expect(DAEMON_GENERATION).toBe(37);
 	});
 	test.each([
 		"1",
@@ -17774,18 +17774,32 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 		expect(routed.every(call => call.body.message_thread_id !== 77)).toBe(true);
 	});
 	test.each([
-		["accepted remote archive", async () => ({ ok: true, result: true }), "inactive"],
+		["accepted remote archive", async () => ({ ok: true, result: true }), "inactive", "42", "42", [77]],
 		[
 			"already closed remote topic",
 			async () => ({ ok: false, description: "topic already closed" }),
 			"archive_pending",
+			"42",
+			"42",
+			[77],
 		],
 		[
 			"ambiguous remote archive",
 			async () => ({ ok: false, description: "transport unavailable" }),
 			"archive_pending",
+			"42",
+			"42",
+			[77],
 		],
-	] as const)("startup scan reconciles a crash-persisted archive fence after %s", async (_outcome, archiveResult, authorityState) => {
+		[
+			"re-paired chat retains an old-chat archive fence",
+			async () => ({ ok: true, result: true }),
+			"archive_pending",
+			"43",
+			"42",
+			[],
+		],
+	] as const)("startup scan reconciles a crash-persisted archive fence after %s", async (_outcome, archiveResult, authorityState, recordChatId, pairedChatId, expectedArchivedTopics) => {
 		const agentDir = tempAgentDir();
 		const topicsPath = path.join(daemonPaths(agentDir).dir, "telegram-topics.json");
 		fs.mkdirSync(path.dirname(topicsPath), { recursive: true });
@@ -17799,7 +17813,7 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 						topicOrigin: "daemon_created",
 						identitySent: true,
 						createdAt: 1,
-						chatId: "42",
+						chatId: recordChatId,
 						endpointKey: "ws://s",
 						endpointDigest: endpointAuthorityDigest("ws://s", "token"),
 						endpointGeneration: 1,
@@ -17821,7 +17835,7 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 			settings: settings(agentDir),
 			ownerId: "restarted-owner",
 			botToken: "tok",
-			chatId: "42",
+			chatId: pairedChatId,
 			botApi: bot,
 		});
 
@@ -17830,9 +17844,9 @@ describe("telegram daemon /btw reservation and capability boundaries", () => {
 
 		expect(
 			bot.calls.filter(call => call.method === "closeForumTopic").map(call => call.body.message_thread_id),
-		).toEqual([77]);
+		).toEqual([...expectedArchivedTopics]);
 		const persisted = JSON.parse(fs.readFileSync(topicsPath, "utf8"));
-		expect(persisted.topics.S).toMatchObject({ topicId: "77", authorityState });
+		expect(persisted.topics.S).toMatchObject({ topicId: "77", chatId: recordChatId, authorityState });
 	});
 
 	test("failed close publication restores only close authority while retaining a concurrent user rename across restart", async () => {

@@ -214,16 +214,18 @@ export function parseTopicRegistryState(value: unknown): TopicRegistryState | un
 	if (state.version !== undefined && state.version !== 2) throw new Error("unsupported future Telegram topic state");
 	if (!state.topics || typeof state.topics !== "object" || Array.isArray(state.topics)) return undefined;
 	if (state.version === undefined) {
-		return {
+		if (state.registryGeneration !== undefined) throw new Error("malformed Telegram topic state");
+		return parseTopicRegistryState({
 			...state,
 			version: 2,
+			registryGeneration: 0,
 			topics: Object.fromEntries(
 				Object.entries(state.topics).map(([sessionId, record]) => [
 					sessionId,
 					record && typeof record === "object" ? { ...record, authorityState: "legacy_quarantined" } : record,
 				]),
 			),
-		};
+		});
 	}
 
 	const isObject = (candidate: unknown): candidate is Record<string, unknown> =>
@@ -1208,10 +1210,22 @@ export class TopicRegistry {
 		return record;
 	}
 	/** Verify the durable archive initiator immediately before remote dispatch. */
-	archiveAuthorityAllows(sessionId: string, hostId: string, now: number): boolean {
+	archiveAuthorityAllows(sessionId: string, hostId: string, pairedChatId: string, now: number): boolean;
+	/** @deprecated Production dispatch must provide the current paired chat id. */
+	archiveAuthorityAllows(sessionId: string, hostId: string, now: number): boolean;
+	archiveAuthorityAllows(
+		sessionId: string,
+		hostId: string,
+		pairedChatIdOrNow: string | number,
+		suppliedNow?: number,
+	): boolean {
 		const record = this.topics.get(sessionId);
+		const pairedChatId = typeof pairedChatIdOrNow === "string" ? pairedChatIdOrNow : record?.chatId;
+		const now = typeof pairedChatIdOrNow === "number" ? pairedChatIdOrNow : suppliedNow;
 		return (
 			record?.topicOrigin === "daemon_created" &&
+			record.chatId === pairedChatId &&
+			typeof now === "number" &&
 			record.authorityState === "archive_pending" &&
 			record.archiveHostId === hostId &&
 			record.archiveLeaseEpoch === record.authorityEpoch &&

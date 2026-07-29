@@ -49,9 +49,11 @@ export const NOTIFICATION_PROTOCOL_VERSION = 3;
  * user-created topic adoption. Generation 36 binds managed-session replacement
  * to exact native filesystem authority and adds cross-host CAS convergence,
  * host-and-epoch archive fencing, retained topic history, and isolated
- * validation-supergroup delivery.
+ * validation-supergroup delivery. Generation 37 upgrades exact versionless
+ * generation-35 shared topic state through CAS while preserving a quarantined
+ * source snapshot, and fences archive dispatch to the record's paired chat.
  */
-export const DAEMON_GENERATION = 36;
+export const DAEMON_GENERATION = 37;
 
 /**
  * Serving-compatibility boundary for daemon lifecycle requests. Epoch 5
