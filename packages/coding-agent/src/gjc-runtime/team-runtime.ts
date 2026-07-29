@@ -2551,6 +2551,7 @@ function readCurrentTmuxLeaderContext(
 	tmuxCommand: string,
 	env: NodeJS.ProcessEnv,
 	authority: ProviderAuthority,
+	verifyProfile = true,
 ): GjcTmuxLeaderContext {
 	if (!path.isAbsolute(tmuxCommand) && Bun.which(tmuxCommand) === null)
 		throw new Error(buildTeamTmuxLeaderRequirementMessage(`tmux_not_installed:${tmuxCommand}`));
@@ -2593,7 +2594,7 @@ function readCurrentTmuxLeaderContext(
 	const [sessionName = "", windowIndex = ""] = sessionAndWindow.split(":");
 	if (!sessionName || !windowIndex || !leaderPaneId.startsWith("%"))
 		throw new Error(buildTeamTmuxLeaderRequirementMessage(`invalid_tmux_context:${result.stdout.toString().trim()}`));
-	if (readGjcTmuxProfileValue(authority, sessionName) !== GJC_TMUX_PROFILE_VALUE) {
+	if (verifyProfile && readGjcTmuxProfileValue(authority, sessionName) !== GJC_TMUX_PROFILE_VALUE) {
 		// Adopt any real tmux leader as a GJC team leader — including a session
 		// the user created outside `gjc --tmux` — by writing GJC's @gjc-profile
 		// ownership tag and reading it back. A provider that round-trips tmux
@@ -2634,6 +2635,7 @@ export function probeGjcTeamAvailability(
 				sessionId: "team-probe",
 				generation: "probe",
 			}),
+			false,
 		);
 		return { available: true };
 	} catch (error) {

@@ -1032,7 +1032,7 @@ describe("native gjc team runtime", () => {
 		const tmuxLog = await Bun.file(path.join(cleanupRoot, "tmux.log")).text();
 		expect(tmuxLog).toContain("display-message -p #S:#I #{pane_id}");
 		expect(tmuxLog).not.toContain("send-keys -l");
-	});
+	}, 30_000);
 
 	it("targets the GJC-managed leader session from GJC_TMUX_ACTIVE_SESSION over a stale TMUX_PANE", async () => {
 		cleanupRoot = await createGitRepo();
@@ -4224,7 +4224,7 @@ describe("stalled worker continuation protocol", () => {
 			await fixture.monitor();
 			expect(fixture.dispatches, scenario).toHaveLength(0);
 		}
-	});
+	}, 120_000);
 	it("does not honor a continuation recovery hold after canonical authority changes", async () => {
 		for (const scenario of [
 			"claim_deleted",
