@@ -1176,10 +1176,15 @@ function expectedFailure(error: unknown): ManagedOpenFailure {
 
 function sameCandidate(left: ManagedCandidate, right: ManagedCandidate): boolean {
 	return (
+		left.sessionId === right.sessionId &&
 		left.path === right.path &&
+		left.cwd === right.cwd &&
+		path.resolve(left.identity.canonicalPath) === path.resolve(right.identity.canonicalPath) &&
+		left.identity.sessionId === right.identity.sessionId &&
 		left.identity.dev === right.identity.dev &&
 		left.identity.ino === right.identity.ino &&
 		left.identity.size === right.identity.size &&
+		left.identity.mtimeMs === right.identity.mtimeMs &&
 		left.identity.mtimeNs === right.identity.mtimeNs &&
 		left.identity.sha256 === right.identity.sha256
 	);
@@ -1600,9 +1605,16 @@ type CleanupReceipt = {
 	plannedArtifactsPath: string;
 	plannedTranscriptPath: string;
 };
-function cleanupReceiptCanonicalValue(receipt: CleanupReceipt): Record<string, unknown> {
+function cleanupReceiptCanonicalValue(
+	scope: ManagedScope,
+	tombstone: string,
+	receipt: CleanupReceipt,
+): Record<string, unknown> {
 	return {
 		schemaVersion: 2,
+		state: "cleanup_pending",
+		scope: scopeDigest(scope.platform, scope.canonicalCwd),
+		tombstone,
 		attempt: receipt.attempt,
 		target: {
 			path: receipt.target.path,
@@ -1610,9 +1622,11 @@ function cleanupReceiptCanonicalValue(receipt: CleanupReceipt): Record<string, u
 			cwd: receipt.target.cwd,
 			identity: {
 				canonicalPath: receipt.target.identity.canonicalPath,
+				sessionId: receipt.target.identity.sessionId,
 				dev: String(receipt.target.identity.dev),
 				ino: String(receipt.target.identity.ino),
 				size: receipt.target.identity.size,
+				mtimeMs: receipt.target.identity.mtimeMs,
 				mtimeNs: String(receipt.target.identity.mtimeNs),
 				sha256: receipt.target.identity.sha256,
 			},
@@ -1637,20 +1651,11 @@ function cleanupReceiptCanonicalValue(receipt: CleanupReceipt): Record<string, u
 				}
 			: null,
 		expectedArtifactsTree: receipt.expectedArtifactsTree ?? null,
-		transcriptIdentity: {
-			canonicalPath: receipt.target.identity.canonicalPath,
-			dev: String(receipt.target.identity.dev),
-			ino: String(receipt.target.identity.ino),
-			size: receipt.target.identity.size,
-			mtimeNs: String(receipt.target.identity.mtimeNs),
-			sha256: receipt.target.identity.sha256,
-		},
 	};
 }
-
-function cleanupReceiptDigest(receipt: CleanupReceipt): string {
+function cleanupReceiptDigest(scope: ManagedScope, tombstone: string, receipt: CleanupReceipt): string {
 	return createHash("sha256")
-		.update(JSON.stringify(cleanupReceiptCanonicalValue(receipt)))
+		.update(JSON.stringify(cleanupReceiptCanonicalValue(scope, tombstone, receipt)))
 		.digest("hex");
 }
 
@@ -1677,7 +1682,16 @@ function cleanupReceipt(scope: ManagedScope, tombstone: string, receipt: Cleanup
 			path: receipt.target.path,
 			sessionId: receipt.target.sessionId,
 			cwd: receipt.target.cwd,
-			identity: receipt.target.identity,
+			identity: {
+				canonicalPath: receipt.target.identity.canonicalPath,
+				sessionId: receipt.target.identity.sessionId,
+				dev: String(receipt.target.identity.dev),
+				ino: String(receipt.target.identity.ino),
+				size: receipt.target.identity.size,
+				mtimeMs: receipt.target.identity.mtimeMs,
+				mtimeNs: String(receipt.target.identity.mtimeNs),
+				sha256: receipt.target.identity.sha256,
+			},
 		},
 		...(receipt.expectedArtifactsIdentity ? { expectedArtifactsIdentity: receipt.expectedArtifactsIdentity } : {}),
 		...(receipt.expectedArtifactsTree ? { expectedArtifactsTree: receipt.expectedArtifactsTree } : {}),
@@ -1723,7 +1737,7 @@ function cleanupArtifactsRemoved(scope: ManagedScope, tombstone: string, receipt
 			record.scope === scopeDigest(scope.platform, scope.canonicalCwd) &&
 			record.tombstone === tombstone &&
 			record.attempt === receipt.attempt &&
-			record.pendingReceiptDigest === cleanupReceiptDigest(receipt) &&
+			record.pendingReceiptDigest === cleanupReceiptDigest(scope, tombstone, receipt) &&
 			record.plannedArtifactsPath === receipt.plannedArtifactsPath &&
 			record.plannedTranscriptPath === receipt.plannedTranscriptPath &&
 			record.detachedArtifactsPath === receipt.detachedArtifactsPath &&
@@ -1743,9 +1757,11 @@ function cleanupArtifactsRemoved(scope: ManagedScope, tombstone: string, receipt
 			recorded.sessionId === receipt.target.sessionId &&
 			recorded.cwd === receipt.target.cwd &&
 			identity?.canonicalPath === receipt.target.identity.canonicalPath &&
+			identity.sessionId === receipt.target.identity.sessionId &&
 			identity.dev === String(receipt.target.identity.dev) &&
 			identity.ino === String(receipt.target.identity.ino) &&
 			identity.size === receipt.target.identity.size &&
+			identity.mtimeMs === receipt.target.identity.mtimeMs &&
 			identity.mtimeNs === String(receipt.target.identity.mtimeNs) &&
 			identity.sha256 === receipt.target.identity.sha256 &&
 			retainedArtifactsAuthoritiesMatch(record.retainedArtifactsAuthorities, receipt)
@@ -1769,7 +1785,7 @@ async function publishCleanupArtifactsRemoved(
 		{
 			...cleanupReceipt(scope, tombstone, receipt),
 			state: "artifacts_removed",
-			pendingReceiptDigest: cleanupReceiptDigest(receipt),
+			pendingReceiptDigest: cleanupReceiptDigest(scope, tombstone, receipt),
 			retainedArtifactsAuthorities,
 		},
 		lock.assertOwned,
@@ -1903,6 +1919,15 @@ function cleanupRootsAbsent(tombstone: string, target: RetiredTarget, pending: C
 }
 
 function sameArtifactRootIdentity(left: SessionStorageFileIdentity, right: SessionStorageFileIdentity): boolean {
+	return (
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.size === right.size &&
+		left.mtimeNs === right.mtimeNs &&
+		left.sha256 === right.sha256
+	);
+}
+function sameArtifactRootObject(left: SessionStorageFileIdentity, right: SessionStorageFileIdentity): boolean {
 	return left.dev === right.dev && left.ino === right.ino;
 }
 
@@ -1910,7 +1935,16 @@ function sameArtifactTreeSnapshot(left: NativeDirectoryTreeSnapshot, right: Nati
 	if (left.rootDev !== right.rootDev || left.rootIno !== right.rootIno || left.entries.length !== right.entries.length)
 		return false;
 	const entryKey = (entry: NativeDirectoryTreeSnapshot["entries"][number]): string =>
-		JSON.stringify([entry.relativePath, entry.kind, entry.dev, entry.ino, entry.size, entry.mtimeNs, entry.sha256]);
+		JSON.stringify([
+			entry.relativePath,
+			entry.kind,
+			entry.dev,
+			entry.ino,
+			entry.size,
+			entry.mtimeNs,
+			entry.ctimeNs,
+			entry.sha256,
+		]);
 	const leftEntries = left.entries.map(entryKey).sort();
 	const rightEntries = right.entries.map(entryKey).sort();
 	return leftEntries.every((entry, index) => entry === rightEntries[index]);
@@ -1947,11 +1981,20 @@ function assertRetainedArtifactsAuthorities(pending: CleanupReceipt): void {
 		const observedTree = snapshotArtifactTree(pathname);
 		if (
 			!observed ||
-			!sameArtifactRootIdentity(observed, pending.expectedArtifactsIdentity) ||
+			!sameArtifactRootObject(observed, pending.expectedArtifactsIdentity) ||
 			(!sameArtifactTreeSnapshot(observedTree, pending.expectedArtifactsTree) &&
 				!artifactTreePayloadAbsent(observedTree))
 		)
 			throw new Error("binding_invalid");
+	}
+}
+
+function noFollowPathState(pathname: string): "absent" | "present" | "invalid" {
+	try {
+		return fs.lstatSync(pathname).isSymbolicLink() ? "invalid" : "present";
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+		throw new Error("durability_failed");
 	}
 }
 
@@ -1961,15 +2004,19 @@ function probePlannedCleanupDetach(target: RetiredTarget, pending: CleanupReceip
 	let detachedArtifactsPath = pending.detachedArtifactsPath;
 	let detachedTranscriptPath = pending.detachedTranscriptPath;
 	for (const pathname of [pending.plannedArtifactsPath, deterministicRemovalRoot(pending.plannedArtifactsPath)]) {
-		if (!fs.existsSync(pathname)) continue;
+		const state = noFollowPathState(pathname);
+		if (state === "absent") continue;
+		if (state === "invalid") throw new Error("durability_failed");
 		if (!pending.expectedArtifactsIdentity) throw new Error("durability_failed");
 		const observed = artifactIdentityAt(pathname);
-		if (!observed || !sameArtifactRootIdentity(observed, pending.expectedArtifactsIdentity))
+		if (!observed || !sameArtifactRootObject(observed, pending.expectedArtifactsIdentity))
 			throw new Error("durability_failed");
 		if (detachedArtifactsPath && detachedArtifactsPath !== pathname) throw new Error("durability_failed");
 		detachedArtifactsPath = pathname;
 	}
-	if (fs.existsSync(pending.plannedTranscriptPath)) {
+	const transcriptState = noFollowPathState(pending.plannedTranscriptPath);
+	if (transcriptState === "invalid") throw new Error("durability_failed");
+	if (transcriptState === "present") {
 		const observed = captureManagedFileNoFollow(pending.plannedTranscriptPath);
 		const digest = createHash("sha256").update(observed.bytes).digest("hex");
 		if (
@@ -2038,6 +2085,7 @@ function pendingCleanupReceipt(
 	scope: ManagedScope,
 	tombstone: string,
 	target: RetiredTarget,
+	includeUnpairedAttempt?: number,
 ): CleanupReceipt | undefined {
 	try {
 		const prefix = `${path.basename(tombstone, ".json")}.${stableOperationName(target)}.cleanup-pending-`;
@@ -2072,9 +2120,11 @@ function pendingCleanupReceipt(
 				recorded.sessionId !== target.sessionId ||
 				recorded.cwd !== target.cwd ||
 				identity?.canonicalPath !== target.identity.canonicalPath ||
-				identity?.dev !== String(target.identity.dev) ||
+				identity.sessionId !== target.identity.sessionId ||
+				identity.dev !== String(target.identity.dev) ||
 				identity.ino !== String(target.identity.ino) ||
 				identity.size !== target.identity.size ||
+				identity.mtimeMs !== target.identity.mtimeMs ||
 				identity.mtimeNs !== String(target.identity.mtimeNs) ||
 				identity.sha256 !== target.identity.sha256 ||
 				!isQuarantinePath(target, record.plannedArtifactsPath) ||
@@ -2147,9 +2197,10 @@ function pendingCleanupReceipt(
 			if (
 				latest &&
 				cleanupArtifactsRemoved(scope, tombstone, latest) &&
-				!cleanupArtifactsRemoved(scope, tombstone, current)
+				!cleanupArtifactsRemoved(scope, tombstone, current) &&
+				current.attempt !== includeUnpairedAttempt
 			)
-				throw new Error("durability_failed");
+				continue;
 			plannedPaths.add(record.plannedArtifactsPath as string);
 			plannedPaths.add(record.plannedTranscriptPath as string);
 			latest = current;
@@ -2274,13 +2325,6 @@ async function publishCleanupPending(
 	lock: ManagedStorageLock,
 ): Promise<void> {
 	const previous = pendingCleanupReceipt(scope, tombstone, receipt.target);
-	if (
-		receipt.attempt > 1 &&
-		previous?.attempt === receipt.attempt - 1 &&
-		cleanupArtifactsRemoved(scope, tombstone, previous) &&
-		!cleanupArtifactsRemoved(scope, tombstone, receipt)
-	)
-		await publishCleanupArtifactsRemoved(scope, tombstone, receipt, lock);
 	try {
 		await publishManagedTombstone(
 			cleanupReceiptPath(tombstone, receipt.target, "pending", receipt.attempt),
@@ -2290,8 +2334,20 @@ async function publishCleanupPending(
 	} catch (error) {
 		if ((error as Error).message !== "destination_conflict") throw error;
 	}
-	const persisted = pendingCleanupReceipt(scope, tombstone, receipt.target);
-	if (!persisted || persisted.attempt !== receipt.attempt) throw new Error("durability_failed");
+	const persisted = pendingCleanupReceipt(scope, tombstone, receipt.target, receipt.attempt);
+	if (
+		!persisted ||
+		persisted.attempt !== receipt.attempt ||
+		cleanupReceiptDigest(scope, tombstone, persisted) !== cleanupReceiptDigest(scope, tombstone, receipt)
+	)
+		throw new Error("durability_failed");
+	if (
+		receipt.attempt > 1 &&
+		previous?.attempt === receipt.attempt - 1 &&
+		cleanupArtifactsRemoved(scope, tombstone, previous) &&
+		!cleanupArtifactsRemoved(scope, tombstone, receipt)
+	)
+		await publishCleanupArtifactsRemoved(scope, tombstone, receipt, lock);
 }
 
 function cleanupCompleted(scope: ManagedScope, tombstone: string, target: RetiredTarget): boolean {

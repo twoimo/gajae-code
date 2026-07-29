@@ -877,11 +877,22 @@ export class FileSessionStorage implements SessionStorage {
 				"Detached transcript retry requires a fresh quarantine destination",
 			);
 		}
-		if (hasDetachedTranscript && fs.existsSync(transcriptPath)) {
-			throw new SessionDeleteVerificationError(
-				"identity",
-				"Original transcript pathname became occupied during detached cleanup replay",
-			);
+		if (hasDetachedTranscript) {
+			try {
+				fs.lstatSync(transcriptPath);
+				throw new SessionDeleteVerificationError(
+					"identity",
+					"Original transcript pathname became occupied during detached cleanup replay",
+				);
+			} catch (error) {
+				if (error instanceof SessionDeleteVerificationError) throw error;
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+					throw new SessionDeleteVerificationError(
+						"identity",
+						"Original transcript pathname could not be checked during detached cleanup replay",
+						{ cause: toError(error) },
+					);
+			}
 		}
 		const artifactRemovalRoot = `${plannedArtifactsPath}.removing`;
 		if (detachedArtifactsPath === plannedArtifactsPath) {
@@ -996,11 +1007,23 @@ export class FileSessionStorage implements SessionStorage {
 		if (!artifactsIdentity && expectedArtifactsIdentity && !detachedArtifactsPath && !artifactsRemoved) {
 			// Absence at the original path alone is not completion: native recursive removal
 			// may retain the planned root or its deterministic `.removing` final-stage root.
-			if (fs.existsSync(plannedArtifactsPath) || fs.existsSync(artifactRemovalRoot))
-				throw new SessionDeleteVerificationError(
-					"artifacts",
-					"Authorized artifact removal root remains after restart",
-				);
+			for (const pathname of [plannedArtifactsPath, artifactRemovalRoot]) {
+				try {
+					fs.lstatSync(pathname);
+					throw new SessionDeleteVerificationError(
+						"artifacts",
+						"Authorized artifact removal root remains after restart",
+					);
+				} catch (error) {
+					if (error instanceof SessionDeleteVerificationError) throw error;
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+						throw new SessionDeleteVerificationError(
+							"artifacts",
+							"Authorized artifact removal root could not be checked after restart",
+							{ cause: toError(error) },
+						);
+				}
+			}
 			durablyRecordArtifactPhase();
 			return { kind: "artifacts_removed", phase: "artifacts", transcriptIdentity };
 		}
