@@ -7089,6 +7089,27 @@ export class TelegramNotificationDaemon {
 		if (capturedCreationLease && !this.#leaseTokenAllows(capturedCreationLease)) return undefined;
 		const creationBinding = session ? this.#endpointBinding(session) : undefined;
 		const creationLeaseEpoch = this.topics.authorityEpoch(sessionId);
+		const replayAcceptedTopicFence = (topicId: string) =>
+			this.topics.fenceAcceptedCreateForLease(
+				sessionId,
+				topicId,
+				creationLeaseEpoch,
+				this.opts.now,
+				name,
+				creationBinding,
+			);
+		const acceptedTopicFenceIsCurrent = (topicId: string) => {
+			const record = this.topics.get(sessionId);
+			return (
+				record?.topicId === topicId &&
+				record.creationLeaseEpoch === creationLeaseEpoch &&
+				record.authorityState === "archive_pending" &&
+				record.chatId === creationBinding?.chatId &&
+				record.endpointKey === creationBinding?.endpointKey &&
+				record.endpointDigest === creationBinding?.endpointDigest &&
+				record.endpointGeneration === creationBinding?.endpointGeneration
+			);
+		};
 		let acceptedTopicId: string | undefined;
 		let acceptedTopicCompensated = false;
 		let acceptedTopicArchiveAttempted = false;
@@ -7121,16 +7142,7 @@ export class TelegramNotificationDaemon {
 					acceptedTopicId = String(tid);
 					this.#malformedTopicCreateEndpoints.delete(sessionId);
 					if (capturedCreationLease && !(await this.#awaitCreationLeaseAuthority(capturedCreationLease))) {
-						if (
-							!this.topics.fenceAcceptedCreateForLease(
-								sessionId,
-								acceptedTopicId,
-								creationLeaseEpoch,
-								this.opts.now,
-								name,
-								creationBinding,
-							)
-						)
+						if (!replayAcceptedTopicFence(acceptedTopicId))
 							throw new Error("topic authority was revoked during creation");
 						try {
 							await this.persistTopics();
@@ -7141,14 +7153,19 @@ export class TelegramNotificationDaemon {
 								"archive fence persistence failed",
 							);
 							try {
-								await this.#persistTopicsWithRetry();
+								await this.#persistTopicsWithRetry(() => replayAcceptedTopicFence(acceptedTopicId!));
+								acceptedTopicArchiveAttempted = true;
+								if (acceptedTopicFenceIsCurrent(acceptedTopicId))
+									acceptedTopicCompensated =
+										(await this.archiveTopic(sessionId, undefined, true)) === "settled";
 							} catch {
-								await this.#superviseCompensationFence(sessionId);
+								await this.#superviseCompensationFence(sessionId, () => replayAcceptedTopicFence(acceptedTopicId!));
 							}
 							throw error;
 						}
 						acceptedTopicArchiveAttempted = true;
-						acceptedTopicCompensated = (await this.archiveTopic(sessionId, undefined, true)) === "settled";
+						if (acceptedTopicFenceIsCurrent(acceptedTopicId))
+							acceptedTopicCompensated = (await this.archiveTopic(sessionId, undefined, true)) === "settled";
 						throw new Error("topic authority was revoked during creation");
 					}
 					return acceptedTopicId;
@@ -7179,23 +7196,15 @@ export class TelegramNotificationDaemon {
 					await this.persistTopics();
 			}
 			if (capturedCreationLease && !(await this.#awaitCreationLeaseAuthority(capturedCreationLease))) {
-				if (
-					this.topics.fenceAcceptedCreateForLease(
-						sessionId,
-						rec.topicId,
-						creationLeaseEpoch,
-						this.opts.now,
-						name,
-						creationBinding,
-					)
-				) {
+				if (replayAcceptedTopicFence(rec.topicId)) {
 					try {
 						await this.persistTopics();
 					} catch {
-						this.#superviseCompensationFence(sessionId);
+						this.#superviseCompensationFence(sessionId, () => replayAcceptedTopicFence(rec.topicId));
 						return undefined;
 					}
-					await this.archiveTopic(sessionId, undefined, true);
+					if (acceptedTopicFenceIsCurrent(rec.topicId))
+						await this.archiveTopic(sessionId, undefined, true);
 				}
 				return undefined;
 			}
@@ -7213,33 +7222,25 @@ export class TelegramNotificationDaemon {
 			) {
 				// A failed initial commit must never make compensation conditional on
 				// successfully publishing its fence.
-				if (
-					this.topics.fenceAcceptedCreateForLease(
-						sessionId,
-						acceptedTopicId,
-						creationLeaseEpoch,
-						this.opts.now,
-						name,
-						creationBinding,
-					)
-				) {
+				if (replayAcceptedTopicFence(acceptedTopicId)) {
 					try {
-						await this.#persistTopicsWithRetry();
+						await this.#persistTopicsWithRetry(() => replayAcceptedTopicFence(acceptedTopicId!));
 					} catch {
-						await this.#superviseCompensationFence(sessionId);
+						await this.#superviseCompensationFence(sessionId, () => replayAcceptedTopicFence(acceptedTopicId!));
 					}
 
 					try {
-						acceptedTopicCompensated = (await this.archiveTopic(sessionId, undefined, true)) === "settled";
+						if (acceptedTopicFenceIsCurrent(acceptedTopicId))
+							acceptedTopicCompensated = (await this.archiveTopic(sessionId, undefined, true)) === "settled";
 					} catch {
-						this.#superviseCompensationFence(sessionId);
-						await this.#persistTopicsWithRetry().catch(() => undefined);
+						this.#superviseCompensationFence(sessionId, () => replayAcceptedTopicFence(acceptedTopicId!));
+						await this.#persistTopicsWithRetry(() => replayAcceptedTopicFence(acceptedTopicId!)).catch(() => undefined);
 					}
 				}
 			}
 			if (acceptedTopicId && !acceptedTopicCompensated && acceptedTopicArchiveAttempted) {
-				this.#superviseCompensationFence(sessionId);
-				await this.#persistTopicsWithRetry().catch(() => undefined);
+				this.#superviseCompensationFence(sessionId, () => replayAcceptedTopicFence(acceptedTopicId));
+				await this.#persistTopicsWithRetry(() => replayAcceptedTopicFence(acceptedTopicId)).catch(() => undefined);
 			}
 			if (session && err instanceof Error && err.message === "topic authority was revoked during creation")
 				return undefined;
@@ -7414,21 +7415,23 @@ export class TelegramNotificationDaemon {
 		return pending;
 	}
 
-	async #persistTopicsWithRetry(): Promise<void> {
+	async #persistTopicsWithRetry(replay?: () => void): Promise<void> {
 		try {
 			await this.persistTopics();
 		} catch {
+			replay?.();
 			await this.persistTopics();
 		}
 	}
 
-	async #superviseCompensationFence(sessionId: string): Promise<void> {
+	async #superviseCompensationFence(sessionId: string, replay?: () => void): Promise<void> {
 		const existing = this.compensationFenceRetries.get(sessionId);
 		if (existing) return await existing;
 		const retry = this.effects.track(
 			(async () => {
 				for (;;) {
 					try {
+						replay?.();
 						await this.persistTopics();
 						return;
 					} catch {
@@ -7463,7 +7466,17 @@ export class TelegramNotificationDaemon {
 				} catch {
 					throw new Error("shared topic authority unavailable");
 				}
-				if (!accepted) throw new Error("shared topic authority unavailable");
+				if (!accepted) {
+					let winner: unknown;
+					try {
+						winner = await authority.read();
+					} catch {
+						throw new Error("shared topic authority unavailable");
+					}
+					if (!this.#installSharedTopicAuthority(winner))
+						throw new Error("shared topic authority unavailable");
+					throw new Error("shared topic authority unavailable");
+				}
 				this.topics.markRegistryPublished(nextGeneration);
 			}
 			if (!authority) {
@@ -7474,6 +7487,20 @@ export class TelegramNotificationDaemon {
 		});
 		this.topicsPersistQueue = pending.catch(() => undefined);
 		return pending;
+	}
+	private #installSharedTopicAuthority(raw: unknown): boolean {
+		const state = parseTopicRegistryState(raw);
+		if (
+			state?.version !== 2 ||
+			!Number.isSafeInteger(state.registryGeneration) ||
+			state.registryGeneration < 0
+		)
+			return false;
+		this.topics.replace(state);
+		this.closedEndpointKeys.clear();
+		for (const [sessionId, binding] of Object.entries(state.closedEndpoints ?? {}))
+			if (binding) this.closedEndpointKeys.set(sessionId, binding);
+		return true;
 	}
 
 	#topicStateForPersistence(): TopicRegistryState {
