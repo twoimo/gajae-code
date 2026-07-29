@@ -24,6 +24,14 @@ import { startDaemonLifecycleControl } from "@gajae-code/coding-agent/sdk/bus/te
 import * as native from "@gajae-code/natives";
 import { getConfigRootDir, logger } from "@gajae-code/utils";
 import { Settings } from "../src/config/settings";
+import { __setBinaryResolverForTests } from "../src/gjc-runtime/psmux-detect";
+import { replaceOwnerGeneration } from "../src/gjc-runtime/tmux-owner-isolation";
+import {
+	__setTmuxProviderAuthorityPlatformForTests,
+	bindGjcTmuxProviderAuthority,
+	persistGjcTmuxProviderAuthoritySync,
+	resolveGjcTmuxProviderContext,
+} from "../src/gjc-runtime/tmux-provider-context";
 import { tokenFingerprint } from "../src/sdk/bus/config";
 import { exactUnlinkNotificationFile, readNotificationEndpointFile } from "../src/sdk/bus/notification-service";
 import {
@@ -32,7 +40,6 @@ import {
 	type TelegramDaemonFs,
 	TelegramNotificationDaemon,
 } from "../src/sdk/bus/telegram-daemon";
-
 import {
 	prepareManagedSessionScopeForWriteSync,
 	resolveManagedScope,
@@ -1507,6 +1514,54 @@ describe("lifecycle control runtime", () => {
 		expect(calls.indexOf("new-session -d -P -F #{session_id} -s gjc_lc_abc123 sh -c")).toBeGreaterThanOrEqual(0);
 
 		fs.rmSync(root, { recursive: true, force: true });
+	});
+	it("cold Windows resume uses the persisted psmux authority when ambient psmux is missing or PATH resolves native tmux", async () => {
+		const root = managedFixtureRoot("gjc-windows-persisted-provider-");
+		const project = path.join(root, "project");
+		const sessionId = "persisted-provider";
+		const persistedPsmux = path.join(root, "psmux");
+		const stateDir = path.join(project, ".gjc", `_session-${sessionId}`, "runtime", "tmux-sessions");
+		const initialGeneration = "initial-generation";
+		fs.mkdirSync(project, { recursive: true });
+		fs.writeFileSync(persistedPsmux, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o700 });
+		fs.chmodSync(persistedPsmux, 0o700);
+		await writeManagedSession(root, project, sessionId);
+		__setTmuxProviderAuthorityPlatformForTests("win32");
+		__setBinaryResolverForTests(candidate => (candidate === persistedPsmux ? persistedPsmux : null));
+		try {
+			const persistedProvider = resolveGjcTmuxProviderContext({
+				platform: "win32",
+				binary: { command: persistedPsmux, isPsmux: true, viaExplicitOverride: true },
+			});
+			persistGjcTmuxProviderAuthoritySync(
+				bindGjcTmuxProviderAuthority(persistedProvider, {
+					stateDir,
+					sessionId,
+					generation: initialGeneration,
+				}),
+			);
+			await replaceOwnerGeneration(stateDir, sessionId, initialGeneration);
+			for (const env of [
+				{} as NodeJS.ProcessEnv,
+				{ GJC_TMUX_COMMAND: path.join(root, "native-tmux") } as NodeJS.ProcessEnv,
+			]) {
+				await expect(
+					daemonResumeSession(env, {
+						platform: "win32",
+						sessionsRoot: root,
+						listSessions: () => [],
+						ownerIsolationProbe: {
+							readCallerCgroup: async () => null,
+							probeServer: async () => ({ state: "unverifiable" }),
+						},
+					})({ sessionIdOrPrefix: sessionId, path: project }),
+				).rejects.toThrow("gjc_lifecycle_owner_server_unverifiable");
+			}
+		} finally {
+			__setBinaryResolverForTests(null);
+			__setTmuxProviderAuthorityPlatformForTests(null);
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	});
 	posixTmuxIt("daemonResumeSession rejects a live session when its tmux server cannot be proven safe", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-resume-live-unverifiable-"));

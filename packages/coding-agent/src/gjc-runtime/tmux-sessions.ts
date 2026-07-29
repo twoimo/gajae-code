@@ -789,12 +789,16 @@ function guardedTmuxSessionPredicate(
 	nativeSessionId: string,
 	sessionName: string,
 	expectedOwnerGeneration?: string,
+	expectedPsmuxIncarnation?: string,
 ): string {
 	const ownerGenerationPredicate = expectedOwnerGeneration
 		? `#{==:#{${GJC_TMUX_OWNER_GENERATION_OPTION}},${expectedOwnerGeneration}}`
 		: "1";
 	const serverPidPredicate = expectedServer.pidProven === false ? "1" : `#{==:#{pid},${expectedServer.pid}}`;
-	return `#{&&:${serverPidPredicate},#{&&:#{==:#{session_id},${nativeSessionId}},#{&&:#{==:#{session_name},${sessionName}},${ownerGenerationPredicate}}}}`;
+	if (!expectedPsmuxIncarnation)
+		return `#{&&:${serverPidPredicate},#{&&:#{==:#{session_id},${nativeSessionId}},#{&&:#{==:#{session_name},${sessionName}},${ownerGenerationPredicate}}}}`;
+	const psmuxIncarnationPredicate = `#{==:#{${GJC_TMUX_PSMUX_INCARNATION_OPTION}},${expectedPsmuxIncarnation}}`;
+	return `#{&&:${serverPidPredicate},#{&&:#{==:#{session_id},${nativeSessionId}},#{&&:#{==:#{session_name},${sessionName}},#{&&:${ownerGenerationPredicate},${psmuxIncarnationPredicate}}}}}`;
 }
 
 function runGuardedTmuxSessionCommand(
@@ -805,6 +809,7 @@ function runGuardedTmuxSessionCommand(
 	thenCommand: string,
 	expectedOwnerGeneration?: string,
 	provisionalAuthority?: ProviderAuthority,
+	expectedPsmuxIncarnation?: string,
 ): void {
 	const result = runTmux(
 		[
@@ -812,7 +817,13 @@ function runGuardedTmuxSessionCommand(
 			"-t",
 			normalizeExactTmuxTarget(nativeSessionId, env, "session"),
 			"-F",
-			guardedTmuxSessionPredicate(expectedServer, nativeSessionId, sessionName, expectedOwnerGeneration),
+			guardedTmuxSessionPredicate(
+				expectedServer,
+				nativeSessionId,
+				sessionName,
+				expectedOwnerGeneration,
+				expectedPsmuxIncarnation,
+			),
 			`${thenCommand} ; display-message -p __gjc_tmux_guarded_mutation_ok__`,
 			"display-message -p __gjc_tmux_guarded_mutation_refused__",
 		],
@@ -1283,6 +1294,7 @@ async function requireUnchangedOwnerForCompatibilityCleanup(
 	identity: ExactOwnerIdentity,
 	initialStateFile: string,
 	initialServer: { pid: number; startTime: string },
+	initialPsmuxIncarnation: string | undefined,
 	listPanePids: (sessionName: string, env: NodeJS.ProcessEnv) => number[],
 	readStartTime: (pid: number) => Promise<string | null>,
 ): Promise<boolean> {
@@ -1320,6 +1332,10 @@ async function requireUnchangedOwnerForCompatibilityCleanup(
 				: null,
 			readExactOptionForGc(nativeSessionId, GJC_TMUX_OWNER_SERVER_KEY_OPTION, env) !== identity.socketKey
 				? "server_key"
+				: null,
+			initialPsmuxIncarnation !== undefined &&
+			readExactOptionForGc(nativeSessionId, GJC_TMUX_PSMUX_INCARNATION_OPTION, env) !== initialPsmuxIncarnation
+				? "psmux_incarnation"
 				: null,
 		].filter((value): value is string => value !== null);
 		if (mismatches.length > 0) throw new Error(`gjc_tmux_owner_changed:${sessionName}:${mismatches.join(",")}`);
@@ -1397,12 +1413,21 @@ export async function forceCloseGjcTmuxSession(
 	const actualStateFile = readExactOptionForGc(session.name, GJC_TMUX_SESSION_STATE_FILE_OPTION, sessionEnv);
 	const actualGeneration = readExactOptionForGc(session.name, GJC_TMUX_OWNER_GENERATION_OPTION, sessionEnv);
 	const actualServerKey = readExactOptionForGc(session.name, GJC_TMUX_OWNER_SERVER_KEY_OPTION, sessionEnv);
-
+	const isPsmux = resolveGjcTmuxBinary({ env: sessionEnv }).isPsmux;
+	const initialPsmuxIncarnation = isPsmux
+		? readExactOptionForGc(session.name, GJC_TMUX_PSMUX_INCARNATION_OPTION, sessionEnv)
+		: undefined;
 	if (expectedSessionId !== undefined && actualSessionId !== expectedSessionId)
 		throw new Error(`gjc_tmux_session_id_mismatch:${sessionName}`);
 	if (expectedStateFile !== undefined && actualStateFile !== expectedStateFile)
 		throw new Error(`gjc_tmux_session_state_file_mismatch:${sessionName}`);
-	if (!actualSessionId || !actualStateFile || !actualGeneration || !actualServerKey)
+	if (
+		!actualSessionId ||
+		!actualStateFile ||
+		!actualGeneration ||
+		!actualServerKey ||
+		(isPsmux && !initialPsmuxIncarnation)
+	)
 		throw new Error(`gjc_tmux_owner_unverifiable:${sessionName}`);
 	const nativeSessionId = readNativeTmuxSessionId(session.name, sessionEnv);
 	if (!nativeSessionId) throw new Error(`gjc_tmux_owner_unverifiable:${sessionName}`);
@@ -1477,6 +1502,7 @@ export async function forceCloseGjcTmuxSession(
 					identity,
 					actualStateFile,
 					initialServer,
+					initialPsmuxIncarnation,
 					deps.listPanePids ?? readExactSessionPanePids,
 					deps.readProcessStartTime ?? readProcessStartTime,
 				);
@@ -1491,6 +1517,7 @@ export async function forceCloseGjcTmuxSession(
 						`kill-session -t '${nativeSessionId}'`,
 						identity.generation,
 						session.providerAuthority,
+						initialPsmuxIncarnation,
 					);
 			},
 		},

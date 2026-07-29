@@ -1531,7 +1531,6 @@ export function daemonResumeSession(
 			throw new Error(`gjc_lifecycle_resume_cwd_unavailable: ${resolvedResumeCwd ?? "(missing)"}`);
 		}
 		const platform = opts.platform ?? process.platform;
-		const tmuxBinary = resolveGjcTmuxBinary({ env, platform });
 		const name = tmuxSessionNameFor(resumeId);
 		const sessionStateFile = lifecycleRuntimeStateFile(resolvedResumeCwd, resumeId, name);
 		const commonChildEnv: Record<string, string> = {
@@ -1541,6 +1540,7 @@ export function daemonResumeSession(
 			[GJC_COORDINATOR_SESSION_STATE_FILE_ENV]: sessionStateFile,
 		};
 		if (platform !== "linux" && platform !== "win32") {
+			const tmuxBinary = resolveGjcTmuxBinary({ env, platform });
 			const command = `cd ${shellQuote(resolvedResumeCwd)} && exec env ${directLifecycleEnvArguments(commonChildEnv)} gjc ${shellQuote("--resume")} ${shellQuote(resumeId)}`;
 			await completeNonLinuxLifecycleSpawn({
 				tmux: tmuxBinary.command,
@@ -1553,24 +1553,23 @@ export function daemonResumeSession(
 				readProcessIncarnation: opts.processIncarnation ?? processIncarnation,
 			});
 		} else {
-			const provider = resolveGjcTmuxProviderContext({ binary: tmuxBinary, env, platform });
-			if (platform === "win32" && (!provider.binary.isPsmux || !provider.namespace))
-				throw new Error("gjc_lifecycle_windows_psmux_required");
 			const stateDir = path.dirname(sessionStateFile);
 			const previousBaseline = await captureOwnerGenerationBaseline(stateDir, resumeId);
 			const predecessor = resolveManagedOwnerPredecessorSync(stateDir, resumeId, previousBaseline);
 			const generation = crypto.randomUUID();
-			if (previousBaseline.state !== "current") throw new Error("gjc_tmux_provider_authority_unavailable");
-			const authority = bindGjcTmuxProviderAuthority(
+			const provider =
 				platform === "win32"
-					? readGjcTmuxProviderAuthoritySync({
-							stateDir,
-							sessionId: resumeId,
-							generation: previousBaseline.generation,
-						})
-					: provider,
-				{ stateDir, sessionId: resumeId, generation },
-			);
+					? (() => {
+							if (previousBaseline.state !== "current")
+								throw new Error("gjc_tmux_provider_authority_unavailable");
+							return readGjcTmuxProviderAuthoritySync({
+								stateDir,
+								sessionId: resumeId,
+								generation: previousBaseline.generation,
+							});
+						})()
+					: resolveGjcTmuxProviderContext({ env, platform });
+			const authority = bindGjcTmuxProviderAuthority(provider, { stateDir, sessionId: resumeId, generation });
 			persistGjcTmuxProviderAuthoritySync(authority);
 			const childEnv: Record<string, string> = {
 				...commonChildEnv,

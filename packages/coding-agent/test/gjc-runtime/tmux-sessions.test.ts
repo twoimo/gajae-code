@@ -1039,6 +1039,98 @@ describe("GJC tmux session management", () => {
 			__setBinaryResolverForTests(null);
 		}
 	});
+	it("refuses a psmux replacement that differs only by incarnation before cleanup", async () => {
+		const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-psmux-close-incarnation-"));
+		fixtureDirectories.push(stateDir);
+		const sessionId = "psmux-session";
+		const generation = "psmux-generation";
+		const marker = path.join(stateDir, "marker");
+		const initialIncarnation = "psmux-incarnation-a";
+		let currentIncarnation = initialIncarnation;
+		const cleanupSession = vi.fn();
+		__setBinaryResolverForTests(candidate => (candidate === "psmux" ? "C:\\psmux\\psmux.exe" : null));
+		__setExecutableIdentityResolverForTests(() => "volume:42");
+		installPsmuxAuthorityFixture(stateDir, { sessionId, generation });
+		spyOn(Bun, "spawnSync").mockImplementation(((command: string[]) => {
+			if (command.includes("display-message")) return spawnResult(0, "$0\n");
+			if (command.includes("list-sessions"))
+				return spawnResult(
+					0,
+					`managed\t1\t0\t1770000000\t1\troot\t1\t321\t\t\t\t${sessionId}\t${marker}\t${generation}\t\t${initialIncarnation}\t$0\n`,
+				);
+			if (command.includes("list-panes")) return spawnResult(0, "321\n");
+			if (command.includes("show-options")) {
+				const option = command.at(-1);
+				const value =
+					option === "@gjc-profile"
+						? "1"
+						: option === "@gjc-session-id"
+							? sessionId
+							: option === "@gjc-owner-generation"
+								? generation
+								: option === "@gjc-owner-server-key"
+									? "managed"
+									: option === "@gjc-psmux-incarnation"
+										? currentIncarnation
+										: marker;
+				return spawnResult(0, `${option} ${value}\n`);
+			}
+			return spawnResult(0, "");
+		}) as unknown as typeof Bun.spawnSync);
+		injectSafeMutationProof();
+		await expect(
+			forceCloseGjcTmuxSession(
+				"managed",
+				{
+					GJC_TMUX_COMMAND: "psmux",
+					GJC_PSMUX_COMMAND: "psmux",
+					GJC_TMUX_OWNER_STATE_DIR: stateDir,
+					GJC_COORDINATOR_SESSION_ID: sessionId,
+					GJC_TMUX_OWNER_GENERATION: generation,
+				},
+				sessionId,
+				marker,
+				{
+					resolveOwner: async () => ({
+						sessionId,
+						stateDir,
+						socketKey: "managed",
+						generation,
+						pid: 321,
+						startTime: "10",
+					}),
+					readProcessStartTime: async () => "10",
+					signalTerm: () => {},
+					sleep: async () => {
+						const intent = JSON.parse(
+							await fs.readFile(
+								path.join(stateDir, sessionId, "owner-lifecycle", `intent-${generation}.json`),
+								"utf8",
+							),
+						);
+						await observeOwnerTerminal({
+							schema_version: 1,
+							op: "observe_terminal",
+							session_id: sessionId,
+							owner_generation: generation,
+							state_dir: stateDir,
+							socket_key: "managed",
+							observer: "sidecar",
+							observed_at: new Date().toISOString(),
+							signal: "SIGTERM",
+							exit_code: null,
+							exit_kind: "exit",
+							reason: "test",
+							operator_dispatch_id: intent.dispatch_id,
+						});
+						currentIncarnation = "psmux-incarnation-b";
+					},
+					cleanupSession,
+				},
+			),
+		).rejects.toThrow("gjc_tmux_owner_changed:managed");
+		expect(cleanupSession).not.toHaveBeenCalled();
+	});
 	it("requires a matching SIGTERM verdict before compatibility cleanup", async () => {
 		const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-tmux-close-"));
 		const sessionId = "session";

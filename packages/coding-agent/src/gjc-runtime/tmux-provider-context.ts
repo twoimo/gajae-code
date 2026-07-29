@@ -15,7 +15,7 @@ import {
 	resolveGjcTmuxExecutableIdentity,
 	resolveGjcTmuxExecutablePath,
 } from "./psmux-detect";
-import { lifecyclePaths } from "./tmux-owner-isolation";
+import { isCanonicalUtcTimestamp, lifecyclePaths } from "./tmux-owner-isolation";
 
 const AUTHORITY_SCHEMA_VERSION = 2;
 const MAX_AUTHORITY_BYTES = 4096;
@@ -163,8 +163,7 @@ function assertCurrentGeneration(root: string, sessionId: string, generation: st
 		record.schema_version !== 1 ||
 		record.session_id !== sessionId ||
 		record.generation !== generation ||
-		typeof publishedAt !== "string" ||
-		!Number.isFinite(Date.parse(publishedAt))
+		!isCanonicalUtcTimestamp(publishedAt)
 	)
 		throw new Error("gjc_tmux_provider_authority_generation_mismatch");
 }

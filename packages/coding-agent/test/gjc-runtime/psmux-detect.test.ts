@@ -163,6 +163,19 @@ describe("PSMUX_BINARY_NAMES", () => {
 						generation: authority.generation,
 					}),
 				).toBe(true);
+				fs.writeFileSync(
+					lifecyclePaths(root, authority.sessionId, authority.generation).generationFile,
+					`${JSON.stringify({
+						schema_version: 1,
+						session_id: authority.sessionId,
+						generation: authority.generation,
+						published_at: "2026-07-28T00:00:00+00:00",
+					})}\n`,
+				);
+				expect(() => assertGjcTmuxMutationAuthoritySync(authority)).toThrow(
+					"gjc_tmux_provider_authority_generation_mismatch",
+				);
+				publishGeneration(root, authority.sessionId, authority.generation);
 				const sidecar = path.join(
 					lifecyclePaths(root, "team", "generation-a").root,
 					"provider-authority-generation-a.json",
