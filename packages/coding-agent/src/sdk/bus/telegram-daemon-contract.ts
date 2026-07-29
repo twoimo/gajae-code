@@ -46,14 +46,16 @@ export const NOTIFICATION_PROTOCOL_VERSION = 3;
  * 33 adds action-bound multi-select state rendering and replay-safe option
  * snapshots. Generation 34 converts non-photo image formats (including WebP)
  * into Telegram-compatible photo uploads when possible. Generation 35 adds
- * user-created topic adoption (forum-topic folder picker). Generation 36 binds
- * managed-session replacement to exact native filesystem authority.
+ * user-created topic adoption. Generation 36 binds managed-session replacement
+ * to exact native filesystem authority and adds cross-host CAS convergence,
+ * host-and-epoch archive fencing, retained topic history, and isolated
+ * validation-supergroup delivery.
  */
 export const DAEMON_GENERATION = 36;
 
 /**
- * Serving-compatibility boundary for daemon lifecycle requests. Epoch 4
- * requires active-topic lease convergence before any topic write, archive, or
- * endpoint rebind.
+ * Serving-compatibility boundary for daemon lifecycle requests. Epoch 5
+ * requires the complete generation-36 topic authority contract, so older
+ * epoch-4 daemons cannot keep serving across an upgrade.
  */
-export const SERVING_EPOCH = 4;
+export const SERVING_EPOCH = 5;
