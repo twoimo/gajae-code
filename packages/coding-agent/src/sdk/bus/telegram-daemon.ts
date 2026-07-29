@@ -7303,8 +7303,17 @@ export class TelegramNotificationDaemon {
 							}
 							throw error;
 						}
-						acceptedTopicArchiveAttempted = true;
-						acceptedTopicCompensated = (await this.archiveTopic(sessionId, undefined, true)) === "settled";
+						if (
+							this.#acceptedCreateArchiveFenceAllows(
+								sessionId,
+								acceptedTopicId,
+								creationLeaseEpoch,
+								creationBinding,
+							)
+						) {
+							acceptedTopicArchiveAttempted = true;
+							acceptedTopicCompensated = (await this.archiveTopic(sessionId, undefined, true)) === "settled";
+						}
 						throw new Error("topic authority was revoked during creation");
 					}
 					return acceptedTopicId;
@@ -7369,7 +7378,8 @@ export class TelegramNotificationDaemon {
 						this.#superviseCompensationFence(sessionId);
 						return undefined;
 					}
-					await this.archiveTopic(sessionId, undefined, true);
+					if (this.#acceptedCreateArchiveFenceAllows(sessionId, rec.topicId, creationLeaseEpoch, creationBinding))
+						await this.archiveTopic(sessionId, undefined, true);
 				}
 				return undefined;
 			}
@@ -7416,11 +7426,21 @@ export class TelegramNotificationDaemon {
 						await this.#superviseCompensationFence(sessionId);
 					}
 
-					try {
-						acceptedTopicCompensated = (await this.archiveTopic(sessionId, undefined, true)) === "settled";
-					} catch {
-						this.#superviseCompensationFence(sessionId);
-						await this.#persistTopicsWithRetry().catch(() => undefined);
+					if (
+						this.#acceptedCreateArchiveFenceAllows(
+							sessionId,
+							acceptedTopicId,
+							creationLeaseEpoch,
+							creationBinding,
+						)
+					) {
+						try {
+							acceptedTopicArchiveAttempted = true;
+							acceptedTopicCompensated = (await this.archiveTopic(sessionId, undefined, true)) === "settled";
+						} catch {
+							this.#superviseCompensationFence(sessionId);
+							await this.#persistTopicsWithRetry().catch(() => undefined);
+						}
 					}
 				}
 			}
@@ -7681,7 +7701,17 @@ export class TelegramNotificationDaemon {
 				} catch {
 					throw new Error("shared topic authority unavailable");
 				}
-				if (!accepted) throw new Error("shared topic authority unavailable");
+				if (!accepted) {
+					let winner: TopicRegistryState | undefined;
+					try {
+						winner = parseTopicRegistryState(await authority.read());
+					} catch {
+						throw new Error("shared topic authority unavailable");
+					}
+					if (!winner) throw new Error("shared topic authority conflict");
+					this.#replaceTopicAuthority(winner);
+					throw new Error("shared topic authority conflict");
+				}
 				this.topics.markRegistryPublished(nextGeneration);
 			}
 			if (!authority) {
@@ -7692,6 +7722,24 @@ export class TelegramNotificationDaemon {
 		});
 		this.topicsPersistQueue = pending.catch(() => undefined);
 		return pending;
+	}
+
+	#acceptedCreateArchiveFenceAllows(
+		sessionId: string,
+		topicId: string,
+		creationLeaseEpoch: number,
+		binding: TopicEndpointBinding | undefined,
+	): boolean {
+		const record = this.topics.get(sessionId);
+		return (
+			record?.topicId === topicId &&
+			record.creationLeaseEpoch === creationLeaseEpoch &&
+			record.chatId === binding?.chatId &&
+			record.endpointKey === binding?.endpointKey &&
+			record.endpointDigest === binding?.endpointDigest &&
+			record.endpointGeneration === binding?.endpointGeneration &&
+			this.topics.archiveAuthorityAllows(sessionId, this.installationHostId, this.runtime.now())
+		);
 	}
 
 	#replaceTopicAuthority(state: TopicRegistryState): void {
