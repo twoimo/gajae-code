@@ -23,6 +23,7 @@ import {
 import { validateManagedArtifactTree } from "../../session/internal/managed-session-storage";
 import {
 	FileSessionStorage,
+	SessionDeleteDurabilityError,
 	SessionDeleteVerificationError,
 	type SessionStorageFileIdentity,
 	type SessionStorageSnapshot,
@@ -2526,6 +2527,21 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 	)
 		return fail("terminal_uncertain", "Cleanup replay has invalid preauthorized quarantine paths.");
 	const artifactTreePlannedPath = cleanup.artifactTree?.plannedPath;
+	const artifactAuthorityRoots = [
+		...new Set(
+			[
+				cleanup.transcriptPath.slice(0, -6),
+				cleanup.detachedArtifactsPath,
+				plannedArtifactsPath,
+				artifactTreePlannedPath,
+				cleanup.artifactTree?.detachedPath,
+				cleanup.retainedArtifactsSuccessorPath,
+				cleanup.retainedArtifactsPlaceholderPath,
+				cleanup.retainedArtifactsUnknownPath,
+			].filter((pathname): pathname is string => pathname !== undefined),
+		),
+	];
+	const artifactDerivedRoots = artifactAuthorityRoots.map(pathname => `${pathname}.removing`);
 	const artifactTreeDetachedPath = cleanup.artifactTree?.detachedPath;
 	const artifactRemovingPath =
 		cleanup.artifactsRemoved === true
@@ -2539,20 +2555,12 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 		cleanup.transcriptPath,
 		cleanup.detachedTranscriptPath,
 		plannedTranscriptPath,
-		cleanup.detachedArtifactsPath,
-		plannedArtifactsPath,
-		plannedArtifactsPath ? `${plannedArtifactsPath}.removing` : undefined,
 		plannedTranscriptPath ? `${plannedTranscriptPath}.removing` : undefined,
-		artifactTreePlannedPath,
-		artifactTreeDetachedPath,
-		artifactTreePlannedPath ? `${artifactTreePlannedPath}.removing` : undefined,
-		cleanup.retainedArtifactsSuccessorPath,
-		cleanup.retainedArtifactsPlaceholderPath,
-		cleanup.retainedArtifactsUnknownPath,
+		...artifactAuthorityRoots,
+		...artifactDerivedRoots,
 		cleanup.retainedTranscriptSuccessorPath,
 		cleanup.retainedTranscriptPlaceholderPath,
 		cleanup.retainedTranscriptUnknownPath,
-		cleanup.transcriptPath.slice(0, -6),
 	];
 	const replayStates = captureCleanupReplayPathStates(replayPaths);
 	const state = (pathname: string | undefined): "absent" | "present" | "invalid" =>
@@ -2561,18 +2569,7 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 		return fail("terminal_uncertain", "Cleanup replay encountered an invalid preauthorized path.");
 	if (
 		cleanup.artifactsRemoved === true &&
-		[
-			cleanup.detachedArtifactsPath,
-			plannedArtifactsPath,
-			plannedArtifactsPath ? `${plannedArtifactsPath}.removing` : undefined,
-			artifactTreePlannedPath,
-			artifactTreeDetachedPath,
-			artifactTreePlannedPath ? `${artifactTreePlannedPath}.removing` : undefined,
-			cleanup.retainedArtifactsSuccessorPath,
-			cleanup.retainedArtifactsPlaceholderPath,
-			cleanup.retainedArtifactsUnknownPath,
-			cleanup.transcriptPath.slice(0, -6),
-		].some(pathname => state(pathname) === "present")
+		[...artifactAuthorityRoots, ...artifactDerivedRoots].some(pathname => state(pathname) === "present")
 	)
 		return fail("terminal_uncertain", "Artifact authority reappeared after durable artifact cleanup.");
 	if (
@@ -2581,16 +2578,29 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 		[...replayStates.values()].every(value => value === "absent")
 	)
 		return { ok: true, result: { sessionId: cleanup.sessionId } };
-	const recoveredDetachedArtifactsPath =
-		state(cleanup.detachedArtifactsPath) === "present"
-			? cleanup.detachedArtifactsPath
-			: state(artifactRemovingPath) === "present"
-				? artifactRemovingPath
-				: plannedArtifactsPath &&
-						state(cleanup.transcriptPath.slice(0, -6)) === "absent" &&
-						state(plannedArtifactsPath) === "present"
-					? plannedArtifactsPath
-					: undefined;
+	const artifactRootAbsent = state(cleanup.transcriptPath.slice(0, -6)) === "absent";
+	const recoverableArtifactRoots = [
+		cleanup.detachedArtifactsPath,
+		artifactTreeDetachedPath,
+		cleanup.detachedArtifactsPath ? `${cleanup.detachedArtifactsPath}.removing` : undefined,
+		artifactTreeDetachedPath ? `${artifactTreeDetachedPath}.removing` : undefined,
+		artifactRemovingPath,
+		...(artifactRootAbsent
+			? [
+					plannedArtifactsPath,
+					plannedArtifactsPath ? `${plannedArtifactsPath}.removing` : undefined,
+					artifactTreePlannedPath,
+					artifactTreePlannedPath ? `${artifactTreePlannedPath}.removing` : undefined,
+				]
+			: []),
+	];
+	const recoveredDetachedArtifactsPath = recoverableArtifactRoots.find(pathname => state(pathname) === "present");
+	if (
+		artifactDerivedRoots.some(
+			pathname => state(pathname) === "present" && !recoverableArtifactRoots.includes(pathname),
+		)
+	)
+		return fail("terminal_uncertain", "Cleanup replay retained an unresolved derived artifact authority.");
 	const recoveredDetachedTranscriptPath =
 		state(cleanup.detachedTranscriptPath) === "present"
 			? cleanup.detachedTranscriptPath
@@ -2610,6 +2620,16 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 		].some(pathname => state(pathname) === "present")
 	)
 		return fail("terminal_uncertain", "Cleanup replay retained an unresolved authority.");
+	if (
+		[
+			cleanup.retainedArtifactsSuccessorPath,
+			cleanup.retainedArtifactsPlaceholderPath,
+			cleanup.retainedArtifactsUnknownPath,
+		]
+			.flatMap(pathname => (pathname ? [`${pathname}.removing`] : []))
+			.some(pathname => state(pathname) === "present")
+	)
+		return fail("terminal_uncertain", "Cleanup replay retained an unresolved derived authority.");
 	return {
 		storage: new FileSessionStorage(),
 		target: {
@@ -2650,7 +2670,7 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 				? {
 						expectedArtifactsIdentity: artifactTreeIdentity,
 						expectedArtifactsTree: cleanup.artifactTree.snapshot,
-						detachedArtifactsPath: cleanup.artifactTree.detachedPath ?? recoveredDetachedArtifactsPath,
+						detachedArtifactsPath: recoveredDetachedArtifactsPath,
 						plannedArtifactsPath: cleanup.artifactTree.plannedPath,
 					}
 				: {}),
@@ -3331,16 +3351,30 @@ async function executeLifecycleResponse(
 			),
 		});
 		let deleted: VerifiedSessionDeleteResult;
+		const durabilityCleanup = (result: SessionDeleteDurabilityError["result"]): CleanupEvidence => ({
+			...preauthorizedCleanup,
+			phase: "transcript",
+			artifactsRemoved: true,
+			...(preauthorizedCleanup.artifactTree
+				? { artifactTree: { ...preauthorizedCleanup.artifactTree, completed: true as const } }
+				: {}),
+			...(result.detachedTranscriptPath ? { detachedTranscriptPath: result.detachedTranscriptPath } : {}),
+			...(result.retainedSuccessorPath ? { retainedTranscriptSuccessorPath: result.retainedSuccessorPath } : {}),
+			...(result.retainedPlaceholderPath
+				? { retainedTranscriptPlaceholderPath: result.retainedPlaceholderPath }
+				: {}),
+			...(result.retainedUnknownPath ? { retainedTranscriptUnknownPath: result.retainedUnknownPath } : {}),
+		});
 		try {
 			deleted = await validated.storage.deleteSessionVerified(cleanupTarget);
 		} catch (error) {
+			if (error instanceof SessionDeleteDurabilityError)
+				return fail(
+					"cleanup_pending",
+					"Saved session deletion durability fence failed; replay the observed cleanup authority.",
+					durabilityCleanup(error.result),
+				);
 			if (error instanceof SessionDeleteVerificationError) {
-				if (error.message === "durability_failed")
-					return fail(
-						"cleanup_pending",
-						"Saved session deletion durability fence failed; replay the persisted cleanup authority.",
-						preauthorizedCleanup,
-					);
 				return fail(
 					"invalid_input",
 					`Saved session deletion verification failed (${error.kind}): ${error.message}`,
@@ -3369,12 +3403,22 @@ async function executeLifecycleResponse(
 					transcriptPhaseCleanup,
 				),
 			});
-			deleted = await validated.storage.deleteSessionVerified({
-				...cleanupTarget,
-				expectedArtifactsIdentity: undefined,
-				detachedArtifactsPath: undefined,
-				artifactsRemoved: true,
-			});
+			try {
+				deleted = await validated.storage.deleteSessionVerified({
+					...cleanupTarget,
+					expectedArtifactsIdentity: undefined,
+					detachedArtifactsPath: undefined,
+					artifactsRemoved: true,
+				});
+			} catch (error) {
+				if (error instanceof SessionDeleteDurabilityError)
+					return fail(
+						"cleanup_pending",
+						"Saved session deletion durability fence failed; replay the observed cleanup authority.",
+						durabilityCleanup(error.result),
+					);
+				throw error;
+			}
 		}
 		if (
 			deleted.kind === "cleanup_pending" &&

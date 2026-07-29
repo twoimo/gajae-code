@@ -328,6 +328,21 @@ export type VerifiedSessionDeleteResult =
 			retainedPlaceholderPath?: string;
 			retainedUnknownPath?: string;
 	  };
+/**
+ * Native transcript cleanup observed this exact authority before its parent
+ * durability fence failed; callers must persist the receipt before replay.
+ */
+export class SessionDeleteDurabilityError extends SessionDeleteVerificationError {
+	readonly result: Extract<VerifiedSessionDeleteResult, { kind: "cleanup_pending"; phase: "transcript" }>;
+	constructor(
+		result: Extract<VerifiedSessionDeleteResult, { kind: "cleanup_pending"; phase: "transcript" }>,
+		cause: Error,
+	) {
+		super("transcript", "durability_failed", { cause });
+		this.name = "SessionDeleteDurabilityError";
+		this.result = result;
+	}
+}
 
 /** Default OS-close dispatcher: a direct `fs.closeSync`. */
 const defaultCloseAdapter: SessionStorageWriterCloseAdapter = {
@@ -937,6 +952,59 @@ export class FileSessionStorage implements SessionStorage {
 			}
 		};
 		const durablyRecordArtifactPhase = () => durablyFenceParent("artifacts");
+		const assertFreshArtifactRemovalRoots = () => {
+			for (const pathname of [plannedArtifactsPath, artifactRemovalRoot]) {
+				if (pathname === detachedArtifactsPath) continue;
+				try {
+					fs.lstatSync(pathname);
+					throw new SessionDeleteVerificationError(
+						"artifacts",
+						"Authorized artifact removal root remains after restart",
+					);
+				} catch (error) {
+					if (error instanceof SessionDeleteVerificationError) throw error;
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+						throw new SessionDeleteVerificationError(
+							"artifacts",
+							"Authorized artifact removal root could not be checked after restart",
+							{ cause: toError(error) },
+						);
+				}
+			}
+		};
+		const transcriptCleanupPending = (
+			deletion: NativeExactUnlinkResult,
+			error: Error,
+			fallbackDetachedPath?: string,
+		): Extract<VerifiedSessionDeleteResult, { kind: "cleanup_pending"; phase: "transcript" }> => ({
+			kind: "cleanup_pending",
+			phase: "transcript",
+			error,
+			transcriptIdentity,
+			...((deletion.detachedPath ?? fallbackDetachedPath)
+				? { detachedTranscriptPath: deletion.detachedPath ?? fallbackDetachedPath }
+				: {}),
+			...((deletion.retainedSuccessorPath ?? retainedTranscriptSuccessorPath)
+				? { retainedSuccessorPath: deletion.retainedSuccessorPath ?? retainedTranscriptSuccessorPath }
+				: {}),
+			...((deletion.retainedPlaceholderPath ?? retainedTranscriptPlaceholderPath)
+				? { retainedPlaceholderPath: deletion.retainedPlaceholderPath ?? retainedTranscriptPlaceholderPath }
+				: {}),
+			...((deletion.retainedUnknownPath ?? retainedTranscriptUnknownPath)
+				? { retainedUnknownPath: deletion.retainedUnknownPath ?? retainedTranscriptUnknownPath }
+				: {}),
+		});
+		const durablyFenceTranscriptOrThrow = (deletion: NativeExactUnlinkResult, fallbackDetachedPath?: string) => {
+			try {
+				durablyFenceParent("transcript");
+			} catch (error) {
+				throw new SessionDeleteDurabilityError(
+					transcriptCleanupPending(deletion, toError(error), fallbackDetachedPath),
+					toError(error),
+				);
+			}
+		};
+		if (process.platform !== "win32") assertFreshArtifactRemovalRoots();
 		if (detachedArtifactsPath && !artifactsRemoved) {
 			if (
 				!expectedArtifactsIdentity ||
@@ -994,24 +1062,7 @@ export class FileSessionStorage implements SessionStorage {
 
 		const artifactsDir = transcriptPath.slice(0, -6);
 		const artifactsIdentity = this.#optionalDirectoryIdentity(artifactsDir);
-		for (const pathname of [plannedArtifactsPath, artifactRemovalRoot]) {
-			if (pathname === detachedArtifactsPath) continue;
-			try {
-				fs.lstatSync(pathname);
-				throw new SessionDeleteVerificationError(
-					"artifacts",
-					"Authorized artifact removal root remains after restart",
-				);
-			} catch (error) {
-				if (error instanceof SessionDeleteVerificationError) throw error;
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-					throw new SessionDeleteVerificationError(
-						"artifacts",
-						"Authorized artifact removal root could not be checked after restart",
-						{ cause: toError(error) },
-					);
-			}
-		}
+		assertFreshArtifactRemovalRoots();
 		if (artifactsRemoved && artifactsIdentity) {
 			throw new SessionDeleteVerificationError(
 				"artifacts",
@@ -1135,25 +1186,10 @@ export class FileSessionStorage implements SessionStorage {
 					deletion.retainedPlaceholderPath ||
 					deletion.retainedUnknownPath;
 				if ((error.kind === "identity" || error.kind === "symlink") && !retainedAuthority) throw error;
-				durablyFenceParent("transcript");
-				return {
-					kind: "cleanup_pending",
-					phase: "transcript",
-					error,
-					transcriptIdentity,
-					detachedTranscriptPath: deletion.detachedPath ?? detachedTranscriptPath,
-					...((deletion.retainedSuccessorPath ?? retainedTranscriptSuccessorPath)
-						? { retainedSuccessorPath: deletion.retainedSuccessorPath ?? retainedTranscriptSuccessorPath }
-						: {}),
-					...((deletion.retainedPlaceholderPath ?? retainedTranscriptPlaceholderPath)
-						? { retainedPlaceholderPath: deletion.retainedPlaceholderPath ?? retainedTranscriptPlaceholderPath }
-						: {}),
-					...((deletion.retainedUnknownPath ?? retainedTranscriptUnknownPath)
-						? { retainedUnknownPath: deletion.retainedUnknownPath ?? retainedTranscriptUnknownPath }
-						: {}),
-				};
+				durablyFenceTranscriptOrThrow(deletion, detachedTranscriptPath);
+				return transcriptCleanupPending(deletion, error, detachedTranscriptPath);
 			}
-			durablyFenceParent("transcript");
+			durablyFenceTranscriptOrThrow(deletion, detachedTranscriptPath);
 			return { kind: "deleted" };
 		}
 		if (!initialStat || !initialDigest)
@@ -1199,25 +1235,10 @@ export class FileSessionStorage implements SessionStorage {
 				deletion.retainedPlaceholderPath ||
 				deletion.retainedUnknownPath;
 			if ((error.kind === "identity" || error.kind === "symlink") && !retainedAuthority) throw error;
-			durablyFenceParent("transcript");
-			return {
-				kind: "cleanup_pending",
-				phase: "transcript",
-				error,
-				transcriptIdentity,
-				detachedTranscriptPath: deletion.detachedPath,
-				...((deletion.retainedSuccessorPath ?? retainedTranscriptSuccessorPath)
-					? { retainedSuccessorPath: deletion.retainedSuccessorPath ?? retainedTranscriptSuccessorPath }
-					: {}),
-				...((deletion.retainedPlaceholderPath ?? retainedTranscriptPlaceholderPath)
-					? { retainedPlaceholderPath: deletion.retainedPlaceholderPath ?? retainedTranscriptPlaceholderPath }
-					: {}),
-				...((deletion.retainedUnknownPath ?? retainedTranscriptUnknownPath)
-					? { retainedUnknownPath: deletion.retainedUnknownPath ?? retainedTranscriptUnknownPath }
-					: {}),
-			};
+			durablyFenceTranscriptOrThrow(deletion);
+			return transcriptCleanupPending(deletion, error);
 		}
-		durablyFenceParent("transcript");
+		durablyFenceTranscriptOrThrow(deletion);
 		return { kind: "deleted" };
 	}
 
