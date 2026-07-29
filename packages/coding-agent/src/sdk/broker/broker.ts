@@ -123,6 +123,12 @@ export type BrokerCleanupEvidence = {
 	metadataCompleted?: true;
 	detachedArtifactsPath?: string;
 	detachedTranscriptPath?: string;
+	retainedArtifactsSuccessorPath?: string;
+	retainedArtifactsPlaceholderPath?: string;
+	retainedArtifactsUnknownPath?: string;
+	retainedTranscriptSuccessorPath?: string;
+	retainedTranscriptPlaceholderPath?: string;
+	retainedTranscriptUnknownPath?: string;
 	/** Durable proof that artifact cleanup completed before transcript mutation. */
 	artifactsRemoved?: boolean;
 	/** Preauthorized no-replace artifact quarantine path persisted before detach. */

@@ -2469,13 +2469,19 @@ function cleanupIdentity(
 	};
 }
 
-function cleanupReplayPathState(pathname: string | undefined): "absent" | "present" | "invalid" {
-	if (!pathname) return "absent";
-	try {
-		return fsSync.lstatSync(pathname).isSymbolicLink() ? "invalid" : "present";
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "invalid";
+function captureCleanupReplayPathStates(
+	pathnames: readonly (string | undefined)[],
+): Map<string, "absent" | "present" | "invalid"> {
+	const states = new Map<string, "absent" | "present" | "invalid">();
+	for (const pathname of pathnames) {
+		if (!pathname || states.has(pathname)) continue;
+		try {
+			states.set(pathname, fsSync.lstatSync(pathname).isSymbolicLink() ? "invalid" : "present");
+		} catch (error) {
+			states.set(pathname, (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "invalid");
+		}
 	}
+	return states;
 }
 
 function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerResponse {
@@ -2519,6 +2525,16 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 					path.dirname(cleanup.artifactTree.detachedPath) !== path.dirname(cleanup.transcriptPath))))
 	)
 		return fail("terminal_uncertain", "Cleanup replay has invalid preauthorized quarantine paths.");
+	const artifactTreePlannedPath = cleanup.artifactTree?.plannedPath;
+	const artifactTreeDetachedPath = cleanup.artifactTree?.detachedPath;
+	const artifactRemovingPath =
+		cleanup.artifactsRemoved === true
+			? undefined
+			: artifactTreePlannedPath
+				? `${artifactTreePlannedPath}.removing`
+				: plannedArtifactsPath
+					? `${plannedArtifactsPath}.removing`
+					: undefined;
 	const replayPaths = [
 		cleanup.transcriptPath,
 		cleanup.detachedTranscriptPath,
@@ -2526,44 +2542,74 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 		cleanup.detachedArtifactsPath,
 		plannedArtifactsPath,
 		plannedArtifactsPath ? `${plannedArtifactsPath}.removing` : undefined,
+		plannedTranscriptPath ? `${plannedTranscriptPath}.removing` : undefined,
+		artifactTreePlannedPath,
+		artifactTreeDetachedPath,
+		artifactTreePlannedPath ? `${artifactTreePlannedPath}.removing` : undefined,
+		cleanup.retainedArtifactsSuccessorPath,
+		cleanup.retainedArtifactsPlaceholderPath,
+		cleanup.retainedArtifactsUnknownPath,
+		cleanup.retainedTranscriptSuccessorPath,
+		cleanup.retainedTranscriptPlaceholderPath,
+		cleanup.retainedTranscriptUnknownPath,
 		cleanup.transcriptPath.slice(0, -6),
 	];
-	if (replayPaths.some(candidate => cleanupReplayPathState(candidate) === "invalid"))
+	const replayStates = captureCleanupReplayPathStates(replayPaths);
+	const state = (pathname: string | undefined): "absent" | "present" | "invalid" =>
+		pathname ? (replayStates.get(pathname) ?? "invalid") : "absent";
+	if ([...replayStates.values()].some(value => value === "invalid"))
 		return fail("terminal_uncertain", "Cleanup replay encountered an invalid preauthorized path.");
+	if (
+		cleanup.artifactsRemoved === true &&
+		[
+			cleanup.detachedArtifactsPath,
+			plannedArtifactsPath,
+			plannedArtifactsPath ? `${plannedArtifactsPath}.removing` : undefined,
+			artifactTreePlannedPath,
+			artifactTreeDetachedPath,
+			artifactTreePlannedPath ? `${artifactTreePlannedPath}.removing` : undefined,
+			cleanup.retainedArtifactsSuccessorPath,
+			cleanup.retainedArtifactsPlaceholderPath,
+			cleanup.retainedArtifactsUnknownPath,
+			cleanup.transcriptPath.slice(0, -6),
+		].some(pathname => state(pathname) === "present")
+	)
+		return fail("terminal_uncertain", "Artifact authority reappeared after durable artifact cleanup.");
 	if (
 		cleanup.phase === "transcript" &&
 		cleanup.artifactsRemoved === true &&
-		![cleanup.transcriptPath, cleanup.detachedTranscriptPath, plannedTranscriptPath].some(
-			candidate => cleanupReplayPathState(candidate) === "present",
-		)
+		[...replayStates.values()].every(value => value === "absent")
 	)
 		return { ok: true, result: { sessionId: cleanup.sessionId } };
-	const artifactRemovingPath =
-		cleanup.artifactsRemoved === true
-			? undefined
-			: cleanup.artifactTree
-				? `${cleanup.artifactTree.plannedPath}.removing`
-				: plannedArtifactsPath
-					? `${plannedArtifactsPath}.removing`
-					: undefined;
 	const recoveredDetachedArtifactsPath =
-		cleanupReplayPathState(cleanup.detachedArtifactsPath) === "present"
+		state(cleanup.detachedArtifactsPath) === "present"
 			? cleanup.detachedArtifactsPath
-			: cleanupReplayPathState(artifactRemovingPath) === "present"
+			: state(artifactRemovingPath) === "present"
 				? artifactRemovingPath
 				: plannedArtifactsPath &&
-						cleanupReplayPathState(cleanup.transcriptPath.slice(0, -6)) === "absent" &&
-						cleanupReplayPathState(plannedArtifactsPath) === "present"
+						state(cleanup.transcriptPath.slice(0, -6)) === "absent" &&
+						state(plannedArtifactsPath) === "present"
 					? plannedArtifactsPath
 					: undefined;
 	const recoveredDetachedTranscriptPath =
-		cleanupReplayPathState(cleanup.detachedTranscriptPath) === "present"
+		state(cleanup.detachedTranscriptPath) === "present"
 			? cleanup.detachedTranscriptPath
 			: plannedTranscriptPath &&
-					cleanupReplayPathState(cleanup.transcriptPath) === "absent" &&
-					cleanupReplayPathState(plannedTranscriptPath) === "present"
+					state(cleanup.transcriptPath) === "absent" &&
+					state(plannedTranscriptPath) === "present"
 				? plannedTranscriptPath
 				: undefined;
+	if (
+		[
+			cleanup.retainedArtifactsSuccessorPath,
+			cleanup.retainedArtifactsPlaceholderPath,
+			cleanup.retainedArtifactsUnknownPath,
+			cleanup.retainedTranscriptSuccessorPath,
+			cleanup.retainedTranscriptPlaceholderPath,
+			cleanup.retainedTranscriptUnknownPath,
+		].some(pathname => state(pathname) === "present")
+	)
+		return fail("terminal_uncertain", "Cleanup replay retained an unresolved authority.");
 	return {
 		storage: new FileSessionStorage(),
 		target: {
@@ -2580,6 +2626,24 @@ function replayDeleteTarget(cleanup: CleanupEvidence): ValidatedDelete | BrokerR
 				? { detachedArtifactsPath: recoveredDetachedArtifactsPath }
 				: {}),
 			...(recoveredDetachedTranscriptPath ? { detachedTranscriptPath: recoveredDetachedTranscriptPath } : {}),
+			...(cleanup.retainedArtifactsSuccessorPath
+				? { retainedArtifactsSuccessorPath: cleanup.retainedArtifactsSuccessorPath }
+				: {}),
+			...(cleanup.retainedArtifactsPlaceholderPath
+				? { retainedArtifactsPlaceholderPath: cleanup.retainedArtifactsPlaceholderPath }
+				: {}),
+			...(cleanup.retainedArtifactsUnknownPath
+				? { retainedArtifactsUnknownPath: cleanup.retainedArtifactsUnknownPath }
+				: {}),
+			...(cleanup.retainedTranscriptSuccessorPath
+				? { retainedTranscriptSuccessorPath: cleanup.retainedTranscriptSuccessorPath }
+				: {}),
+			...(cleanup.retainedTranscriptPlaceholderPath
+				? { retainedTranscriptPlaceholderPath: cleanup.retainedTranscriptPlaceholderPath }
+				: {}),
+			...(cleanup.retainedTranscriptUnknownPath
+				? { retainedTranscriptUnknownPath: cleanup.retainedTranscriptUnknownPath }
+				: {}),
 			...(plannedArtifactsPath ? { plannedArtifactsPath } : {}),
 			...(plannedTranscriptPath ? { plannedTranscriptPath } : {}),
 			...(cleanup.artifactsRemoved !== true && cleanup.artifactTree && artifactTreeIdentity
@@ -3270,11 +3334,18 @@ async function executeLifecycleResponse(
 		try {
 			deleted = await validated.storage.deleteSessionVerified(cleanupTarget);
 		} catch (error) {
-			if (error instanceof SessionDeleteVerificationError)
+			if (error instanceof SessionDeleteVerificationError) {
+				if (error.message === "durability_failed")
+					return fail(
+						"cleanup_pending",
+						"Saved session deletion durability fence failed; replay the persisted cleanup authority.",
+						preauthorizedCleanup,
+					);
 				return fail(
 					"invalid_input",
 					`Saved session deletion verification failed (${error.kind}): ${error.message}`,
 				);
+			}
 			return fail(
 				"unavailable",
 				`Unable to delete saved session artifacts: ${error instanceof Error ? error.message : String(error)}`,
@@ -3340,6 +3411,24 @@ async function executeLifecycleResponse(
 					...(deleted.phase === "artifacts" ? { detachedArtifactsPath: deleted.detachedArtifactsPath } : {}),
 					...(deleted.phase === "transcript" && deleted.detachedTranscriptPath
 						? { detachedTranscriptPath: deleted.detachedTranscriptPath }
+						: {}),
+					...(deleted.phase === "artifacts" && deleted.retainedSuccessorPath
+						? { retainedArtifactsSuccessorPath: deleted.retainedSuccessorPath }
+						: {}),
+					...(deleted.phase === "artifacts" && deleted.retainedPlaceholderPath
+						? { retainedArtifactsPlaceholderPath: deleted.retainedPlaceholderPath }
+						: {}),
+					...(deleted.phase === "artifacts" && deleted.retainedUnknownPath
+						? { retainedArtifactsUnknownPath: deleted.retainedUnknownPath }
+						: {}),
+					...(deleted.phase === "transcript" && deleted.retainedSuccessorPath
+						? { retainedTranscriptSuccessorPath: deleted.retainedSuccessorPath }
+						: {}),
+					...(deleted.phase === "transcript" && deleted.retainedPlaceholderPath
+						? { retainedTranscriptPlaceholderPath: deleted.retainedPlaceholderPath }
+						: {}),
+					...(deleted.phase === "transcript" && deleted.retainedUnknownPath
+						? { retainedTranscriptUnknownPath: deleted.retainedUnknownPath }
 						: {}),
 					...(deleted.phase === "transcript" ? { artifactsRemoved: true } : {}),
 					...(deleted.phase === "transcript" &&

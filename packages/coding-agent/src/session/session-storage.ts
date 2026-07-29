@@ -223,7 +223,8 @@ export type VerifiedDeleteFailureKind =
 	| "identity"
 	| "header"
 	| "cwd"
-	| "artifacts";
+	| "artifacts"
+	| "transcript";
 
 /**
  * Thrown by {@link deleteSessionVerified} when canonical containment, transcript
@@ -895,12 +896,6 @@ export class FileSessionStorage implements SessionStorage {
 			}
 		}
 		const artifactRemovalRoot = `${plannedArtifactsPath}.removing`;
-		if (detachedArtifactsPath === plannedArtifactsPath) {
-			throw new SessionDeleteVerificationError(
-				"artifacts",
-				"Detached artifact retry requires a fresh quarantine destination",
-			);
-		}
 		const retainedArtifactRoot = (input: string): string =>
 			input.endsWith(".removing") ? input : `${input}.removing`;
 
@@ -919,7 +914,7 @@ export class FileSessionStorage implements SessionStorage {
 		}
 
 		const parentIdentity = this.#directoryIdentity(path.dirname(transcriptPath));
-		const durablyRecordArtifactPhase = () => {
+		const durablyFenceParent = (phase: "artifacts" | "transcript") => {
 			if (process.platform === "win32") return;
 			let descriptor: number | undefined;
 			try {
@@ -936,11 +931,12 @@ export class FileSessionStorage implements SessionStorage {
 					throw new Error("parent_changed");
 				fs.fsyncSync(descriptor);
 			} catch (error) {
-				throw new SessionDeleteVerificationError("artifacts", "durability_failed", { cause: toError(error) });
+				throw new SessionDeleteVerificationError(phase, "durability_failed", { cause: toError(error) });
 			} finally {
 				if (descriptor !== undefined) fs.closeSync(descriptor);
 			}
 		};
+		const durablyRecordArtifactPhase = () => durablyFenceParent("artifacts");
 		if (detachedArtifactsPath && !artifactsRemoved) {
 			if (
 				!expectedArtifactsIdentity ||
@@ -998,23 +994,22 @@ export class FileSessionStorage implements SessionStorage {
 
 		const artifactsDir = transcriptPath.slice(0, -6);
 		const artifactsIdentity = this.#optionalDirectoryIdentity(artifactsDir);
-		if (!detachedArtifactsPath) {
-			for (const pathname of [plannedArtifactsPath, artifactRemovalRoot]) {
-				try {
-					fs.lstatSync(pathname);
+		for (const pathname of [plannedArtifactsPath, artifactRemovalRoot]) {
+			if (pathname === detachedArtifactsPath) continue;
+			try {
+				fs.lstatSync(pathname);
+				throw new SessionDeleteVerificationError(
+					"artifacts",
+					"Authorized artifact removal root remains after restart",
+				);
+			} catch (error) {
+				if (error instanceof SessionDeleteVerificationError) throw error;
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT")
 					throw new SessionDeleteVerificationError(
 						"artifacts",
-						"Authorized artifact removal root remains after restart",
+						"Authorized artifact removal root could not be checked after restart",
+						{ cause: toError(error) },
 					);
-				} catch (error) {
-					if (error instanceof SessionDeleteVerificationError) throw error;
-					if ((error as NodeJS.ErrnoException).code !== "ENOENT")
-						throw new SessionDeleteVerificationError(
-							"artifacts",
-							"Authorized artifact removal root could not be checked after restart",
-							{ cause: toError(error) },
-						);
-				}
 			}
 		}
 		if (artifactsRemoved && artifactsIdentity) {
@@ -1140,6 +1135,7 @@ export class FileSessionStorage implements SessionStorage {
 					deletion.retainedPlaceholderPath ||
 					deletion.retainedUnknownPath;
 				if ((error.kind === "identity" || error.kind === "symlink") && !retainedAuthority) throw error;
+				durablyFenceParent("transcript");
 				return {
 					kind: "cleanup_pending",
 					phase: "transcript",
@@ -1157,6 +1153,7 @@ export class FileSessionStorage implements SessionStorage {
 						: {}),
 				};
 			}
+			durablyFenceParent("transcript");
 			return { kind: "deleted" };
 		}
 		if (!initialStat || !initialDigest)
@@ -1202,6 +1199,7 @@ export class FileSessionStorage implements SessionStorage {
 				deletion.retainedPlaceholderPath ||
 				deletion.retainedUnknownPath;
 			if ((error.kind === "identity" || error.kind === "symlink") && !retainedAuthority) throw error;
+			durablyFenceParent("transcript");
 			return {
 				kind: "cleanup_pending",
 				phase: "transcript",
@@ -1219,6 +1217,7 @@ export class FileSessionStorage implements SessionStorage {
 					: {}),
 			};
 		}
+		durablyFenceParent("transcript");
 		return { kind: "deleted" };
 	}
 
