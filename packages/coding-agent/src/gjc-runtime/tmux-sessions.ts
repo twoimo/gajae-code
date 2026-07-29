@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { Process } from "@gajae-code/natives";
 import { readLinuxProcStartTime, readLinuxProcStartTimeSync } from "./linux-proc";
 import { resolveGjcTmuxBinary } from "./psmux-detect";
-import { tmuxRuntimeSessionPath } from "./session-layout";
+import { GJC_DIR, GJC_SESSION_PREFIX, tmuxRuntimeSessionPath } from "./session-layout";
 import {
 	GJC_COORDINATOR_SESSION_ID_ENV,
 	GJC_COORDINATOR_SESSION_STATE_FILE_ENV,
@@ -349,14 +349,37 @@ function listSessionLines(env: NodeJS.ProcessEnv = process.env): string[] {
 function listRawTmuxSessionNames(env: NodeJS.ProcessEnv = process.env): string[] {
 	return runListSessions("#{session_name}", env).map(line => line.split("\t")[0] ?? line);
 }
+function canonicalProviderStateDirs(cwd: string): string[] {
+	const gjcDir = path.join(cwd, GJC_DIR);
+	let entries: fsSync.Dirent[];
+	try {
+		entries = fsSync.readdirSync(gjcDir, { withFileTypes: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
+	return entries
+		.filter(entry => entry.isDirectory() && !entry.isSymbolicLink() && entry.name.startsWith(GJC_SESSION_PREFIX))
+		.map(entry => path.join(gjcDir, entry.name, "runtime", "tmux-sessions"))
+		.filter(candidate => {
+			try {
+				return fsSync.lstatSync(candidate).isDirectory();
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+				throw error;
+			}
+		});
+}
+
 function psmuxAuthorityEnvironments(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv[] {
 	const explicitAuthority = psmuxAuthorityFromEnv(env);
 	if (explicitAuthority) return [environmentForProviderAuthority(env, explicitAuthority)];
-	const stateDir =
+	const explicitStateDir =
 		env[GJC_TMUX_OWNER_STATE_DIR_ENV]?.trim() ??
 		(env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV] ? path.dirname(env[GJC_COORDINATOR_SESSION_STATE_FILE_ENV]) : "");
-	if (stateDir && process.platform === "win32") {
-		const authorities = listGjcTmuxProviderAuthoritiesSync(stateDir);
+	if (process.platform === "win32") {
+		const stateDirs = explicitStateDir ? [explicitStateDir] : canonicalProviderStateDirs(process.cwd());
+		const authorities = stateDirs.flatMap(stateDir => listGjcTmuxProviderAuthoritiesSync(stateDir));
 		if (authorities.length > 0) return authorities.map(authority => environmentForProviderAuthority(env, authority));
 	}
 	if (resolveGjcTmuxBinary({ env }).isPsmux) throw new Error("gjc_tmux_provider_authority_unavailable");
