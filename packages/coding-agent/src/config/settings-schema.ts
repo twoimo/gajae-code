@@ -834,8 +834,8 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			label: "Status Line Action Hints",
-			description: "Show contextual keyboard shortcuts in the status line",
+			label: "Composer Shortcut Hints",
+			description: "Show contextual keyboard shortcuts in the composer placeholder",
 		},
 	},
 

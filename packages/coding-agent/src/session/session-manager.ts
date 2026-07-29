@@ -61,6 +61,7 @@ import {
 	type ManagedMigrationPolicy,
 	type ManagedOpenCandidateResult,
 	type ManagedScope,
+	type ManagedScopeResolution,
 	managedDirectoryAuthorityForScope,
 	managedRootForScope,
 	openManagedCandidateForWrite,
@@ -1611,16 +1612,57 @@ function freezeInternalReadSnapshot<T>(value: T): T {
 	return copy;
 }
 
+export class ManagedSessionScopeStartupError extends Error {
+	readonly code = "managed_session_scope_unavailable";
+	readonly classification: string;
+
+	constructor(
+		action: "resolve" | "prepare",
+		failure: Extract<ManagedScopeResolution, { kind: "error" }>,
+		platform: NodeJS.Platform = process.platform,
+	) {
+		const classification = failure.cause?.classification ?? failure.code;
+		super(managedScopeStartupMessage(action, classification, platform), {
+			cause: { classification },
+		});
+		this.name = "ManagedSessionScopeStartupError";
+		this.classification = classification;
+	}
+}
+
+function managedScopeStartupMessage(
+	action: "resolve" | "prepare",
+	classification: string,
+	platform: NodeJS.Platform = process.platform,
+): string {
+	if (platform !== "win32") return `Could not ${action} managed session scope.`;
+
+	if (classification === "EACCES" || classification === "EPERM") {
+		return `Could not ${action} managed session scope. Windows denied access to the configured session storage. This can occur when Gajae Code is started with a different token (including Administrator) than the directory owner. Restart as the same non-elevated user that owns the storage, or select a new user-owned agent or session directory.`;
+	}
+	if (
+		classification === "owner_mismatch" ||
+		classification === "acl_verify_failed" ||
+		classification === "acl_apply_failed" ||
+		classification === "acl_unavailable"
+	) {
+		return `Could not ${action} managed session scope. Windows could not verify owner-only permissions for the configured session storage. Use the same non-elevated user that owns it, or select a new user-owned agent or session directory; do not weaken its ACL.`;
+	}
+	if (
+		classification === "reparse_point" ||
+		classification === "identity_mismatch" ||
+		classification === "identity_unavailable"
+	) {
+		return `Could not ${action} managed session scope. Windows rejected the configured session storage because its path or identity is unsafe. Inspect it for a junction, symlink, or replaced directory, then select a new user-owned directory without reparse points.`;
+	}
+	return `Could not ${action} managed session scope. Windows could not safely verify the configured session storage. Inspect its owner-only permissions and path, then select a new user-owned agent or session directory.`;
+}
+
 function managedScopeStartupError(
 	action: "resolve" | "prepare",
-	failure: Extract<ReturnType<typeof resolveManagedScopeForWrite>, { kind: "error" }>,
-): Error {
-	return new Error(`Could not ${action} managed session scope.`, {
-		cause: {
-			classification: failure.cause?.classification ?? failure.code,
-			...(failure.cause?.diagnostic === undefined ? {} : { diagnostic: failure.cause.diagnostic }),
-		},
-	});
+	failure: Extract<ManagedScopeResolution, { kind: "error" }>,
+): ManagedSessionScopeStartupError {
+	return new ManagedSessionScopeStartupError(action, failure);
 }
 
 /** Resolve and prepare the default v2 session scope before any managed writer exists. */

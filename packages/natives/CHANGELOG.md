@@ -3,6 +3,7 @@
 ## [Unreleased]
 ### Fixed
 
+- Windows managed-path security mutation and exact unlink/restore now bind to caller file handles and stable file identity, rejecting pathname substitution. Durable pathname replacement separately uses write-through replacement and reports typed mutation/durability uncertainty.
 - Native addon builds now prepend the active `rustup` toolchain's Cargo directory before invoking `napi`, so non-interactive shells without `~/.cargo/bin` on `PATH` no longer fail with opaque `cargo metadata failed to run` errors.
 
 ## [0.11.11] - 2026-07-26

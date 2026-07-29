@@ -448,7 +448,7 @@
 				},
 				"showActionHints": {
 					"type": "boolean",
-					"description": "Show contextual keyboard shortcuts in the status line",
+					"description": "Show contextual keyboard shortcuts in the composer placeholder",
 					"default": true
 				},
 				"leftSegments": {
