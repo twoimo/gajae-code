@@ -2010,6 +2010,12 @@ export class AuthStorage {
 				await saveApiKeyCredential(apiKey);
 				return;
 			}
+			case "kiro": {
+				const { loginKiro } = await import("./utils/oauth/kiro");
+				const apiKey = await loginKiro(ctrl);
+				await saveApiKeyCredential(apiKey);
+				return;
+			}
 			default: {
 				const customProvider = getOAuthProvider(provider);
 				if (!customProvider) {
