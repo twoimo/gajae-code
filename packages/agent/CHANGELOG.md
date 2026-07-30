@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-07-30
+
 ## [0.12.1] - 2026-07-29
 - Agent session configuration can carry an explicit first-event stream timeout while preserving provider defaults when the setting is absent.
 
