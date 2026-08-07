@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+## [0.12.12] - 2026-08-05
+
+### Fixed
+
+- DeepSeek-family reasoning-content replay 400s are now retryable via a bounded, strip-only circuit breaker. When a proxy strips the encrypted reasoning blob to an empty `encrypted_content`, DeepSeek rejects every follow-up turn with "The `reasoning_content` in the thinking mode must be passed back to the API." Resending the identical history re-triggers this deterministic 400, so the agent loop now strips the unusable `reasoning` items from the Responses history payload in place and resends exactly once (mirroring the `invalid_prompt` poisoned-history breaker). Non-reasoning items are preserved; fail-fast when nothing can be stripped. Budget = one repaired resend.
+
+## [0.12.11] - 2026-08-03
+
+## [0.12.10] - 2026-08-03
+
+### Fixed
+
+- Composer repository-file shell policy rejections now receive one bounded, tool-enabled recovery turn without persisting the synthetic instruction. Generic loops retain their repository tools with `toolChoice: auto`; Cursor remote turns continue only when native tools did not already recover, queued user follow-ups take priority, and a second policy block terminates instead of looping. Existing malformed-tool recovery remains tool-free and does not consume dynamic tool-choice state.
+
+## [0.12.8] - 2026-08-02
+
+## [0.12.7] - 2026-07-31
+
+## [0.12.6] - 2026-07-31
+
+## [0.12.5] - 2026-07-30
+### Fixed
+
+- Proxy streams now fail closed when a `toolcall_end` event references missing or non-tool-call content instead of silently dropping the protocol violation and accepting a later terminal event.
+
+## [0.12.4] - 2026-07-30
+
+## [0.12.3] - 2026-07-30
+
+## [0.12.2] - 2026-07-30
+
+## [0.12.1] - 2026-07-29
+- Agent session configuration can carry an explicit first-event stream timeout while preserving provider defaults when the setting is absent.
+
+### Fixed
+
+- The `invalid_prompt` circuit breaker no longer replays the rejected turn on its repaired resend. The streaming path commits the failed assistant message to the context before the breaker runs, so the one repaired resend re-sent that errored turn as if the model had spoken it — re-triggering `Request blocked (code=invalid_prompt)` and leaving a second assistant tail that no continuation can resume from. The breaker now repairs and resends only the history that preceded the rejection.
+- Compaction pruning now protects the newest two user/`bashExecution` turns, uses conservative read supersession, preserves bounded error-first diagnostics, and exposes reversible artifact-backed originals with exact savings accounting.
+- Cancelling a prompt no longer fails its terminal closed. `agent_end` is published before the run resource ledger is sealed, so the event's own handlers register post-prompt work against an already-sealed run; that late registration was treated as an escaped resource and quarantined the run, making `waitForSettlement` report `unfenced` forever. Cancel therefore never obtained settlement proof and the SDK refused to publish a terminal, surfacing over ACP as `-32603 "Prompt resources did not settle before the terminalization grace expired."` Sealing now only freezes admission of genuinely new work; post-seal registration joins ordinary settlement accounting so the run stays unsettled until it actually completes.
+
+## [0.11.11] - 2026-07-26
+
+### Fixed
+
+- Managed runs now release their logical-run ownership before terminal observers are notified, so terminal overflow recovery cannot leave a stale owner behind.
+- The OpenAI remote-compaction endpoint is now resolved from trusted environment sources only. `OPENAI_BASE_URL` was read through the merged view that includes the caller's `cwd/.env`, so a repository could redirect compaction requests that carry the OpenAI credential; it now uses the non-project resolver, leaving shell and user-level configuration unchanged.
+- Repeated malformed tool calls now get one tool-free recovery response, preventing argument-validation loops from ending without an answer while leaving ordinary execution-error retries unchanged. The recovery turn commits its assistant to the durable context, forces `toolChoice: "none"` alongside an empty tool list without consuming a queued tool choice, and never executes a tool call it did not advertise. Its recovery prompt is request-only, so append-only tool prefixes stay stable and the durable message log is unchanged.
+- Argument-validation loops now reach a deterministic terminal state. If a model keeps emitting only malformed tool calls after the one-shot recovery turn, the run stops with an explanatory error instead of calling the provider indefinitely. The bound counts consecutive all-malformed turns rather than repeated argument signatures, so a model rotating invalid argument shapes is bounded too; any healthy tool turn resets it.
+
 ## [0.11.8] - 2026-07-23
 
 ### Fixed

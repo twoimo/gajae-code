@@ -24,6 +24,7 @@ export * from "./providers/mock";
 export * from "./providers/ollama";
 export * from "./providers/openai-codex-responses";
 export * from "./providers/openai-completions";
+export * from "./providers/openai-opencodex-responses";
 export * from "./providers/openai-responses";
 export * from "./providers/synthetic";
 export * from "./rate-limit-utils";
@@ -47,6 +48,7 @@ export * from "./utils/h2-fetch";
 export * from "./utils/oauth";
 export type {
 	OAuthCredentials,
+	OAuthLoginOptions,
 	OAuthProvider,
 	OAuthProviderId,
 	OAuthProviderInfo,

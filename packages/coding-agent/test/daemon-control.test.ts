@@ -1543,6 +1543,46 @@ describe("ChatDaemonController ownership safety", () => {
 		expect(fs.existsSync(paths.lock)).toBe(false);
 	});
 
+	test("settles repeated exact ownership releases deterministically within the existing bounded test contract", async () => {
+		const agentDir = tempAgentDir();
+		const paths = chatDaemonPaths(agentDir, "discord");
+		fs.mkdirSync(paths.dir, { recursive: true });
+		const state = {
+			version: 1,
+			kind: "discord",
+			pid: 77,
+			ownerId: "owner-a",
+			identity: "identity",
+			incarnation: "linux:12345",
+			startedAt: 1,
+			heartbeatAt: 1,
+			transportHealthy: true,
+			generation: chatDaemonGeneration("discord"),
+		};
+		for (let attempt = 0; attempt < 20; attempt++) {
+			fs.writeFileSync(paths.state, JSON.stringify(state));
+			fs.writeFileSync(
+				paths.lock,
+				JSON.stringify({ pid: state.pid, incarnation: state.incarnation, createdAt: attempt }),
+			);
+			await expect(
+				releaseChatDaemonOwnership({
+					agentDir,
+					kind: "discord",
+					ownerId: state.ownerId,
+					pid: state.pid,
+					incarnation: state.incarnation,
+					pidAlive: pid => pid === state.pid,
+					pidIncarnation: pid => (pid === state.pid ? state.incarnation : undefined),
+				}),
+			).resolves.toBeUndefined();
+			const released = JSON.parse(fs.readFileSync(paths.state, "utf8"));
+			expect(released.transportHealthy).toBe(false);
+			expect(released.stoppedAt).toEqual(expect.any(Number));
+			expect(fs.existsSync(paths.lock)).toBe(false);
+		}
+	});
+
 	test("reports a live PID with a disconnected provider as stale", async () => {
 		const agentDir = tempAgentDir();
 		const s = setPrivateAgentDir(
@@ -1889,6 +1929,24 @@ describe("ChatDaemonController ownership safety", () => {
 					: ["slack-token", "app-token", "workspace", "channel", "", "false", "lean"];
 			return crypto.createHash("sha256").update(values.join("\0")).digest("hex").slice(0, 16);
 		}
+
+		test("never spawns a complete provider whose durable desired intent is off", async () => {
+			const agentDir = tempAgentDir();
+			const settings = configuredSettings(agentDir);
+			settings.set(`notifications.${kind}.enabled`, false);
+			let spawns = 0;
+			const controller = new ChatDaemonController(settings, kind, {
+				spawn: () => {
+					spawns++;
+					return { unref() {} };
+				},
+			});
+			expect(await controller.ensure()).toBe("disabled");
+			const result = await controller.reload();
+			expect(result.ok).toBe(false);
+			expect(result.message).toContain("not enabled");
+			expect(spawns).toBe(0);
+		});
 
 		test.each([
 			["lower", chatDaemonGeneration(kind) - 1, "owner_spawned", "stale"],
@@ -2757,6 +2815,7 @@ describe("topic registry reload persistence", () => {
 			topics: {
 				S1: {
 					topicId: "100",
+					topicOrigin: "daemon_created",
 					identitySent: true,
 					name: "repo/main - title",
 					createdAt: 1,
@@ -2875,6 +2934,32 @@ describe("runChatDaemonInternal heartbeat ownership", () => {
 	function workerArgs(agentDir: string): string[] {
 		return ["--agent-dir", agentDir, "--owner-id", `${process.pid}-heartbeat-test`];
 	}
+
+	test("returns cleanly without constructing a desired-off provider runtime", async () => {
+		const agentDir = tempAgentDir();
+		fs.writeFileSync(
+			path.join(agentDir, "config.yml"),
+			[
+				"notifications:",
+				"  enabled: true",
+				"  discord:",
+				"    enabled: false",
+				"    botToken: discord-token",
+				"    applicationId: app",
+				"    guildId: guild",
+				"    parentChannelId: parent",
+				"",
+			].join("\n"),
+		);
+		let constructed = false;
+		await runChatDaemonInternal("discord", workerArgs(agentDir), {
+			createRuntime: () => {
+				constructed = true;
+				throw new Error("runtime should not be constructed");
+			},
+		});
+		expect(constructed).toBe(false);
+	});
 
 	test("does not start the transport when its initial heartbeat renewal fails", async () => {
 		const agentDir = tempAgentDir();

@@ -14,6 +14,7 @@
  * Dependency-free: uses global `fetch` and `WebSocket` (Bun/Node 22+).
  */
 
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import {
 	bold,
@@ -85,18 +86,27 @@ export interface CallbackRoute {
 	sessionId: string;
 	actionId: string;
 	answer: TelegramCallbackAnswer;
+	/** Durable audit metadata only; never sufficient to route a callback after restart. */
+	chatId?: string;
+	messageId?: number;
+	ownerId?: string;
+	generation?: number;
 }
 
 export interface SerializedAliasTable {
-	version: 1;
+	version: 1 | 2;
 	next: number;
 	routes: Record<string, CallbackRoute>;
 }
 
 export interface AliasTable {
+	allocate(isReserved?: (alias: string) => boolean): string;
+	activate(alias: string, route: CallbackRoute): boolean;
 	put(route: CallbackRoute): string;
 	get(alias: string): CallbackRoute | undefined;
+	update(alias: string, patch: Partial<CallbackRoute>): boolean;
 	delete(alias: string): boolean;
+	clear(): void;
 	serialize(): SerializedAliasTable;
 	load(json: unknown): void;
 	entries(): Array<[string, CallbackRoute]>;
@@ -112,7 +122,11 @@ function isCallbackRoute(value: unknown): value is CallbackRoute {
 			typeof route.answer === "number" ||
 			(typeof route.answer === "object" &&
 				route.answer !== null &&
-				(route.answer as { controlId?: unknown }).controlId === "navigation_forward"))
+				(route.answer as { controlId?: unknown }).controlId === "navigation_forward")) &&
+		(route.chatId === undefined || typeof route.chatId === "string") &&
+		(route.messageId === undefined || (Number.isSafeInteger(route.messageId) && route.messageId > 0)) &&
+		(route.ownerId === undefined || typeof route.ownerId === "string") &&
+		(route.generation === undefined || (Number.isSafeInteger(route.generation) && route.generation >= 0))
 	);
 }
 
@@ -121,24 +135,46 @@ export function createAliasTable(): AliasTable {
 	let next = 1;
 	const routes = new Map<string, CallbackRoute>();
 	return {
-		put(route) {
+		allocate(isReserved) {
 			let alias: string;
 			do {
-				alias = `a${(next++).toString(36)}`;
-			} while (routes.has(alias));
+				// `b1_` is intentionally disjoint from every legacy sequential `aN`
+				// token, including accepted keyboards lost before their old daemon
+				// could persist them.
+				alias = `b1_${crypto.randomBytes(18).toString("base64url")}`;
+			} while (routes.has(alias) || isReserved?.(alias) === true);
+			next++;
 			if (Buffer.byteLength(alias, "utf8") > 64) throw new Error("callback alias exceeded Telegram limit");
+			return alias;
+		},
+		activate(alias, route) {
+			if (routes.has(alias) || Buffer.byteLength(alias, "utf8") > 64 || !isCallbackRoute(route)) return false;
 			routes.set(alias, { ...route });
+			return true;
+		},
+		put(route) {
+			const alias = this.allocate();
+			if (!this.activate(alias, route)) throw new Error("callback alias activation failed");
 			return alias;
 		},
 		get(alias) {
 			const route = routes.get(alias);
 			return route ? { ...route } : undefined;
 		},
+		update(alias, patch) {
+			const route = routes.get(alias);
+			if (!route) return false;
+			routes.set(alias, { ...route, ...patch });
+			return true;
+		},
 		delete(alias) {
 			return routes.delete(alias);
 		},
+		clear() {
+			routes.clear();
+		},
 		serialize() {
-			return { version: 1, next, routes: Object.fromEntries(routes.entries()) };
+			return { version: 2, next, routes: Object.fromEntries(routes.entries()) };
 		},
 		load(json) {
 			routes.clear();
@@ -209,12 +245,37 @@ export function buildActionMarkdown(action: {
 	if (action.kind === "idle") {
 		return action.summary ? `🟢 Agent idle\n${action.summary}` : "🟢 Agent idle";
 	}
-	const heading = `❓ **${action.question ?? "Question"}**`;
+	const question = (action.question ?? "Question")
+		.split(/\r\n|\r|\n/)
+		.map(line => line.trimEnd())
+		.map(line => (line ? `**${line}**` : ""))
+		.join("  \n");
+	const heading = `❓ ${question}`;
 	const options = action.options ?? [];
 	const displayOptions = withRecommendedOptionLabel(options, action.recommendedIndex);
 	if (options.length === 0) return `${heading}\n\n(reply with text)`;
 	const list = displayOptions.map((label, i) => `${i + 1}. ${label.replace(/^\s*\d+[.)]\s+/, "")}`).join("\n");
 	return `${heading}\n\n${list}`;
+}
+
+export type TelegramNotificationSound = "all" | "important" | "none";
+
+export type TelegramDeliveryLane = "ask" | "idle" | "live" | "finalized";
+
+/**
+ * Resolve Telegram's optional silent-delivery flag. `finalChunk` silences
+ * non-final actionable chunks under the `important` policy; `undefined`
+ * intentionally omits the field so Telegram uses its normal audible delivery
+ * behavior.
+ */
+export function telegramDisableNotification(
+	sound: TelegramNotificationSound | undefined,
+	lane: TelegramDeliveryLane,
+	finalChunk = true,
+): true | undefined {
+	if (sound === "none") return true;
+	if (sound !== "important") return undefined;
+	return (lane === "ask" || lane === "idle") && finalChunk ? undefined : true;
 }
 
 /** Send Telegram HTML text chunks sequentially so long messages preserve order. */
@@ -223,13 +284,17 @@ export async function sendTelegramHtmlChunks(
 	chatId: string,
 	text: string,
 	inlineKeyboard?: InlineButton[][],
+	sound?: TelegramNotificationSound,
+	lane: TelegramDeliveryLane = "ask",
 ): Promise<void> {
 	const chunks = splitTelegramHtml(text);
 	for (let i = 0; i < chunks.length; i++) {
+		const disableNotification = telegramDisableNotification(sound, lane, i === chunks.length - 1);
 		await send("sendMessage", {
 			chat_id: chatId,
 			text: chunks[i]!,
 			parse_mode: TELEGRAM_PARSE_MODE,
+			...(disableNotification === true ? { disable_notification: true } : {}),
 			...(i === chunks.length - 1 && inlineKeyboard ? { reply_markup: { inline_keyboard: inlineKeyboard } } : {}),
 		});
 	}
@@ -348,6 +413,7 @@ export interface TelegramReferenceOptions {
 	endpointFile: string;
 	apiBase?: string;
 	fetchImpl?: typeof fetch;
+	sound?: TelegramNotificationSound;
 }
 
 /**
@@ -395,7 +461,14 @@ export async function runTelegramReferenceClient(opts: TelegramReferenceOptions)
 				controls: msg.controls,
 				summary: msg.summary,
 			});
-			await sendTelegramHtmlChunks(send, opts.chatId, rendered.text, rendered.inline_keyboard);
+			await sendTelegramHtmlChunks(
+				send,
+				opts.chatId,
+				rendered.text,
+				rendered.inline_keyboard,
+				opts.sound,
+				msg.kind ?? "ask",
+			);
 		} else if (msg.type === "action_unavailable") {
 			const requiredCapabilities = Array.isArray(msg.requiredCapabilities)
 				? msg.requiredCapabilities
@@ -416,7 +489,7 @@ export async function runTelegramReferenceClient(opts: TelegramReferenceOptions)
 			// session's forum topic; this reference shows the minimal handling.
 			const threaded = renderThreadedFrame(msg as never);
 			if (threaded?.text) {
-				await sendTelegramHtmlChunks(send, opts.chatId, threaded.text);
+				await sendTelegramHtmlChunks(send, opts.chatId, threaded.text, undefined, opts.sound, threaded.lane);
 			}
 		}
 	};

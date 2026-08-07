@@ -20,14 +20,25 @@ import type { Settings } from "../../config/settings";
 import { isProcessIncarnation, processIncarnation } from "../broker/process-incarnation";
 import {
 	getNotificationConfig,
-	isDiscordConfigured,
-	isGloballyConfigured,
-	isTelegramConfigured,
+	hasAnyCompleteProvider,
+	hasAnyEffectivelyEnabledProvider,
+	isDiscordComplete,
+	isProviderEffectivelyEnabled,
+	isSlackComplete,
+	isTelegramComplete,
 	maskToken,
 	type NotificationConfig,
+	type NotificationProvider,
+	type NotificationRuntime,
+	type ProviderResolution,
+	resolveNotificationProvider,
 	tokenFingerprint,
 } from "./config";
 import { type DaemonPaths, daemonPaths, HEARTBEAT_TTL_MS } from "./daemon-paths";
+import { DiscordLiveProvider } from "./discord-live-provider";
+import type { DiscordDiagnosticProvider } from "./discord-provider";
+import { SlackLiveProvider } from "./slack-live-provider";
+import type { SlackDiagnosticProvider } from "./slack-provider";
 import { type OwnerFreshnessSnapshot, readOwnerFreshnessSnapshot, type TelegramDaemonFs } from "./telegram-daemon";
 import { DAEMON_GENERATION } from "./telegram-daemon-contract";
 
@@ -50,6 +61,61 @@ export function sanitizeDiagnostic(text: string, token?: string): string {
 	const trimmed = token?.trim();
 	if (trimmed) out = out.split(trimmed).join("<redacted>");
 	return out.replace(TELEGRAM_TOKEN_PATTERN, "<redacted>");
+}
+
+export interface NotificationDiagnosticEvent {
+	timestamp: string;
+	operation: string;
+	phase: string;
+	outcome: string;
+	reason: string;
+	pid?: number;
+	incarnation?: string;
+	ageMs?: number;
+	detail?: string;
+}
+
+/** Append a bounded, private, secret-safe daemon diagnostic event. */
+export async function writeNotificationDiagnostic(
+	settings: Pick<Settings, "getAgentDir">,
+	event: Omit<NotificationDiagnosticEvent, "timestamp"> & { timestamp?: string },
+): Promise<void> {
+	const file = daemonPaths(settings.getAgentDir()).diagnostic;
+	const dir = path.dirname(file);
+	let events: NotificationDiagnosticEvent[] = [];
+	try {
+		const parsed = JSON.parse(await fsPromises.readFile(file, "utf8")) as { events?: unknown };
+		if (Array.isArray(parsed.events)) events = parsed.events as NotificationDiagnosticEvent[];
+	} catch {
+		// A missing or corrupt diagnostic history must not block notification recovery.
+	}
+	const safe: NotificationDiagnosticEvent = {
+		timestamp: event.timestamp ?? new Date().toISOString(),
+		operation: event.operation.slice(0, 80),
+		phase: event.phase.slice(0, 80),
+		outcome: event.outcome.slice(0, 80),
+		reason: event.reason.slice(0, 120),
+		...(event.pid === undefined ? {} : { pid: event.pid }),
+		...(event.incarnation === undefined ? {} : { incarnation: event.incarnation.slice(0, 120) }),
+		...(event.ageMs === undefined ? {} : { ageMs: Math.max(0, Math.floor(event.ageMs)) }),
+		...(event.detail === undefined ? {} : { detail: sanitizeDiagnostic(event.detail).slice(0, 512) }),
+	};
+	await fsPromises.mkdir(dir, { recursive: true, mode: 0o700 });
+	await fsPromises.writeFile(file, `${JSON.stringify({ version: 1, events: [...events, safe].slice(-64) })}\n`, {
+		mode: 0o600,
+	});
+}
+
+function sanitizeProviderDiagnostic(text: string, cfg: NotificationConfig, provider: NotificationProvider): string {
+	const secrets =
+		provider === "telegram"
+			? [cfg.botToken]
+			: provider === "discord"
+				? [cfg.discord.botToken]
+				: [cfg.slack.botToken, cfg.slack.appToken];
+	let detail = text;
+	for (const secret of secrets) detail = sanitizeDiagnostic(detail, secret);
+	return detail;
 }
 
 /** Identity evidence required to remove precisely the endpoint that was inspected. */
@@ -116,12 +182,39 @@ export async function readNotificationEndpointFile(file: string): Promise<Notifi
 /** Bump when the native exact-deletion identity contract changes. */
 export const NATIVE_PATH_IDENTITY_CONTRACT_VERSION = 1;
 
+/**
+ * Remove exactly the inspected regular file.
+ *
+ * Intermediate directory symlinks (e.g. multi-account layouts that share
+ * `notifications/` via a directory symlink) are resolved before the native
+ * no-follow unlink. Only the parent path is canonicalized; the final basename
+ * is rejoined so native exact_unlink still applies AT_SYMLINK_NOFOLLOW to the
+ * final path component at mutation time. A final-component file symlink stays
+ * `reparse_point` (including TOCTOU replacement after JS preflight).
+ */
 export function exactUnlinkNotificationFile(
 	file: string,
 	identity: NotificationEndpointFileIdentity,
 	quarantineName: string,
 ): NotificationExactUnlinkResult {
-	const result = native.exactUnlink(file, { ...identity, quarantineName });
+	let target = file;
+	try {
+		const st = fsSync.lstatSync(file);
+		if (st.isSymbolicLink()) {
+			return { ok: false, code: "reparse_point" };
+		}
+		// Native exact_unlink walks every path component with O_NOFOLLOW and
+		// rejects intermediate directory reparse points. Resolve only the
+		// directory prefix so a shared notifications dir still unlinks by
+		// inode, while the final basename remains subject to no-follow.
+		const parent = path.dirname(file);
+		const base = path.basename(file);
+		const resolvedParent = fsSync.realpathSync(parent);
+		target = path.join(resolvedParent, base);
+	} catch {
+		// Missing/unreadable paths fall through; the native call reports the failure.
+	}
+	const result = native.exactUnlink(target, { ...identity, quarantineName });
 	return {
 		ok: result.ok,
 		code: result.code,
@@ -159,8 +252,12 @@ export interface NotificationServiceDeps {
 	fs?: NotificationServiceFs;
 	now?: () => number;
 	pidAlive?: (pid: number) => boolean;
+	pidIncarnation?: (pid: number) => string | undefined;
 	fetchImpl?: typeof fetch;
 	apiBase?: string;
+	createDiscordDiagnostic?: (config: { applicationId: string; botToken: string }) => DiscordDiagnosticProvider;
+	createSlackDiagnostic?: (config: { appToken: string; botToken: string }) => SlackDiagnosticProvider;
+	providerRuntimeStatus?: (provider: NotificationProvider) => Promise<NotificationRuntime> | NotificationRuntime;
 }
 
 function defaultPidAlive(pid: number): boolean {
@@ -187,6 +284,12 @@ export interface AdapterConfigView {
 	botTokenMasked: string;
 	channel: string | undefined;
 	configured: boolean;
+	quarantined: boolean;
+	desiredEnabled: boolean;
+	desiredSource: ProviderResolution["desiredSource"];
+	effectiveEnabled: boolean;
+	issues: ProviderResolution["issues"];
+	runtime?: NotificationRuntime;
 }
 
 export interface NotificationStatusReport {
@@ -194,13 +297,30 @@ export interface NotificationStatusReport {
 	redact: boolean;
 	verbosity: "lean" | "verbose";
 	globallyConfigured: boolean;
+	anyProviderComplete: boolean;
+	anyProviderEffective: boolean;
 	telegram: AdapterConfigView & { tokenFingerprint: string | undefined };
 	discord: AdapterConfigView;
 	slack: AdapterConfigView;
 }
 
-function adapterConfigured(token: string | undefined, channel: string | undefined): boolean {
-	return Boolean(token?.trim()) && Boolean(channel?.trim());
+function adapterView(
+	cfg: NotificationConfig,
+	provider: NotificationProvider,
+	token: string | undefined,
+	channel: string | undefined,
+): AdapterConfigView {
+	const resolution = resolveNotificationProvider(cfg, provider);
+	return {
+		botTokenMasked: maskToken(token),
+		channel,
+		configured: resolution.configured,
+		quarantined: resolution.quarantined,
+		desiredEnabled: resolution.desiredEnabled,
+		desiredSource: resolution.desiredSource,
+		effectiveEnabled: resolution.effectiveEnabled,
+		issues: resolution.issues,
+	};
 }
 
 /** Build a secret-safe structured status snapshot from settings. */
@@ -210,43 +330,40 @@ export function buildNotificationStatusReport(settings: Settings): NotificationS
 		enabled: cfg.enabled,
 		redact: cfg.redact,
 		verbosity: cfg.verbosity,
-		globallyConfigured: isGloballyConfigured(cfg),
+		globallyConfigured: cfg.enabled && hasAnyCompleteProvider(cfg),
+		anyProviderComplete: hasAnyCompleteProvider(cfg),
+		anyProviderEffective: hasAnyEffectivelyEnabledProvider(cfg),
 		telegram: {
-			botTokenMasked: maskToken(cfg.botToken),
-			channel: cfg.chatId,
-			configured: isTelegramConfigured(cfg),
+			...adapterView(cfg, "telegram", cfg.botToken, cfg.chatId),
 			tokenFingerprint: cfg.botToken?.trim() ? tokenFingerprint(cfg.botToken) : undefined,
 		},
-		discord: {
-			botTokenMasked: maskToken(cfg.discord.botToken),
-			channel: cfg.discord.parentChannelId,
-			configured: isDiscordConfigured(cfg),
-		},
-		slack: {
-			botTokenMasked: maskToken(cfg.slack.botToken),
-			channel: cfg.slack.channelId,
-			configured: adapterConfigured(cfg.slack.botToken, cfg.slack.channelId),
-		},
+		discord: adapterView(cfg, "discord", cfg.discord.botToken, cfg.discord.parentChannelId),
+		slack: adapterView(cfg, "slack", cfg.slack.botToken, cfg.slack.channelId),
 	};
 }
 
 /** Render a status report as human-readable lines (no secrets). */
 export function formatNotificationStatusReport(report: NotificationStatusReport): string {
-	const yesNo = (v: boolean): string => (v ? "yes" : "no");
+	const yesNo = (value: boolean): string => (value ? "yes" : "no");
+	const provider = (name: NotificationProvider, view: AdapterConfigView): string[] => [
+		`  ${name}.configured: ${yesNo(view.configured)}`,
+		`  ${name}.needsRepair: ${yesNo(view.quarantined)}`,
+		`  ${name}.desired: ${view.desiredEnabled ? "on" : "off"} (${view.desiredSource})`,
+		`  ${name}.effective: ${yesNo(view.effectiveEnabled)}`,
+		`  ${name}.botToken: ${view.botTokenMasked}`,
+		`  ${name}.destination: ${view.channel ?? "(unset)"}`,
+	];
 	return [
 		"Notifications",
 		`  enabled: ${report.enabled}`,
-		`  globally configured: ${yesNo(report.globallyConfigured)}`,
+		`  any provider effective: ${yesNo(report.anyProviderEffective)}`,
+		`  any provider complete: ${yesNo(report.anyProviderComplete)}`,
 		`  redact: ${report.redact}`,
 		`  verbosity: ${report.verbosity}`,
-		`  telegram.botToken: ${report.telegram.botTokenMasked}`,
-		`  telegram.chatId: ${report.telegram.channel ?? "(unset)"}`,
+		...provider("telegram", report.telegram),
 		`  telegram.fingerprint: ${report.telegram.tokenFingerprint ?? "(unset)"}`,
-		`  telegram.configured: ${yesNo(report.telegram.configured)}`,
-		`  discord.botToken: ${report.discord.botTokenMasked}`,
-		`  discord.parentChannelId: ${report.discord.channel ?? "(unset)"}`,
-		`  slack.botToken: ${report.slack.botTokenMasked}`,
-		`  slack.channelId: ${report.slack.channel ?? "(unset)"}`,
+		...provider("discord", report.discord),
+		...provider("slack", report.slack),
 	].join("\n");
 }
 
@@ -508,6 +625,8 @@ export interface EndpointHealth {
 export interface NotificationHealthReport {
 	overall: HealthLevel;
 	configured: boolean;
+	provider?: NotificationProvider;
+	resolution?: ProviderResolution;
 	checks: HealthCheck[];
 	daemon: DaemonHealth;
 	endpoints: EndpointHealth;
@@ -518,20 +637,25 @@ export interface HealthOptions {
 	settings: Settings;
 	stateRoot?: string;
 	deps?: NotificationServiceDeps;
-	/** When true and Telegram is configured, probe the Bot API (getMe) for reachability. */
+	provider?: NotificationProvider;
+	/** When true, use the selected provider's REST-only diagnostic path. */
 	probe?: boolean;
+	signal?: AbortSignal;
 }
 
 async function probeTelegramReachability(
 	fetchImpl: typeof fetch,
 	apiBase: string,
 	token: string,
+	signal?: AbortSignal,
 ): Promise<{ ok: boolean; detail: string }> {
+	if (signal?.aborted) return { ok: false, detail: "Telegram probe cancelled." };
 	try {
 		const response = await fetchImpl(`${apiBase.replace(/\/$/, "")}/bot${token}/getMe`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: "{}",
+			signal,
 		});
 		const payload = (await response.json().catch(() => undefined)) as
 			| { ok?: boolean; description?: string; result?: { username?: string } }
@@ -544,8 +668,78 @@ async function probeTelegramReachability(
 			ok: false,
 			detail: sanitizeDiagnostic(payload?.description ?? `Telegram getMe failed (HTTP ${response.status})`, token),
 		};
-	} catch (err) {
-		return { ok: false, detail: sanitizeDiagnostic(err instanceof Error ? err.message : "network error", token) };
+	} catch (error) {
+		if (signal?.aborted) return { ok: false, detail: "Telegram probe cancelled." };
+		return { ok: false, detail: sanitizeDiagnostic(error instanceof Error ? error.message : "network error", token) };
+	}
+}
+
+function effectiveProviders(cfg: NotificationConfig): NotificationProvider[] {
+	return (["telegram", "discord", "slack"] as const).filter(provider => isProviderEffectivelyEnabled(cfg, provider));
+}
+
+function selectNotificationProvider(
+	cfg: NotificationConfig,
+	requested: NotificationProvider | undefined,
+): NotificationProvider | undefined {
+	if (requested) return requested;
+	const effective = effectiveProviders(cfg);
+	return effective.length === 1 ? effective[0] : undefined;
+}
+
+async function probeSelectedProvider(
+	cfg: NotificationConfig,
+	provider: NotificationProvider,
+	deps: NotificationServiceDeps,
+	signal?: AbortSignal,
+): Promise<{ ok: boolean; detail: string }> {
+	try {
+		let result: { ok: boolean; detail: string };
+		if (provider === "telegram" && isTelegramComplete(cfg)) {
+			result = await probeTelegramReachability(
+				deps.fetchImpl ?? globalThis.fetch,
+				deps.apiBase ?? DEFAULT_API_BASE,
+				cfg.botToken,
+				signal,
+			);
+		} else if (provider === "discord" && isDiscordComplete(cfg)) {
+			const adapter =
+				deps.createDiscordDiagnostic?.({
+					applicationId: cfg.discord.applicationId,
+					botToken: cfg.discord.botToken,
+				}) ??
+				new DiscordLiveProvider({
+					applicationId: cfg.discord.applicationId,
+					botToken: cfg.discord.botToken,
+					fetchImpl: deps.fetchImpl,
+				});
+			result = await adapter.probeConfiguration(signal);
+		} else if (provider === "slack" && isSlackComplete(cfg)) {
+			const adapter =
+				deps.createSlackDiagnostic?.({ appToken: cfg.slack.appToken, botToken: cfg.slack.botToken }) ??
+				new SlackLiveProvider({
+					appToken: cfg.slack.appToken,
+					botToken: cfg.slack.botToken,
+					fetch: deps.fetchImpl,
+				});
+			const probe = await adapter.probeConfiguration(signal);
+			result =
+				probe.ok && (!probe.teamId || probe.teamId !== cfg.slack.workspaceId)
+					? { ok: false, detail: "Slack workspace identity does not match the configured workspace ID." }
+					: probe;
+		} else {
+			result = { ok: false, detail: `${provider} configuration is unavailable.` };
+		}
+		return { ...result, detail: sanitizeProviderDiagnostic(result.detail, cfg, provider) };
+	} catch (error) {
+		return {
+			ok: false,
+			detail: sanitizeProviderDiagnostic(
+				error instanceof Error ? error.message : `${provider} diagnostic failed.`,
+				cfg,
+				provider,
+			),
+		};
 	}
 }
 
@@ -563,11 +757,25 @@ export async function checkNotificationHealth(opts: HealthOptions): Promise<Noti
 	const stateRoot = opts.stateRoot ?? defaultStateRoot();
 
 	const cfg: NotificationConfig = getNotificationConfig(opts.settings);
-	const configured = isGloballyConfigured(cfg);
-	const telegramConfigured = isTelegramConfigured(cfg);
+	const provider = selectNotificationProvider(cfg, opts.provider);
+	const resolution = provider ? resolveNotificationProvider(cfg, provider) : undefined;
+	const configured = resolution?.configured ?? hasAnyCompleteProvider(cfg);
+	const telegramConfigured = isTelegramComplete(cfg);
 	const checks: HealthCheck[] = [];
 
-	if (!cfg.enabled) {
+	if (provider && resolution?.quarantined) {
+		checks.push({ name: "config", level: "error", detail: `${provider} configuration needs repair` });
+	} else if (provider && !resolution?.configured) {
+		checks.push({ name: "config", level: "warn", detail: `${provider} is not fully configured` });
+	} else if (provider && !resolution?.desiredEnabled) {
+		checks.push({ name: "intent", level: "warn", detail: `${provider} desired intent is off` });
+	} else if (provider && !resolution?.effectiveEnabled) {
+		checks.push({
+			name: "config",
+			level: "warn",
+			detail: `${provider} is not effective while the global master is off`,
+		});
+	} else if (!cfg.enabled) {
 		checks.push({
 			name: "config",
 			level: "warn",
@@ -575,8 +783,24 @@ export async function checkNotificationHealth(opts: HealthOptions): Promise<Noti
 		});
 	} else if (!configured) {
 		checks.push({ name: "config", level: "warn", detail: "no notification adapter is fully configured" });
+	} else if (!provider && effectiveProviders(cfg).length === 0) {
+		checks.push({
+			name: "config",
+			level: "warn",
+			detail: "no configured provider currently has desired intent enabled",
+		});
+	} else if (!provider && effectiveProviders(cfg).length > 1) {
+		checks.push({
+			name: "selection",
+			level: "warn",
+			detail: "select a provider because multiple providers are effective",
+		});
 	} else {
-		checks.push({ name: "config", level: "ok", detail: "enabled with at least one configured adapter" });
+		checks.push({
+			name: "config",
+			level: "ok",
+			detail: provider ? `${provider} is effective` : "enabled with one configured adapter",
+		});
 	}
 
 	// Daemon ownership state (offline; corrupt or unreadable state degrades to a
@@ -612,26 +836,28 @@ export async function checkNotificationHealth(opts: HealthOptions): Promise<Noti
 		currentGeneration: DAEMON_GENERATION,
 		generationRelation: daemonGenerationRelation(state),
 	};
-	if (daemonStateUnreadable) {
-		checks.push({ name: "daemon", level: "warn", detail: "daemon ownership record is corrupt or unreadable" });
-	} else if (!state) {
-		checks.push({ name: "daemon", level: "ok", detail: "no daemon ownership record (none running)" });
-	} else if (!daemon.alive) {
-		checks.push({
-			name: "daemon",
-			level: "warn",
-			detail: `daemon owner pid ${daemon.pid} is not alive; run recovery to clear the stale lock`,
-		});
-	} else if (!daemon.heartbeatFresh) {
-		checks.push({ name: "daemon", level: "warn", detail: `daemon pid ${daemon.pid} heartbeat is stale` });
-	} else if (telegramConfigured && !daemon.identityMatches) {
-		checks.push({
-			name: "daemon",
-			level: "warn",
-			detail: "a live daemon owns a different bot token or chat id",
-		});
-	} else {
-		checks.push({ name: "daemon", level: "ok", detail: `daemon pid ${daemon.pid} alive with a fresh heartbeat` });
+	if (!provider || provider === "telegram") {
+		if (daemonStateUnreadable) {
+			checks.push({ name: "daemon", level: "warn", detail: "daemon ownership record is corrupt or unreadable" });
+		} else if (!state) {
+			checks.push({ name: "daemon", level: "ok", detail: "no daemon ownership record (none running)" });
+		} else if (!daemon.alive) {
+			checks.push({
+				name: "daemon",
+				level: "warn",
+				detail: `daemon owner pid ${daemon.pid} is not alive; run recovery to clear the stale lock`,
+			});
+		} else if (!daemon.heartbeatFresh) {
+			checks.push({ name: "daemon", level: "warn", detail: `daemon pid ${daemon.pid} heartbeat is stale` });
+		} else if (telegramConfigured && !daemon.identityMatches) {
+			checks.push({
+				name: "daemon",
+				level: "warn",
+				detail: "a live daemon owns a different bot token or chat id",
+			});
+		} else {
+			checks.push({ name: "daemon", level: "ok", detail: `daemon pid ${daemon.pid} alive with a fresh heartbeat` });
+		}
 	}
 
 	// Per-session endpoint discovery files.
@@ -667,54 +893,68 @@ export async function checkNotificationHealth(opts: HealthOptions): Promise<Noti
 		unknown: unknownEndpoints,
 		unreadable,
 	};
-	if (dead > 0 || unreadable > 0) {
-		checks.push({
-			name: "endpoints",
-			level: "warn",
-			detail: `${dead} dead / ${unreadable} unreadable of ${endpoints.total} endpoint file(s); run recovery`,
-		});
-	} else {
-		checks.push({
-			name: "endpoints",
-			level: "ok",
-			detail: `${live} live, ${unknownEndpoints} unverified endpoint file(s)`,
-		});
-	}
-	if (
-		telegramConfigured &&
-		daemon.present &&
-		daemon.alive &&
-		daemon.heartbeatFresh &&
-		daemon.identityMatches &&
-		!daemon.stopped &&
-		endpoints.total === 0
-	) {
-		checks.push({
-			name: "local_endpoint",
-			level: "warn",
-			detail:
-				"No local notification endpoint for this working directory. In this GJC terminal run /notify on; if it does not report notifications enabled, start a new local GJC session. Do not re-pair Telegram.",
-		});
+	if (!provider || provider === "telegram") {
+		if (dead > 0 || unreadable > 0) {
+			checks.push({
+				name: "endpoints",
+				level: "warn",
+				detail: `${dead} dead / ${unreadable} unreadable of ${endpoints.total} endpoint file(s); run recovery`,
+			});
+		} else {
+			checks.push({
+				name: "endpoints",
+				level: "ok",
+				detail: `${live} live, ${unknownEndpoints} unverified endpoint file(s)`,
+			});
+		}
+		if (
+			telegramConfigured &&
+			daemon.present &&
+			daemon.alive &&
+			daemon.heartbeatFresh &&
+			daemon.identityMatches &&
+			!daemon.stopped &&
+			endpoints.total === 0
+		) {
+			checks.push({
+				name: "local_endpoint",
+				level: "warn",
+				detail:
+					"No local notification endpoint for this working directory. In this GJC terminal run /notify on; if it does not report notifications enabled, start a new local GJC session. Do not re-pair Telegram.",
+			});
+		}
 	}
 
-	// Optional network reachability probe.
+	// Optional selected REST-only reachability probe.
 	let reachability = { probed: false, ok: false, detail: "not probed" };
-	if (opts.probe && telegramConfigured) {
-		const result = await probeTelegramReachability(
-			deps.fetchImpl ?? globalThis.fetch,
-			deps.apiBase ?? DEFAULT_API_BASE,
-			cfg.botToken,
-		);
-		reachability = { probed: true, ...result };
-		checks.push({
-			name: "reachability",
-			level: result.ok ? "ok" : "error",
-			detail: `Telegram: ${result.detail}`,
-		});
+	if (opts.probe) {
+		if (!provider) {
+			reachability = { probed: false, ok: false, detail: "provider selection required" };
+			checks.push({ name: "reachability", level: "error", detail: "provider selection required" });
+		} else if (!resolution?.configured || resolution.quarantined) {
+			reachability = { probed: false, ok: false, detail: `${provider} is unavailable` };
+			checks.push({ name: "reachability", level: "error", detail: `${provider} is unavailable` });
+		} else {
+			const result = await probeSelectedProvider(cfg, provider, deps, opts.signal);
+			reachability = { probed: true, ...result };
+			checks.push({
+				name: "reachability",
+				level: result.ok ? "ok" : "error",
+				detail: `${provider}: ${result.detail}`,
+			});
+		}
 	}
 
 	const overall = checks.reduce<HealthLevel>((acc, check) => worst(acc, check.level), "ok");
-	return { overall, configured, checks, daemon, endpoints, reachability };
+	return {
+		overall,
+		configured,
+		...(provider ? { provider, resolution } : {}),
+		checks,
+		daemon,
+		endpoints,
+		reachability,
+	};
 }
 
 /** Render a health report as human-readable lines (no secrets). */
@@ -731,66 +971,198 @@ export function formatNotificationHealthReport(report: NotificationHealthReport)
 
 export interface NotificationTestResult {
 	ok: boolean;
-	adapter: "telegram";
-	chatId: string | undefined;
+	adapter?: NotificationProvider;
+	destination?: string;
 	detail: string;
+	uncertain?: boolean;
 }
 
 export interface TestOptions {
 	settings: Settings;
 	deps?: NotificationServiceDeps;
+	provider?: NotificationProvider;
 	text?: string;
+	signal?: AbortSignal;
 }
 
-/** Send a one-off test notification through the configured Telegram adapter. */
+async function selectedProviderRuntimeReady(
+	provider: NotificationProvider,
+	deps: NotificationServiceDeps,
+): Promise<boolean> {
+	if (!deps.providerRuntimeStatus) return false;
+	const status = await deps.providerRuntimeStatus(provider);
+	return status === "ready" || status === "attached";
+}
+
+/** Send a one-off test through exactly one durable, effective provider. */
 export async function sendNotificationTest(opts: TestOptions): Promise<NotificationTestResult> {
 	const deps = opts.deps ?? {};
 	const cfg = getNotificationConfig(opts.settings);
-	if (!isTelegramConfigured(cfg)) {
+	const provider = selectNotificationProvider(cfg, opts.provider);
+	if (!provider) {
 		return {
 			ok: false,
-			adapter: "telegram",
-			chatId: cfg.chatId,
-			detail: "Telegram is not configured (need notifications.enabled + botToken + chatId). Run `gjc notify setup`.",
+			detail:
+				effectiveProviders(cfg).length === 0
+					? "No notification provider is effective. Configure and enable one provider first."
+					: "Multiple notification providers are effective; select one with --provider.",
 		};
 	}
-	const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
-	const apiBase = (deps.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, "");
-	const text = opts.text ?? "GJC notifications test message. If you can read this, delivery works.";
-	try {
-		const response = await fetchImpl(`${apiBase}/bot${cfg.botToken}/sendMessage`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ chat_id: cfg.chatId, text }),
-		});
-		const payload = (await response.json().catch(() => undefined)) as
-			| { ok?: boolean; description?: string }
-			| undefined;
-		if (response.ok && payload?.ok) {
-			return { ok: true, adapter: "telegram", chatId: cfg.chatId, detail: `delivered to chat ${cfg.chatId}` };
-		}
+	const resolution = resolveNotificationProvider(cfg, provider);
+	if (!resolution.effectiveEnabled) {
 		return {
 			ok: false,
-			adapter: "telegram",
-			chatId: cfg.chatId,
-			detail: sanitizeDiagnostic(
-				payload?.description ?? `Telegram sendMessage failed (HTTP ${response.status})`,
-				cfg.botToken,
+			adapter: provider,
+			detail: resolution.quarantined
+				? `${provider} configuration needs repair.`
+				: `${provider} is unavailable because configuration, desired intent, or the global master is off.`,
+		};
+	}
+	try {
+		if (!(await selectedProviderRuntimeReady(provider, deps))) {
+			return { ok: false, adapter: provider, detail: `${provider} runtime is not ready or attached.` };
+		}
+	} catch (error) {
+		return {
+			ok: false,
+			adapter: provider,
+			detail: sanitizeProviderDiagnostic(
+				error instanceof Error ? error.message : `${provider} runtime readiness check failed.`,
+				cfg,
+				provider,
 			),
 		};
-	} catch (err) {
-		return {
-			ok: false,
-			adapter: "telegram",
-			chatId: cfg.chatId,
-			detail: sanitizeDiagnostic(err instanceof Error ? err.message : "network error", cfg.botToken),
-		};
 	}
+	if (opts.signal?.aborted)
+		return { ok: false, adapter: provider, detail: `${provider} notification test cancelled.` };
+	const text = opts.text ?? "GJC notifications test message. If you can read this, delivery works.";
+	if (provider === "telegram" && isTelegramComplete(cfg)) {
+		const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+		const apiBase = (deps.apiBase ?? DEFAULT_API_BASE).replace(/\/$/, "");
+		try {
+			const response = await fetchImpl(`${apiBase}/bot${cfg.botToken}/sendMessage`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ chat_id: cfg.chatId, text }),
+				signal: opts.signal,
+			});
+			const payload = (await response.json().catch(() => undefined)) as
+				| { ok?: boolean; description?: string; result?: { message_id?: unknown } }
+				| undefined;
+			const messageId = payload?.result?.message_id;
+			if (response.ok && payload?.ok === true && typeof messageId === "number" && Number.isSafeInteger(messageId)) {
+				return {
+					ok: true,
+					adapter: "telegram",
+					destination: cfg.chatId,
+					detail: `delivered to chat ${cfg.chatId}`,
+				};
+			}
+			const uncertain = response.ok && payload?.ok !== false;
+			return {
+				ok: false,
+				adapter: "telegram",
+				destination: cfg.chatId,
+				...(uncertain ? { uncertain: true } : {}),
+				detail: sanitizeDiagnostic(
+					uncertain
+						? "Telegram may have accepted the message but returned no usable message receipt."
+						: (payload?.description ?? `Telegram sendMessage failed (HTTP ${response.status})`),
+					cfg.botToken,
+				),
+			};
+		} catch (error) {
+			return {
+				ok: false,
+				adapter: "telegram",
+				destination: cfg.chatId,
+				uncertain: true,
+				detail: opts.signal?.aborted
+					? "Telegram notification delivery is uncertain because cancellation raced with dispatch."
+					: sanitizeDiagnostic(error instanceof Error ? error.message : "network error", cfg.botToken),
+			};
+		}
+	}
+	if (provider === "discord" && isDiscordComplete(cfg)) {
+		try {
+			const adapter =
+				deps.createDiscordDiagnostic?.({
+					applicationId: cfg.discord.applicationId,
+					botToken: cfg.discord.botToken,
+				}) ??
+				new DiscordLiveProvider({
+					applicationId: cfg.discord.applicationId,
+					botToken: cfg.discord.botToken,
+					fetchImpl: deps.fetchImpl,
+				});
+			const result = await adapter.sendOneShotTest({
+				channelId: cfg.discord.parentChannelId,
+				message: text,
+				signal: opts.signal,
+			});
+			return {
+				ok: result.ok,
+				adapter: "discord",
+				destination: cfg.discord.parentChannelId,
+				detail: sanitizeProviderDiagnostic(result.detail, cfg, "discord"),
+				...(result.uncertain ? { uncertain: true } : {}),
+			};
+		} catch (error) {
+			return {
+				ok: false,
+				adapter: "discord",
+				destination: cfg.discord.parentChannelId,
+				uncertain: true,
+				detail: sanitizeProviderDiagnostic(
+					error instanceof Error ? error.message : "Discord notification delivery failed.",
+					cfg,
+					"discord",
+				),
+			};
+		}
+	}
+	if (provider === "slack" && isSlackComplete(cfg)) {
+		try {
+			const adapter =
+				deps.createSlackDiagnostic?.({ appToken: cfg.slack.appToken, botToken: cfg.slack.botToken }) ??
+				new SlackLiveProvider({
+					appToken: cfg.slack.appToken,
+					botToken: cfg.slack.botToken,
+					fetch: deps.fetchImpl,
+				});
+			const result = await adapter.sendOneShotTest({
+				channel: cfg.slack.channelId,
+				message: text,
+				idempotencyKey: crypto.randomUUID(),
+				signal: opts.signal,
+			});
+			return {
+				ok: result.ok,
+				adapter: "slack",
+				destination: cfg.slack.channelId,
+				detail: sanitizeProviderDiagnostic(result.detail, cfg, "slack"),
+				...(result.uncertain ? { uncertain: true } : {}),
+			};
+		} catch (error) {
+			return {
+				ok: false,
+				adapter: "slack",
+				destination: cfg.slack.channelId,
+				uncertain: true,
+				detail: sanitizeProviderDiagnostic(
+					error instanceof Error ? error.message : "Slack notification delivery failed.",
+					cfg,
+					"slack",
+				),
+			};
+		}
+	}
+	return { ok: false, adapter: provider, detail: `${provider} configuration is unavailable.` };
 }
 
 /** Render a test result as a single human-readable line (no secrets). */
 export function formatNotificationTestResult(result: NotificationTestResult): string {
-	return `Notification test (${result.adapter}): ${result.ok ? "OK" : "FAILED"} — ${result.detail}`;
+	return `Notification test (${result.adapter ?? "unselected"}): ${result.ok ? "OK" : result.uncertain ? "UNCERTAIN" : "FAILED"} — ${result.detail}`;
 }
 
 // --- recovery -----------------------------------------------------------
@@ -825,6 +1197,9 @@ export interface NotificationRecoveryReport {
 		action: DaemonRecoveryAction;
 		detail: string;
 		ownerId: string | undefined;
+		blockingReason?: string;
+		markerAgeMs?: number;
+		forceCommand?: string;
 		pid: number | undefined;
 	};
 }
@@ -833,6 +1208,7 @@ export interface RecoveryOptions {
 	settings: Settings;
 	stateRoot?: string;
 	deps?: NotificationServiceDeps;
+	forceDaemonLock?: boolean;
 }
 
 export interface DaemonTransitionLock {
@@ -866,6 +1242,7 @@ type TransitionMarkerFs = {
 	writeFile?(file: string, data: string, opts?: WriteFileOptions): Promise<void>;
 	readEndpointFile?(file: string): Promise<NotificationEndpointFile>;
 	exactUnlink?(file: string, identity: NotificationEndpointFileIdentity): Promise<NotificationExactUnlinkResult>;
+	stat?(file: string): Promise<{ mtimeMs: number }>;
 };
 
 async function readTransitionMarker(
@@ -1017,6 +1394,36 @@ function defaultTransitionPidIncarnation(pid: number): string | undefined {
 	return processIncarnation(pid);
 }
 
+const TRANSITION_MARKER_GRACE_MS = 3 * HEARTBEAT_TTL_MS;
+
+async function detachStaleTransitionMarker(input: {
+	fs: TransitionMarkerFs;
+	path: string;
+	now: number;
+	pidAlive: (pid: number) => boolean;
+	pidIncarnation: (pid: number) => string | undefined;
+}): Promise<boolean> {
+	const snapshot = await readTransitionMarker(input.fs, input.path);
+	if (!snapshot) return false;
+	let marker: unknown;
+	try {
+		marker = JSON.parse(snapshot.raw);
+	} catch {
+		return false;
+	}
+	if (!isDaemonTransitionLock(marker)) return false;
+	const currentIncarnation = input.pidIncarnation(marker.pid);
+	if (
+		input.pidAlive(marker.pid) ||
+		!isProcessIncarnation(marker.incarnation) ||
+		(isProcessIncarnation(currentIncarnation) && currentIncarnation === marker.incarnation)
+	)
+		return false;
+	const ageMs = input.now - marker.createdAt;
+	if (!Number.isFinite(ageMs) || ageMs <= TRANSITION_MARKER_GRACE_MS) return false;
+	return await detachTransitionMarker(input.fs, input.path, snapshot);
+}
+
 /**
  * Owner-bound removal of a dead daemon's lock. Closes the classic
  * check-then-unlink TOCTOU: a naive `unlink(lock)` after observing a dead owner
@@ -1031,20 +1438,36 @@ async function removeDeadOwnerLock(
 	paths: DaemonPaths,
 	pidAlive: (pid: number) => boolean,
 	expected: NormalizedDaemonState,
+	now: () => number,
+	pidIncarnation: (pid: number) => string | undefined,
 ): Promise<"cleared" | "contended" | "superseded" | "now-alive" | "unlink-failed"> {
-	const transition = await acquireDaemonTransitionLock({
+	let transition = await acquireDaemonTransitionLock({
 		fs,
 		path: paths.steal,
 		pid: process.pid,
 		pidAlive: defaultTransitionPidAlive,
 		pidIncarnation: defaultTransitionPidIncarnation,
 	});
+	if (!transition) {
+		await detachStaleTransitionMarker({
+			fs,
+			path: paths.steal,
+			now: now(),
+			pidAlive,
+			pidIncarnation,
+		});
+		transition = await acquireDaemonTransitionLock({
+			fs,
+			path: paths.steal,
+			pid: process.pid,
+			pidAlive: defaultTransitionPidAlive,
+			pidIncarnation: defaultTransitionPidIncarnation,
+		});
+	}
 	if (!transition) return "contended";
 	try {
 		const current = await readDaemonStateFile(fs, paths.state);
-		if (!current || current.ownerId !== expected.ownerId || current.pid !== expected.pid) {
-			return "superseded";
-		}
+		if (!current || current.ownerId !== expected.ownerId || current.pid !== expected.pid) return "superseded";
 		if (pidAlive(current.pid)) return "now-alive";
 		if (!(await daemonTransitionLockIsHeld({ fs, path: paths.steal, lock: transition }))) return "contended";
 		try {
@@ -1072,6 +1495,7 @@ export async function recoverNotifications(opts: RecoveryOptions): Promise<Notif
 	const deps = opts.deps ?? {};
 	const fs = deps.fs ?? nodeServiceFs;
 	const pidAlive = deps.pidAlive ?? defaultPidAlive;
+	const now = deps.now ?? Date.now;
 	const stateRoot = opts.stateRoot ?? defaultStateRoot();
 
 	const dir = endpointDir(stateRoot);
@@ -1171,7 +1595,14 @@ export async function recoverNotifications(opts: RecoveryOptions): Promise<Notif
 			pid: state.pid,
 		};
 	} else if (hasLock) {
-		const outcome = await removeDeadOwnerLock(fs, paths, pidAlive, state);
+		const outcome = await removeDeadOwnerLock(
+			fs,
+			paths,
+			pidAlive,
+			state,
+			now,
+			deps.pidIncarnation ?? defaultTransitionPidIncarnation,
+		);
 		const action: DaemonRecoveryAction =
 			outcome === "cleared"
 				? "cleared-dead-owner-lock"
@@ -1190,9 +1621,35 @@ export async function recoverNotifications(opts: RecoveryOptions): Promise<Notif
 					: outcome === "superseded"
 						? "a new daemon owner took over during recovery; lock left untouched"
 						: outcome === "contended"
-							? "another daemon is starting or stealing the lock; lock left untouched"
+							? `recovery blocked by transition marker; lock left untouched${opts.forceDaemonLock ? " even after forced stale-marker retry" : ""}`
 							: `could not remove lock of dead owner pid ${state.pid}`;
-		daemon = { action, detail, ownerId: state.ownerId, pid: state.pid };
+		const blockingReason = outcome === "contended" ? "transition-marker-unavailable-or-contended" : undefined;
+		const markerAgeMs =
+			blockingReason && fs.stat
+				? (await fs.stat(paths.steal).catch(() => undefined))?.mtimeMs
+					? now() - (await fs.stat(paths.steal).catch(() => undefined))!.mtimeMs
+					: undefined
+				: undefined;
+		if (blockingReason) {
+			await writeNotificationDiagnostic(opts.settings, {
+				operation: "notify.recovery",
+				phase: "recovery",
+				outcome: action,
+				reason: blockingReason,
+				pid: state.pid,
+				ageMs: markerAgeMs,
+				detail,
+			});
+		}
+		daemon = {
+			action,
+			detail,
+			ownerId: state.ownerId,
+			pid: state.pid,
+			...(blockingReason
+				? { blockingReason, markerAgeMs, forceCommand: "gjc notify recovery --force-daemon-lock" }
+				: {}),
+		};
 	} else {
 		daemon = {
 			action: "none",
@@ -1232,5 +1689,9 @@ export function formatNotificationRecoveryReport(report: NotificationRecoveryRep
 	for (const unknown of report.endpointsRetainedUnknown ?? [])
 		lines.push(`    - retained unverified cleanup path ${unknown}`);
 	lines.push(`  daemon: ${report.daemon.action} — ${report.daemon.detail}`);
+	if (report.daemon.blockingReason) lines.push(`    - blocking reason: ${report.daemon.blockingReason}`);
+	if (report.daemon.markerAgeMs !== undefined)
+		lines.push(`    - transition marker age: ${report.daemon.markerAgeMs}ms`);
+	if (report.daemon.forceCommand) lines.push(`    - safe escape: ${report.daemon.forceCommand}`);
 	return lines.join("\n");
 }

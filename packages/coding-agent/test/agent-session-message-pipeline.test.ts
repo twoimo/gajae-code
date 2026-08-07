@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentMessage } from "@gajae-code/agent-core";
 import type { Message, Model, SimpleStreamOptions } from "@gajae-code/ai";
 import { AssistantMessageEventStream } from "@gajae-code/ai/utils/event-stream";
+import { AsyncJobManager } from "@gajae-code/coding-agent/async";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
 import { __sessionStateSidecarPerfCounters } from "@gajae-code/coding-agent/gjc-runtime/session-state-sidecar";
+import { GjcTeamWorkerHeartbeatReporter } from "@gajae-code/coding-agent/gjc-runtime/team-worker-heartbeat";
 import {
 	__agentSessionPerfCounters,
 	AgentSession,
@@ -84,7 +86,7 @@ describe("AgentSession message pipeline", () => {
 			...(payload as Record<string, unknown>),
 			session: true,
 		}));
-		const requestOnPayload = vi.fn(async () => undefined);
+		const requestOnPayload = vi.fn(async (_payload: unknown) => undefined);
 		const session = new AgentSession({
 			agent: createAgent(),
 			sessionManager: SessionManager.inMemory(),
@@ -101,13 +103,15 @@ describe("AgentSession message pipeline", () => {
 		const prepared = session.prepareSimpleStreamOptions(options);
 		const result = await prepared.onPayload?.({ original: true });
 
-		expect(sessionOnPayload).toHaveBeenCalledWith({ original: true }, undefined);
-		expect(requestOnPayload).toHaveBeenCalledWith({ original: true, session: true }, undefined);
+		expect(sessionOnPayload.mock.calls.length).toBe(1);
+		expect(sessionOnPayload.mock.calls[0]?.[0]).toEqual({ original: true });
+		expect(requestOnPayload.mock.calls.length).toBe(1);
+		expect(requestOnPayload.mock.calls[0]?.[0]).toEqual({ original: true, session: true });
 		expect(result).toEqual({ original: true, session: true });
 	});
 
 	it("records raw SSE diagnostics into the session buffer before request hooks", async () => {
-		const requestOnSseEvent = vi.fn();
+		const requestOnSseEvent = vi.fn((_event: unknown) => {});
 		const session = new AgentSession({
 			agent: createAgent(),
 			sessionManager: SessionManager.inMemory(),
@@ -121,10 +125,12 @@ describe("AgentSession message pipeline", () => {
 		prepared.onSseEvent?.({ event: "message", data: "{}", raw: ["event: message", "data: {}"] });
 
 		expect(session.rawSseDebugBuffer.snapshot().totalEvents).toBe(1);
-		expect(requestOnSseEvent).toHaveBeenCalledWith(
-			{ event: "message", data: "{}", raw: ["event: message", "data: {}"] },
-			undefined,
-		);
+		expect(requestOnSseEvent.mock.calls.length).toBe(1);
+		expect(requestOnSseEvent.mock.calls[0]?.[0]).toEqual({
+			event: "message",
+			data: "{}",
+			raw: ["event: message", "data: {}"],
+		});
 	});
 
 	it("emits message_update to session listeners before slow extension handlers finish", async () => {
@@ -196,7 +202,19 @@ describe("AgentSession message pipeline", () => {
 	});
 
 	it("forwards stop reasons and reasoning summaries to extension handlers", async () => {
-		const extensionEmit = vi.fn(async () => {});
+		const extensionEmit = vi.fn(
+			async (
+				_event: {
+					type: string;
+					messages?: unknown[];
+					stopReason?: string;
+					contentIndex?: number;
+					content?: string;
+				},
+				_continueWhile?: () => boolean,
+				_scope?: unknown,
+			) => {},
+		);
 		const session = new AgentSession({
 			agent: createAgent(),
 			sessionManager: SessionManager.inMemory(),
@@ -223,15 +241,17 @@ describe("AgentSession message pipeline", () => {
 		await Bun.sleep(0);
 		await Bun.sleep(0);
 
-		expect(extensionEmit).toHaveBeenCalledWith({ type: "agent_end", messages: [], stopReason: "cancelled" });
-		expect(extensionEmit).toHaveBeenCalledWith(
+		const emittedEvents = extensionEmit.mock.calls.map(([event]) => event);
+		expect(emittedEvents).toContainEqual({ type: "agent_end", messages: [], stopReason: "cancelled" });
+		const reasoningCall = extensionEmit.mock.calls.find(([event]) => event?.type === "reasoning_summary_end");
+		expect(reasoningCall?.[0]).toEqual(
 			expect.objectContaining({
 				type: "reasoning_summary_end",
 				contentIndex: 0,
 				content: "safe summary",
 			}),
-			expect.any(Function),
 		);
+		expect(typeof reasoningCall?.[1]).toBe("function");
 	});
 
 	it("drains pre-terminal reasoning summaries through slow extension handlers and drops post-terminal updates", async () => {
@@ -1097,5 +1117,127 @@ describe("AgentSession message pipeline", () => {
 		await disposed;
 		await idle;
 		expect(extensionEvents.at(-1)).toBe("session_shutdown");
+	});
+
+	it("publishes a runtime-owned team worker heartbeat only while a turn is in flight", async () => {
+		const beats: number[] = [];
+		const reporter = new GjcTeamWorkerHeartbeatReporter({
+			intervalMs: 5,
+			write: async () => {
+				beats.push(Date.now());
+			},
+		});
+		const releaseStream = Promise.withResolvers<void>();
+		const streamStarted = Promise.withResolvers<void>();
+		let activeRelease = releaseStream;
+		let activeStarted = streamStarted;
+		let activeFailure: Error | undefined;
+		const asyncJobs = new AsyncJobManager({ onJobComplete: () => {} });
+		const model: Model = {
+			id: "team-heartbeat-model",
+			name: "team-heartbeat-model",
+			provider: "mock",
+			api: "mock",
+			baseUrl: "mock://",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 32_768,
+		};
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["system prompt"], messages: [], tools: [] },
+			streamFn: () => {
+				const stream = new AssistantMessageEventStream();
+				const turnRelease = activeRelease;
+				const turnStarted = activeStarted;
+				void (async () => {
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					turnStarted.resolve();
+					await turnRelease.promise;
+					if (activeFailure) stream.fail(activeFailure);
+					else stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
+				})();
+				return stream;
+			},
+		});
+		const session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: { getApiKey: async () => "test-key" } as never,
+			teamWorkerHeartbeatReporter: reporter,
+			ownedAsyncJobManager: asyncJobs,
+			agentId: "worker-agent",
+		});
+		sessions.push(session);
+
+		expect(reporter.isRunning).toBe(false);
+		expect(beats).toHaveLength(0);
+
+		const prompt = session.prompt("hello");
+		await streamStarted.promise;
+		// A long turn keeps publishing: the leader must not see a live worker as stale.
+		expect(reporter.isRunning).toBe(true);
+		await Bun.sleep(20);
+		const duringTurn = beats.length;
+		expect(duringTurn).toBeGreaterThan(1);
+
+		releaseStream.resolve();
+		await prompt;
+		await session.waitForIdle();
+		await reporter.flush();
+
+		expect(reporter.isRunning).toBe(false);
+		expect(beats.length).toBeGreaterThanOrEqual(duringTurn + 1);
+		const afterTurn = beats.length;
+		await Bun.sleep(20);
+		expect(beats).toHaveLength(afterTurn);
+
+		const releaseJob = Promise.withResolvers<void>();
+		const jobId = asyncJobs.register(
+			"bash",
+			"long background build",
+			async () => {
+				await releaseJob.promise;
+				return "done";
+			},
+			{ ownerId: "worker-agent" },
+		);
+		// Background work is still worker activity even though no Agent turn is open.
+		expect(reporter.isRunning).toBe(true);
+		await Bun.sleep(15);
+		const duringJob = beats.length;
+		expect(duringJob).toBeGreaterThan(afterTurn);
+
+		releaseJob.resolve();
+		await asyncJobs.getJob(jobId)?.promise;
+		await Bun.sleep(0);
+		await reporter.flush();
+		expect(reporter.isRunning).toBe(false);
+
+		activeRelease = Promise.withResolvers<void>();
+		activeStarted = Promise.withResolvers<void>();
+		// YieldQueue's idle-delivery path calls Agent.prompt() directly rather than
+		// AgentSession.prompt(). Agent turn events must still own the reporter.
+		const internallyDispatchedTurn = agent.prompt("background result");
+		await activeStarted.promise;
+		expect(reporter.isRunning).toBe(true);
+		activeRelease.resolve();
+		await internallyDispatchedTurn;
+		await reporter.flush();
+		expect(reporter.isRunning).toBe(false);
+
+		activeRelease = Promise.withResolvers<void>();
+		activeStarted = Promise.withResolvers<void>();
+		activeFailure = new Error("provider stream failed");
+		const failedTurn = agent.prompt("failing background result");
+		await activeStarted.promise;
+		expect(reporter.isRunning).toBe(true);
+		activeRelease.resolve();
+		await failedTurn;
+		await reporter.flush();
+		expect(reporter.isRunning).toBe(false);
 	});
 });

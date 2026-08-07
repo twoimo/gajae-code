@@ -68,17 +68,36 @@ type ConnectionTask = {
 
 const STARTUP_TIMEOUT_MS = 250;
 const STARTUP_TIMEOUT_GRACE_MS = 500;
+/**
+ * Default ceiling on how long `discoverAndConnect` waits for a server batch to
+ * come up. Deliberately short: a config with a large `timeout` must not be able
+ * to hang ordinary startup. ACP lifecycle launches carry their own, larger
+ * budget derived from the readiness deadline (see `maxStartupTimeoutMs`).
+ */
 const MAX_STARTUP_TIMEOUT_MS = 1_750;
+const DEFAULT_EXACT_CONFIG_STARTUP_TIMEOUT_MS = 30_000;
 
-function resolveStartupTimeoutMs(configs: MCPServerConfig[]): number {
+export function resolveStartupTimeoutMs(configs: MCPServerConfig[], maxStartupTimeoutMs?: number): number {
+	const ceiling =
+		typeof maxStartupTimeoutMs === "number" && Number.isFinite(maxStartupTimeoutMs) && maxStartupTimeoutMs > 0
+			? Math.max(STARTUP_TIMEOUT_MS, maxStartupTimeoutMs)
+			: MAX_STARTUP_TIMEOUT_MS;
 	const configuredTimeouts = configs
 		.map(config => config.timeout)
 		.filter((timeout): timeout is number => typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0);
 	if (configuredTimeouts.length === 0) return STARTUP_TIMEOUT_MS;
-	return Math.min(
-		MAX_STARTUP_TIMEOUT_MS,
-		Math.max(STARTUP_TIMEOUT_MS, Math.max(...configuredTimeouts) + STARTUP_TIMEOUT_GRACE_MS),
-	);
+	return Math.min(ceiling, Math.max(STARTUP_TIMEOUT_MS, Math.max(...configuredTimeouts) + STARTUP_TIMEOUT_GRACE_MS));
+}
+
+export function resolveExactConfigStartupTimeoutMs(configs: MCPServerConfig[]): number {
+	const effectiveTimeouts = configs.map(config => {
+		const timeout = config.timeout;
+		return typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0
+			? timeout
+			: DEFAULT_EXACT_CONFIG_STARTUP_TIMEOUT_MS;
+	});
+	if (effectiveTimeouts.length === 0) return STARTUP_TIMEOUT_MS;
+	return Math.max(...effectiveTimeouts) + STARTUP_TIMEOUT_GRACE_MS;
 }
 
 function trackPromise<T>(promise: Promise<T>): TrackedPromise<T> {
@@ -185,6 +204,13 @@ export interface MCPDiscoverOptions {
 export interface MCPManagerOptions {
 	/** Restrict this instance to tools from an explicit MCP config. */
 	toolsOnly?: boolean;
+	/**
+	 * Ceiling for the startup wait, in milliseconds. Only ACP lifecycle launches
+	 * set this, so a slow ACP MCP handshake gets the readiness budget while every
+	 * other consumer keeps the short default. Non-positive or non-finite values
+	 * are ignored and the default applies.
+	 */
+	maxStartupTimeoutMs?: number;
 }
 
 /**
@@ -269,12 +295,15 @@ export class MCPManager {
 		);
 	}
 
+	readonly #maxStartupTimeoutMs: number | undefined;
+
 	constructor(
 		private cwd: string,
 		private toolCache: MCPToolCache | null = null,
 		options: MCPManagerOptions = {},
 	) {
 		this.#toolsOnly = options.toolsOnly === true;
+		this.#maxStartupTimeoutMs = options.maxStartupTimeoutMs;
 	}
 
 	isToolsOnly(): boolean {
@@ -633,7 +662,13 @@ export class MCPManager {
 		}
 
 		if (connectionTasks.length > 0) {
-			const startupTimeoutMs = resolveStartupTimeoutMs(connectionTasks.map(task => task.config));
+			const configs = connectionTasks.map(task => task.config);
+			// An exact config is explicit operator intent, so its declared connection
+			// windows govern startup. Ordinary discovery keeps the short ceiling.
+			const startupTimeoutMs =
+				this.#toolsOnly && this.#maxStartupTimeoutMs === undefined
+					? resolveExactConfigStartupTimeoutMs(configs)
+					: resolveStartupTimeoutMs(configs, this.#maxStartupTimeoutMs);
 			const firstUnexpectedFailure = Promise.withResolvers<{ reason: unknown }>();
 			if (this.#toolsOnly) {
 				for (const task of connectionTasks) {

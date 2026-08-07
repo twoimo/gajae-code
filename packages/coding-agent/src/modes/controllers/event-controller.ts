@@ -12,10 +12,15 @@ import {
 	readArgsTargetInternalUrl,
 } from "../../modes/components/read-tool-group";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
-import { ToolExecutionComponent } from "../../modes/components/tool-execution";
+import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
-import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
+import {
+	type InteractiveModeContext,
+	stopInteractiveActivityIndicator,
+	syncInteractiveActivityIndicator,
+	type TodoPhase,
+} from "../../modes/types";
 import type { PlanApprovalDetails } from "../../plan-mode/approved-plan";
 import { completionNotifyDisabledByEnv } from "../../sdk/bus/config";
 import { summaryFromMessage } from "../../sdk/bus/helpers";
@@ -23,9 +28,11 @@ import type { AgentSessionEvent } from "../../session/agent-session";
 import { type CustomMessage, isSilentAbort, readPendingDisplayTag } from "../../session/messages";
 import { transferSessionMessageIdentity } from "../../session/session-manager";
 import type { ResolveToolDetails } from "../../tools/resolve";
+import { computeIrcSplitWidths, getIrcSidebarSemanticToken } from "../components/irc-sidebar";
 import type { IrcObservationRecord } from "../irc-observation-ledger";
 import { interruptHint } from "../shared";
 import { buildAbortDisplayMessage } from "../utils/abort-message";
+import { emitHostStatus } from "../utils/host-status";
 import { consumeInjectedOptimisticSignature } from "../utils/injected-user-submission";
 import { parseIrcMessage } from "../utils/irc-message";
 import { ringTerminalBell } from "../utils/terminal-bell";
@@ -36,7 +43,14 @@ type AgentSessionEventKind = AgentSessionEvent["type"];
 
 /** Test-only performance counters for advisory baseline tests. */
 export const __eventControllerPerfCounters = {
+	enabled: false,
 	messageUpdateContentVisits: 0,
+	enable(): void {
+		this.enabled = true;
+	},
+	disable(): void {
+		this.enabled = false;
+	},
 	reset(): void {
 		this.messageUpdateContentVisits = 0;
 	},
@@ -118,6 +132,9 @@ export class EventController {
 	#toolIntentCache = new Map<string, { args: unknown; intent: string | undefined }>();
 	#thinkingContentIndices = new Set<number>();
 	#handlers: AgentSessionEventHandlers;
+	#visibleTranscriptChanged = false;
+	#handlingEvent = false;
+	#eventQueue: Promise<void> = Promise.resolve();
 
 	constructor(private ctx: InteractiveModeContext) {
 		this.#handlers = {
@@ -155,11 +172,39 @@ export class EventController {
 			this.ctx.retryEscapeHandler = undefined;
 		}
 		this.ctx.retryEscapePrimed = false;
+		if (this.ctx.autoCompactionEscapeHandler) {
+			this.ctx.editor.onEscape = this.ctx.autoCompactionEscapeHandler;
+			this.ctx.autoCompactionEscapeHandler = undefined;
+		}
+		if (this.ctx.autoCompactionLoader) {
+			this.ctx.autoCompactionLoader.stop();
+			this.ctx.autoCompactionLoader = undefined;
+		}
 		if (this.ctx.retryLoader) {
 			this.ctx.retryLoader.stop();
 			this.ctx.retryLoader = undefined;
 		}
 		this.clearIrcExpiryTimers();
+	}
+
+	#recordVisibleTranscriptMutation(): void {
+		this.#visibleTranscriptChanged = true;
+	}
+
+	#observeVisibleTranscriptMutation(): void {
+		if (this.#handlingEvent) {
+			this.#recordVisibleTranscriptMutation();
+			return;
+		}
+		this.ctx.recordVisibleTranscriptMutation?.();
+	}
+
+	#consumeToolVisibleChange(handle: ToolExecutionHandle): void {
+		// Structural third-party renderers may not implement the optional exact-consume
+		// capability; preserve revision correctness conservatively until they opt in.
+		if (typeof handle.consumeVisibleTranscriptChange !== "function" || handle.consumeVisibleTranscriptChange()) {
+			this.#recordVisibleTranscriptMutation();
+		}
 	}
 
 	#resetReadGroup(): void {
@@ -228,20 +273,33 @@ export class EventController {
 		});
 	}
 
-	async handleEvent(event: AgentSessionEvent): Promise<void> {
-		if (!this.ctx.isInitialized) {
-			await this.ctx.init();
+	handleEvent(event: AgentSessionEvent): Promise<void> {
+		const dispatch = this.#eventQueue.then(() => this.#dispatchEvent(event));
+		this.#eventQueue = dispatch.catch(() => {});
+		return dispatch;
+	}
+
+	async #dispatchEvent(event: AgentSessionEvent): Promise<void> {
+		if (this.ctx.isStopped?.()) return;
+		if (!this.ctx.isInitialized) await this.ctx.init();
+		if (this.ctx.isStopped?.()) return;
+		this.#visibleTranscriptChanged = false;
+		this.#handlingEvent = true;
+		try {
+			this.ctx.statusLine.invalidate();
+			this.ctx.updateEditorTopBorder();
+			const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
+			await run(event);
+			if (this.ctx.isStopped?.()) return;
+			if (this.#visibleTranscriptChanged) this.ctx.recordVisibleTranscriptMutation?.();
+			if (this.ctx.isTranscriptViewerOpen?.()) this.ctx.refreshTranscriptViewer?.();
+		} finally {
+			this.#handlingEvent = false;
 		}
-
-		this.ctx.statusLine.invalidate();
-		this.ctx.updateEditorTopBorder();
-
-		const run = this.#handlers[event.type] as (e: AgentSessionEvent) => Promise<void>;
-		await run(event);
-		if (this.ctx.isTranscriptViewerOpen?.()) this.ctx.refreshTranscriptViewer?.();
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		emitHostStatus("working");
 		this.ctx.promptSuggestion?.onAgentStart();
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
@@ -268,8 +326,12 @@ export class EventController {
 		const parsed = parseIrcMessage(message);
 		if (!parsed) return;
 		const arrival = this.ctx.captureIrcArrivalSnapshot();
+		const rightWidth = arrival.panelVisible
+			? computeIrcSplitWidths(this.ctx.ui.terminal?.columns ?? 0).rightWidth
+			: 0;
+		const beforeToken = rightWidth > 0 ? getIrcSidebarSemanticToken(this.ctx.ircLedger, rightWidth) : "";
 		const record = this.ctx.ircLedger.observe(parsed, arrival.panelVisible);
-		this.#cleanupEvictedIrcObservations();
+		const evictedInlineRemoved = this.#cleanupIrcObservationIds(this.ctx.ircLedger.drainEvictedObservationIds());
 		if (!record) return;
 		const signature = `irc:${record.observationId}`;
 		if (this.#renderedCustomMessages.has(signature)) return;
@@ -279,9 +341,13 @@ export class EventController {
 		this.#renderedIrcComponents.set(record.observationId, components);
 		this.#scheduleIrcExpiry(record, components);
 		this.ctx.ui.requestRender();
+		const afterToken = rightWidth > 0 ? getIrcSidebarSemanticToken(this.ctx.ircLedger, rightWidth) : "";
+		if (components.length > 0 || evictedInlineRemoved || (rightWidth > 0 && beforeToken !== afterToken)) {
+			this.#recordVisibleTranscriptMutation();
+		}
 	}
 
-	#cleanupIrcObservationIds(observationIds: readonly string[]): void {
+	#cleanupIrcObservationIds(observationIds: readonly string[]): boolean {
 		const removedComponents = new Set<Component>();
 		for (const observationId of observationIds) {
 			const timer = this.#ircExpiryTimers.get(observationId);
@@ -294,23 +360,26 @@ export class EventController {
 			for (const component of this.ctx.removeRenderedIrcInlineComponents(observationId) ?? []) {
 				removedComponents.add(component);
 			}
-
 			this.#renderedCustomMessages.delete(`irc:${observationId}`);
 		}
 		for (const component of removedComponents) this.ctx.chatContainer.removeChild(component);
+		return removedComponents.size > 0;
 	}
 
 	#cleanupEvictedIrcObservations(): void {
-		this.#cleanupIrcObservationIds(this.ctx.ircLedger.drainEvictedObservationIds());
+		if (this.#cleanupIrcObservationIds(this.ctx.ircLedger.drainEvictedObservationIds())) {
+			this.#recordVisibleTranscriptMutation();
+		}
 	}
 
-	#cleanupExpiredIrcInlineComponents(observationId: string): void {
+	#cleanupExpiredIrcInlineComponents(observationId: string): boolean {
 		const removedComponents = new Set<Component>(this.#renderedIrcComponents.get(observationId));
 		this.#renderedIrcComponents.delete(observationId);
 		for (const component of this.ctx.removeRenderedIrcInlineComponents(observationId) ?? []) {
 			removedComponents.add(component);
 		}
 		for (const component of removedComponents) this.ctx.chatContainer.removeChild(component);
+		return removedComponents.size > 0;
 	}
 
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
@@ -326,6 +395,7 @@ export class EventController {
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
 			this.ctx.addMessageToChat(event.message);
+			if (event.message.display) this.#recordVisibleTranscriptMutation();
 			// Tag-keyed pending-bar refresh: when AgentSession.#handleAgentEvent
 			// spliced this dequeued custom message out of #steeringMessages /
 			// #followUpMessages (it ran before this emit), the array state is
@@ -373,10 +443,12 @@ export class EventController {
 				this.ctx.updatePendingMessagesDisplay();
 			}
 			this.ctx.ui.requestRender();
+			if (!wasOptimistic) this.#recordVisibleTranscriptMutation();
 		} else if (event.message.role === "fileMention") {
 			this.#resetReadGroup();
 			this.ctx.addMessageToChat(event.message);
 			this.ctx.ui.requestRender();
+			this.#recordVisibleTranscriptMutation();
 		} else if (event.message.role === "assistant") {
 			this.#lastThinkingCount = 0;
 			this.#resetReadGroup();
@@ -387,6 +459,7 @@ export class EventController {
 				this.ctx.hideThinkingBlock,
 				() => this.ctx.ui.requestRender(),
 				this.ctx.getAssistantViewportAnchorId?.(event.message),
+				() => this.#observeVisibleTranscriptMutation(),
 			);
 			this.ctx.streamingMessage = event.message;
 			addChatChild(this.ctx, this.ctx.streamingComponent);
@@ -429,15 +502,10 @@ export class EventController {
 		this.#cleanupEvictedIrcObservations();
 		const projectedObservationIds = new Set(inlineProjection.map(record => record.observationId));
 		for (const [observationId, components] of componentsByObservationId) {
-			const record = this.ctx.ircLedger.getRecord(observationId);
-			if (
-				!projectedObservationIds.has(observationId) ||
-				(record?.mode === "ephemeral" && record.expiresAt! - now <= 0)
-			) {
+			if (!projectedObservationIds.has(observationId)) {
 				for (const component of components) {
 					this.ctx.chatContainer.removeChild(component);
 				}
-				this.#renderedIrcComponents.delete(observationId);
 				componentsByObservationId.delete(observationId);
 			}
 		}
@@ -468,12 +536,12 @@ export class EventController {
 		}
 		const remainingMs = record.expiresAt! - Date.now();
 		if (remainingMs <= 0) {
-			this.#cleanupExpiredIrcInlineComponents(record.observationId);
+			if (this.#cleanupExpiredIrcInlineComponents(record.observationId)) this.#observeVisibleTranscriptMutation();
 			return false;
 		}
 		const timer = setTimeout(() => {
 			this.#ircExpiryTimers.delete(record.observationId);
-			this.#cleanupExpiredIrcInlineComponents(record.observationId);
+			if (this.#cleanupExpiredIrcInlineComponents(record.observationId)) this.#observeVisibleTranscriptMutation();
 			this.ctx.ui.requestRender();
 		}, remainingMs);
 		timer.unref?.();
@@ -496,6 +564,7 @@ export class EventController {
 		this.#resetReadGroup();
 		this.ctx.addMessageToChat(event.message);
 		this.ctx.ui.requestRender();
+		this.#recordVisibleTranscriptMutation();
 	}
 
 	async #handleModelFallbackSwitched(
@@ -549,19 +618,24 @@ export class EventController {
 			}
 
 			for (const content of contentsToProcess) {
-				__eventControllerPerfCounters.messageUpdateContentVisits += 1;
+				if (__eventControllerPerfCounters.enabled) __eventControllerPerfCounters.messageUpdateContentVisits += 1;
 				if (content.type !== "toolCall") continue;
 				if (content.name === "read") {
 					if (!readArgsHaveTarget(content.arguments)) continue;
 					if (!readArgsTargetInternalUrl(content.arguments)) {
 						this.#trackReadToolCall(content.id, content.arguments);
 						const component = this.ctx.pendingTools.get(content.id);
-						if (component) component.updateArgs(content.arguments, content.id);
-						else {
+						if (component) {
+							component.updateArgs(content.arguments, content.id);
+							this.#consumeToolVisibleChange(component);
+						} else {
 							const group = this.#getReadGroup();
 							group.updateArgs(content.arguments, content.id);
 							this.ctx.pendingTools.set(content.id, group);
+							this.#recordVisibleTranscriptMutation();
+							group.consumeVisibleTranscriptChange();
 						}
+
 						continue;
 					}
 				}
@@ -582,6 +656,7 @@ export class EventController {
 							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 							hashlineAutoDropPureInsertDuplicates: settings.get("edit.hashlineAutoDropPureInsertDuplicates"),
+							onVisibleTranscriptMutation: () => this.#observeVisibleTranscriptMutation(),
 						},
 						tool,
 						this.ctx.ui,
@@ -591,8 +666,10 @@ export class EventController {
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.pendingTools.set(content.id, component);
 					addChatChild(this.ctx, component);
+					this.#recordVisibleTranscriptMutation();
 				} else {
 					this.ctx.pendingTools.get(content.id)?.updateArgs(renderArgs, content.id);
+					this.#consumeToolVisibleChange(this.ctx.pendingTools.get(content.id)!);
 				}
 
 				const args = content.arguments;
@@ -659,6 +736,7 @@ export class EventController {
 			if (this.ctx.streamingMessage.stopReason !== "aborted" && this.ctx.streamingMessage.stopReason !== "error") {
 				for (const [toolCallId, component] of this.ctx.pendingTools.entries()) {
 					component.setArgsComplete(toolCallId);
+					this.#consumeToolVisibleChange(component);
 				}
 			}
 			this.#lastAssistantComponent = this.ctx.streamingComponent;
@@ -685,6 +763,8 @@ export class EventController {
 					this.ctx.pendingTools.set(event.toolCallId, group);
 				}
 				this.ctx.ui.requestRender();
+				this.#consumeToolVisibleChange(this.ctx.pendingTools.get(event.toolCallId)!);
+
 				return;
 			}
 
@@ -698,6 +778,7 @@ export class EventController {
 					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
 					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 					hashlineAutoDropPureInsertDuplicates: settings.get("edit.hashlineAutoDropPureInsertDuplicates"),
+					onVisibleTranscriptMutation: () => this.#observeVisibleTranscriptMutation(),
 				},
 				tool,
 				this.ctx.ui,
@@ -707,6 +788,8 @@ export class EventController {
 			component.setExpanded(this.ctx.toolOutputExpanded);
 			this.ctx.pendingTools.set(event.toolCallId, component);
 			addChatChild(this.ctx, component);
+			this.#recordVisibleTranscriptMutation();
+
 			this.ctx.ui.requestRender();
 		}
 	}
@@ -723,6 +806,8 @@ export class EventController {
 				!isFinalAsyncState,
 				event.toolCallId,
 			);
+			this.#consumeToolVisibleChange(component);
+
 			if (isFinalAsyncState) {
 				this.ctx.pendingTools.delete(event.toolCallId);
 				this.#backgroundToolCallIds.delete(event.toolCallId);
@@ -737,6 +822,8 @@ export class EventController {
 				const component = this.ctx.pendingTools.get(event.toolCallId);
 				if (component) {
 					component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+					this.#consumeToolVisibleChange(component);
+
 					this.ctx.pendingTools.delete(event.toolCallId);
 				}
 				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
@@ -761,6 +848,8 @@ export class EventController {
 				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
 				const isBackgroundRunning = asyncState === "running";
 				component.updateResult({ ...event.result, isError: event.isError }, isBackgroundRunning, event.toolCallId);
+				this.#consumeToolVisibleChange(component);
+
 				if (isBackgroundRunning) {
 					this.#backgroundToolCallIds.add(event.toolCallId);
 				} else {
@@ -776,6 +865,8 @@ export class EventController {
 				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
 				const isBackgroundRunning = asyncState === "running";
 				component.updateResult({ ...event.result, isError: event.isError }, isBackgroundRunning, event.toolCallId);
+				this.#consumeToolVisibleChange(component);
+
 				if (isBackgroundRunning) {
 					this.#backgroundToolCallIds.add(event.toolCallId);
 				} else {
@@ -805,23 +896,22 @@ export class EventController {
 				const planDetails = details.sourceResultDetails as PlanApprovalDetails | undefined;
 				if (planDetails) {
 					await this.ctx.planModeController.handleApproval(planDetails);
+					if (this.ctx.isStopped?.()) return;
 				}
 			}
 		}
 	}
 
 	async #handleAgentEnd(_event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-			this.ctx.statusContainer.clear();
-		}
+		this.ctx.setWorkingMessage(undefined);
+		stopInteractiveActivityIndicator(this.ctx);
 		if (this.ctx.streamingComponent) {
 			this.ctx.chatContainer.removeChild(this.ctx.streamingComponent);
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
 		}
 		await this.ctx.planModeController.flushPendingModelSwitch();
+		if (this.ctx.isStopped?.()) return;
 		for (const toolCallId of Array.from(this.ctx.pendingTools.keys())) {
 			if (!this.#backgroundToolCallIds.has(toolCallId)) {
 				this.ctx.pendingTools.delete(toolCallId);
@@ -836,6 +926,7 @@ export class EventController {
 		this.ctx.updateEditorBorderColor();
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
+		emitHostStatus("finished");
 		this.sendCompletionNotification();
 		this.ctx.promptSuggestion?.onAgentEnd();
 	}
@@ -849,11 +940,7 @@ export class EventController {
 		this.ctx.editor.onEscape = () => {
 			this.ctx.session.abortCompaction();
 		};
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
+		stopInteractiveActivityIndicator(this.ctx, { restoreBackground: false });
 		const reasonText =
 			event.reason === "overflow" ? "Context overflow detected, " : event.reason === "idle" ? "Idle " : "";
 		const actionLabel = event.action === "handoff" ? "Auto-handoff" : "Auto context-full maintenance";
@@ -893,6 +980,12 @@ export class EventController {
 			} else if (event.willRetry && !isHandoffAction) {
 				this.ctx.showStatus("Context overflow maintenance completed");
 			}
+		} else if (
+			event.skipped &&
+			event.errorMessage?.startsWith("Context overflow recovery skipped: nothing eligible to compact.") &&
+			!isHandoffAction
+		) {
+			this.ctx.showStatus(event.errorMessage);
 		} else if (event.errorMessage) {
 			this.ctx.showWarning(event.errorMessage);
 		} else if (isHandoffAction) {
@@ -903,6 +996,7 @@ export class EventController {
 			this.ctx.statusLine.invalidate();
 			this.ctx.updateEditorTopBorder();
 			await this.ctx.reloadTodos();
+			if (this.ctx.isStopped?.()) return;
 			this.ctx.showStatus("Auto-handoff completed");
 		} else if (event.skipped) {
 			// Benign skip: no model selected, no candidate models available, or nothing
@@ -916,6 +1010,8 @@ export class EventController {
 			this.ctx.showWarning("Auto context-full maintenance failed; continuing without maintenance");
 		}
 		await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
+		if (this.ctx.isStopped?.()) return;
+		syncInteractiveActivityIndicator(this.ctx);
 		this.ctx.ui.requestRender();
 	}
 
@@ -945,11 +1041,7 @@ export class EventController {
 				this.ctx.session.abortRetry();
 			}
 		};
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
+		stopInteractiveActivityIndicator(this.ctx, { restoreBackground: false });
 		// Stop any prior retry loader/timer before installing a new one.
 		this.ctx.retryLoader?.stop();
 		this.#clearRetryCountdown();
@@ -992,6 +1084,7 @@ export class EventController {
 		if (!event.success) {
 			this.ctx.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 		}
+		syncInteractiveActivityIndicator(this.ctx);
 		this.ctx.ui.requestRender();
 	}
 
@@ -999,12 +1092,15 @@ export class EventController {
 		const component = new TtsrNotificationComponent(event.rules);
 		component.setExpanded(this.ctx.toolOutputExpanded);
 		addChatChild(this.ctx, component);
+		this.#recordVisibleTranscriptMutation();
+
 		this.ctx.ui.requestRender();
 	}
 
 	async #handleTodoReminder(event: Extract<AgentSessionEvent, { type: "todo_reminder" }>): Promise<void> {
 		const component = new TodoReminderComponent(event.todos, event.attempt, event.maxAttempts);
 		addChatChild(this.ctx, component);
+		this.#recordVisibleTranscriptMutation();
 		this.ctx.ui.requestRender();
 	}
 

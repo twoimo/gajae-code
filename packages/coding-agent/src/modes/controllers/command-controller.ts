@@ -34,7 +34,12 @@ import { BorderedLoader } from "../../modes/components/bordered-loader";
 import { DynamicBorder } from "../../modes/components/dynamic-border";
 import { EvalExecutionComponent } from "../../modes/components/eval-execution";
 import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
-import type { InteractiveModeContext } from "../../modes/types";
+import {
+	clearInteractiveActivityLoaders,
+	type InteractiveModeContext,
+	stopInteractiveActivityIndicator,
+	suspendInteractiveActivityIndicator,
+} from "../../modes/types";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
 import { buildHotkeysMarkdown, formatHotkeyMarkdownCode } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
@@ -65,6 +70,8 @@ export function buildHelpMarkdown(keybindings: Pick<KeybindingsManager, "getAcce
 	const displayKey = (action: Keybinding): string => keybindings.getAccessibleDisplayString(action) || "Disabled";
 	const sessionNewKey = formatHotkeyMarkdownCode(displayKey("app.session.new"));
 	const selectModelKey = formatHotkeyMarkdownCode(displayKey("app.model.select"));
+	const queueMessageKey = formatHotkeyMarkdownCode(displayKey("app.message.queue"));
+	const dequeueMessageKey = formatHotkeyMarkdownCode(displayKey("app.message.dequeue"));
 	const autocompleteNavigationKeys = formatHotkeyMarkdownCode(
 		`${displayKey("tui.select.up")}/${displayKey("tui.select.down")}`,
 		false,
@@ -84,6 +91,8 @@ export function buildHelpMarkdown(keybindings: Pick<KeybindingsManager, "getAcce
 		"| Show session details | `/session info` |",
 		"| Delete current session transcript/artifacts | `/session delete` |",
 		`| Select a model | \`/model\` or ${selectModelKey} |`,
+		`| Queue a message for the next turn | ${queueMessageKey} |`,
+		`| Select or edit a queued message | ${dequeueMessageKey} |`,
 		"| Show all shortcuts | `?` on an empty prompt or `/hotkeys` |",
 		"",
 		"**Finding commands**",
@@ -961,12 +970,10 @@ export class CommandController {
 
 	async #runNewSessionFlow(options?: NewSessionOptions, label: string = "New session started"): Promise<boolean> {
 		if (!(await this.ctx.session.newSession(options))) return false;
+		if (this.ctx.isStopped?.()) return false;
+		clearInteractiveActivityLoaders(this.ctx);
 
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
+		stopInteractiveActivityIndicator(this.ctx);
 		this.ctx.resetIrcSidebarSession();
 		this.ctx.resetObserverRegistry();
 		setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
@@ -987,6 +994,7 @@ export class CommandController {
 
 		this.ctx.chatContainer.addChild(new Text(`${theme.fg("accent", `${theme.status.success} ${label}`)}`, 1, 0));
 		await this.ctx.reloadTodos();
+		if (this.ctx.isStopped?.()) return false;
 		this.ctx.ui.requestRender();
 		return true;
 	}
@@ -996,19 +1004,18 @@ export class CommandController {
 	}
 
 	async handleContextClearCommand(): Promise<void> {
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
-
+		if (this.ctx.isStopped?.()) return;
+		clearInteractiveActivityLoaders(this.ctx);
+		stopInteractiveActivityIndicator(this.ctx);
 		if (this.ctx.session.isCompacting) {
 			this.ctx.session.abortCompaction();
 			while (this.ctx.session.isCompacting) {
 				await Bun.sleep(10);
 			}
 		}
+		if (this.ctx.isStopped?.()) return;
 		if (!(await this.ctx.session.clearContext())) return;
+		if (this.ctx.isStopped?.()) return;
 		setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
 		this.ctx.statusLine.invalidate();
@@ -1029,6 +1036,7 @@ export class CommandController {
 			new Text(`${theme.fg("accent", `${theme.status.success} Context cleared`)}`, 1, 0),
 		);
 		await this.ctx.reloadTodos();
+		if (this.ctx.isStopped?.()) return;
 		this.ctx.ui.requestRender();
 	}
 
@@ -1045,17 +1053,15 @@ export class CommandController {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before forking.");
 			return;
 		}
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
 
 		const success = await this.ctx.session.fork();
+		if (this.ctx.isStopped?.()) return;
 		if (!success) {
 			this.ctx.showError("Fork failed (session not persisted or cancelled)");
 			return;
 		}
+		clearInteractiveActivityLoaders(this.ctx);
+		stopInteractiveActivityIndicator(this.ctx);
 		this.ctx.resetIrcSidebarSession();
 
 		this.ctx.statusLine.invalidate();
@@ -1171,6 +1177,10 @@ export class CommandController {
 			}
 			this.ctx.showError(`Bash command failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
+		const bashComponent = this.ctx.bashComponent;
+		if (isDeferred && bashComponent && this.ctx.pendingBashComponents.includes(bashComponent)) {
+			this.ctx.pendingMessagesContainer.detachChild(bashComponent);
+		}
 
 		this.ctx.bashComponent = undefined;
 		this.ctx.ui.requestRender();
@@ -1248,11 +1258,7 @@ export class CommandController {
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto = false,
 	): Promise<CompactionOutcome> {
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
+		const releaseActivityIndicator = suspendInteractiveActivityIndicator(this.ctx);
 
 		const originalOnEscape = this.ctx.editor.onEscape;
 		this.ctx.editor.onEscape = () => {
@@ -1279,24 +1285,28 @@ export class CommandController {
 					? customInstructionsOrOptions
 					: undefined;
 			await this.ctx.session.compact(instructions, options);
+			if (this.ctx.isStopped?.()) return outcome;
 
 			this.ctx.rebuildChatFromMessages("reconcile-same-transcript");
 
 			this.ctx.statusLine.invalidate();
 			this.ctx.updateEditorTopBorder();
 		} catch (error) {
-			if (error instanceof CompactionCancelledError) {
-				outcome = "cancelled";
+			outcome = error instanceof CompactionCancelledError ? "cancelled" : "failed";
+			if (this.ctx.isStopped?.()) return outcome;
+			if (outcome === "cancelled") {
 				this.ctx.showError("Compaction cancelled");
 			} else {
-				outcome = "failed";
 				const message = error instanceof Error ? error.message : String(error);
 				this.ctx.showError(`Compaction failed: ${message}`);
 			}
 		} finally {
 			compactingLoader.stop();
-			this.ctx.statusContainer.clear();
-			this.ctx.editor.onEscape = originalOnEscape;
+			if (!this.ctx.isStopped?.()) {
+				this.ctx.statusContainer.clear();
+				this.ctx.editor.onEscape = originalOnEscape;
+			}
+			releaseActivityIndicator();
 		}
 		await this.ctx.flushCompactionQueue({ willRetry: false });
 		return outcome;
@@ -1315,11 +1325,7 @@ export class CommandController {
 			return;
 		}
 
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
+		const releaseActivityIndicator = suspendInteractiveActivityIndicator(this.ctx);
 
 		const originalOnEscape = this.ctx.editor.onEscape;
 		this.ctx.editor.onEscape = () => {
@@ -1339,6 +1345,7 @@ export class CommandController {
 		try {
 			// Handoff generation runs as a oneshot request; the new session is shown after it completes.
 			const result = await this.ctx.session.handoff(customInstructions);
+			if (this.ctx.isStopped?.()) return;
 
 			if (!result) {
 				this.ctx.showError("Handoff cancelled");
@@ -1353,6 +1360,7 @@ export class CommandController {
 			this.ctx.updateEditorTopBorder();
 			this.ctx.updateEditorBorderColor();
 			await this.ctx.reloadTodos();
+			if (this.ctx.isStopped?.()) return;
 
 			this.ctx.chatContainer.addChild(new Spacer(1));
 			this.ctx.chatContainer.addChild(
@@ -1362,6 +1370,7 @@ export class CommandController {
 				this.ctx.showStatus(`Handoff document saved to: ${result.savedPath}`);
 			}
 		} catch (error) {
+			if (this.ctx.isStopped?.()) return;
 			const message = error instanceof Error ? error.message : String(error);
 			if (message === "Handoff cancelled" || (error instanceof Error && error.name === "AbortError")) {
 				this.ctx.showError("Handoff cancelled");
@@ -1381,8 +1390,11 @@ export class CommandController {
 			}
 		} finally {
 			handoffLoader.stop();
-			this.ctx.statusContainer.clear();
-			this.ctx.editor.onEscape = originalOnEscape;
+			if (!this.ctx.isStopped?.()) {
+				this.ctx.statusContainer.clear();
+				this.ctx.editor.onEscape = originalOnEscape;
+			}
+			releaseActivityIndicator();
 		}
 	}
 

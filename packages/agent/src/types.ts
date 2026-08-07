@@ -15,8 +15,10 @@ import type {
 	ToolResultMessage,
 	TransportFailureFacts,
 	TSchema,
+	UserMessage,
 } from "@gajae-code/ai";
 import type { AppendOnlyContextManager } from "./append-only-context";
+import type { AttemptMinter, AttemptRunHandle, AttemptScope } from "./attempt-scope";
 import type { HarmonyAuditEvent } from "./harmony-leak";
 import type { AgentRunCoverage, AgentRunSummary } from "./run-collector";
 import type { AgentTelemetryConfig } from "./telemetry";
@@ -28,6 +30,109 @@ export type StreamFn = (
 
 /** Stable identifier for a managed logical run, shared by all of its retry attempts. */
 export type ManagedLogicalRunId = number;
+/** A resource owned by a prompt run until its promise settles. */
+export type RunResourceKind = "provider_factory" | "provider_iterator" | "tool" | "post_prompt";
+
+export interface RunResourceEntry {
+	id: string;
+	kind: RunResourceKind;
+	label: string;
+	registeredAt: number;
+}
+
+export type RunSettlementReason = "unknown_run" | "run_not_sealed" | "resources_pending" | "quarantined";
+export type RunSettlementProof =
+	| { status: "settled" }
+	| { status: "unfenced"; reason: RunSettlementReason; pending: RunResourceEntry[] };
+
+export interface RunCancellationDomain {
+	readonly resourceRunId: string;
+	readonly signal: AbortSignal;
+}
+
+export interface RunCancellationDomainBridge {
+	open(
+		resourceRunId: string,
+	):
+		| { ok: true; domain: RunCancellationDomain; created: boolean }
+		| { ok: false; reason: "duplicate_identity" | "quarantined" };
+	lookup(resourceRunId: string): RunCancellationDomain | undefined;
+	abort(
+		resourceRunId: string,
+		reason?: unknown,
+	): { ok: true; newlyAborted: boolean } | { ok: false; reason: "unknown_run" | "quarantined" };
+	release(resourceRunId: string, disposition: "settled" | "quarantined"): void;
+}
+
+export type ReserveProducerResult =
+	| { ok: true; lease: RunResourceProducerLease }
+	| { ok: false; reason: "unknown_run" | "sealed" | "quarantined" | "domain_mismatch" };
+export type ClaimProducerResult =
+	| { ok: true; lease: RunResourceProducerLease }
+	| { ok: false; reason: "already_claimed" | "handle_mismatch" | "domain_mismatch" | "closed" | "quarantined" };
+export type ForkProducerResult =
+	| { ok: true; lease: RunResourceProducerLease }
+	| { ok: false; reason: "parent_closed" | "quarantined" | "domain_mismatch" };
+
+export interface RunResourceProducerLease {
+	readonly resourceRunId: string;
+	readonly domain: RunCancellationDomain;
+	readonly signal: AbortSignal;
+	track(kind: RunResourceKind, label: string, settled: PromiseLike<unknown>): boolean;
+	fork(expectedDomain: RunCancellationDomain, kind: RunResourceKind, label: string): ForkProducerResult;
+	closeDiscovery(): void;
+}
+
+export interface AgentTerminalOwnerContext {
+	readonly resourceRunId: string;
+	readonly domain: RunCancellationDomain;
+}
+
+const terminalOwnerContexts = new WeakMap<object, AgentTerminalOwnerContext>();
+
+export function setAgentTerminalOwnerContext(event: object, context: AgentTerminalOwnerContext): void {
+	terminalOwnerContexts.set(event, context);
+}
+
+export function getAgentTerminalOwnerContext(event: object): AgentTerminalOwnerContext | undefined {
+	return terminalOwnerContexts.get(event);
+}
+export interface StandaloneRunOwnership {
+	readonly resourceRunId: string;
+	readonly domain: RunCancellationDomain;
+	claimContinuation():
+		| { ok: true; ownership: StandaloneRunOwnership }
+		| { ok: false; reason: "already_claimed" | "terminal" | "quarantined" };
+	abandon(reason: "cancelled" | "error"): void;
+}
+
+export interface RunResourceLedger {
+	/** Bind the bridge once, before any logical run may be opened. */
+	bindCancellationDomainBridge(bridge: RunCancellationDomainBridge): void;
+	/** Bind the unforgeable AgentSession claim key once, before terminal publication. */
+	bindAgentSessionClaimKey(key: object): void;
+	/** Reserve a run handle before publishing its `agent_start` event. */
+	open(resourceRunId: string): RunCancellationDomain | undefined;
+	lookupDomain(resourceRunId: string): RunCancellationDomain | undefined;
+	reserveProducer(
+		resourceRunId: string,
+		expectedDomain: RunCancellationDomain | undefined,
+		kind: RunResourceKind,
+		label: string,
+	): ReserveProducerResult;
+	claimProducer(
+		resourceRunId: string,
+		expectedDomain: RunCancellationDomain | undefined,
+		ownerKey: object,
+	): ClaimProducerResult;
+	track(resourceRunId: string, kind: RunResourceKind, label: string, settled: PromiseLike<unknown>): void;
+	pending(resourceRunId: string): RunResourceEntry[];
+	/** Seal a run after terminal event publication; only sealed empty runs settle. */
+	seal(resourceRunId: string): void;
+	waitForSettlement(resourceRunId: string, options: { graceMs: number }): Promise<RunSettlementProof>;
+	/** Terminally detach a run; its bounded tombstone remains unfenced forever. */
+	quarantine(resourceRunId: string): RunResourceEntry[];
+}
 
 /** Terminal completion requested for a logical run. */
 export interface RunTerminalRequest {
@@ -50,6 +155,10 @@ export interface ManagedAttemptContinuationOwnership {
 	/** Stable managed logical-run id; use for all terminal completion requests. */
 	readonly logicalRunId: ManagedLogicalRunId;
 	readonly generation: number;
+	readonly domain: RunCancellationDomain;
+	readonly lease: RunResourceProducerLease;
+	/** Immutable per-attempt handle used by terminalizers and continuations. */
+	readonly handle: AttemptRunHandle;
 	isCurrent(): boolean;
 }
 
@@ -71,9 +180,10 @@ export type ManagedAttemptOutcome =
 				/** Exact provider transport facts, including retry headers, for fallback policy. */
 				transportFailure?: TransportFailureFacts;
 			};
+			scope?: AttemptScope;
 	  }
-	| { type: "context_overflow_discarded"; message: AssistantMessage }
-	| { type: "run_terminal"; reason: "cancelled" | "error" | "exhausted" };
+	| { type: "context_overflow_discarded"; message: AssistantMessage; scope?: AttemptScope }
+	| { type: "run_terminal"; reason: "cancelled" | "error" | "exhausted"; scope?: AttemptScope };
 
 export type ManagedAttemptOutcomeHandler = (
 	outcome: ManagedAttemptOutcome,
@@ -104,6 +214,10 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	/** Receives a managed invocation outcome without publishing provisional lifecycle events. */
 	onManagedAttemptOutcome?: ManagedAttemptOutcomeHandler;
+	/** Per-attempt scope allocator for direct loop callers. */
+	attemptMinter?: AttemptMinter;
+	/** Scope allocated by the owning Agent for the first attempt in this loop. */
+	initialScope?: AttemptScope;
 
 	/**
 	 * When to interrupt tool execution for steering messages.
@@ -176,7 +290,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * }
 	 * ```
 	 */
-	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
+	transformContext?: (messages: AgentMessage[], signal?: AbortSignal, scope?: AttemptScope) => Promise<AgentMessage[]>;
 
 	/**
 	 * Resolves an API key dynamically for each LLM call.
@@ -206,6 +320,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * continues with another turn.
 	 */
 	getFollowUpMessages?: () => Promise<AgentMessage[]>;
+	/**
+	 * Supplies one bounded synthetic recovery instruction before the loop would
+	 * otherwise yield. Unlike a follow-up, it is sent only to the provider and
+	 * is not committed to durable agent message history.
+	 */
+	getSyntheticRecoveryMessage?: () => Promise<UserMessage | undefined>;
 	/**
 	 * Cooperative pause checkpoint evaluated at safe loop boundaries.
 	 *
@@ -353,6 +473,19 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * capture, cost estimator, agent identity).
 	 */
 	telemetry?: AgentTelemetryConfig;
+	/**
+	 * Optional prompt-run resource ownership ledger. Provider and scheduler-level tool
+	 * work is tracked until its owned lifecycle promise settles.
+	 */
+	resourceLedger?: RunResourceLedger;
+	/** Stable resource ownership identifier for this prompt run. */
+	resourceRunId?: string;
+	/** Immutable logical cancellation domain bound by the resource ledger. */
+	resourceCancellationDomain?: RunCancellationDomain;
+	/** Agent passes caller ownership; direct loop callers retain loop-owned sealing. */
+	resourceSealOwner?: "caller" | "loop";
+	/** Opaque ownership required to resume a standalone maintenance lifecycle. */
+	standaloneRunOwnership?: StandaloneRunOwnership;
 }
 
 /**
@@ -496,7 +629,8 @@ export interface RenderResultOptions {
  * Apps can extend via declaration merging.
  */
 export interface AgentToolContext {
-	// Empty by default - apps extend via declaration merging
+	/** Per-attempt scope used to attribute tool lifecycle and extension delivery. */
+	attemptScope?: AttemptScope;
 }
 
 export type AgentToolExecFn<TParameters extends TSchema = TSchema, TDetails = any, TTheme = unknown> = (
@@ -567,7 +701,7 @@ export interface AgentContext {
  */
 export type AgentEvent =
 	// Agent lifecycle
-	| { type: "agent_start" }
+	| { type: "agent_start"; scope?: AttemptScope }
 	| {
 			type: "agent_end";
 			messages: AgentMessage[];
@@ -578,16 +712,43 @@ export type AgentEvent =
 			/** Present iff `AgentTelemetryConfig` was supplied on this run. */
 			telemetry?: AgentRunSummary;
 			coverage?: AgentRunCoverage;
+			scope?: AttemptScope;
 	  }
 	// Turn lifecycle - a turn is one assistant response + any tool calls/results
-	| { type: "turn_start" }
-	| { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }
+	| { type: "turn_start"; scope?: AttemptScope }
+	| { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[]; scope?: AttemptScope }
 	// Message lifecycle - emitted for user, assistant, and toolResult messages
-	| { type: "message_start"; message: AgentMessage }
+	| { type: "message_start"; message: AgentMessage; scope?: AttemptScope }
 	// Only emitted for assistant messages during streaming
-	| { type: "message_update"; message: AgentMessage; assistantMessageEvent: AssistantMessageEvent }
-	| { type: "message_end"; message: AgentMessage }
+	| {
+			type: "message_update";
+			message: AgentMessage;
+			assistantMessageEvent: AssistantMessageEvent;
+			scope?: AttemptScope;
+	  }
+	| { type: "message_end"; message: AgentMessage; scope?: AttemptScope }
 	// Tool execution lifecycle
-	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any; intent?: string }
-	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError?: boolean };
+	| {
+			type: "tool_execution_start";
+			toolCallId: string;
+			toolName: string;
+			args: any;
+			intent?: string;
+			scope?: AttemptScope;
+	  }
+	| {
+			type: "tool_execution_update";
+			toolCallId: string;
+			toolName: string;
+			args: any;
+			partialResult: any;
+			scope?: AttemptScope;
+	  }
+	| {
+			type: "tool_execution_end";
+			toolCallId: string;
+			toolName: string;
+			result: any;
+			isError?: boolean;
+			scope?: AttemptScope;
+	  };

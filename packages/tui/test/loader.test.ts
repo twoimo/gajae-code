@@ -1,9 +1,37 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { TUI } from "@gajae-code/tui";
-import { Loader } from "@gajae-code/tui/components/loader";
+import { __loaderPerfCounters, Loader } from "@gajae-code/tui/components/loader";
 import { visibleWidth } from "@gajae-code/tui/utils";
+import { __animationSchedulerTestHooks } from "../src/animation-scheduler";
 import { VirtualTerminal } from "./virtual-terminal";
 
+const TERMINAL_TRANSPORT_ENV_KEYS = [
+	"SSH_CONNECTION",
+	"SSH_CLIENT",
+	"SSH_TTY",
+	"TMUX",
+	"TMUX_PANE",
+	"STY",
+	"ZELLIJ",
+	"GJC_TMUX_LAUNCHED",
+] as const;
+
+function clearTerminalTransportEnv(): () => void {
+	const saved = TERMINAL_TRANSPORT_ENV_KEYS.map(key => [key, process.env[key]] as const);
+	for (const key of TERMINAL_TRANSPORT_ENV_KEYS) delete process.env[key];
+	return () => {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	};
+}
+
+afterEach(() => {
+	vi.useRealTimers();
+	__animationSchedulerTestHooks.reset();
+	__loaderPerfCounters.reset();
+});
 describe("Loader component", () => {
 	it("clamps rendered lines to terminal width", async () => {
 		const term = new VirtualTerminal(1, 4);
@@ -117,6 +145,122 @@ describe("Loader component", () => {
 		expect(loaderRequests).toBe(2); // "| Working#1" differs -> still repaints
 
 		loader.stop();
+		tui.stop();
+	});
+
+	it("restores the 60fps color cadence for direct local terminals", () => {
+		vi.useFakeTimers();
+		const restoreEnv = clearTerminalTransportEnv();
+		const term = new VirtualTerminal(40, 4);
+		const tui = new TUI(term);
+		let colorTick = 0;
+		const loader = new Loader(
+			tui,
+			text => text,
+			text => `${text}#${colorTick++}`,
+			"Working",
+			["|"],
+			{
+				timeDependentColor: true,
+			},
+		);
+
+		try {
+			expect(__animationSchedulerTestHooks.getActiveTimerCount(16)).toBe(1);
+			expect(__animationSchedulerTestHooks.getActiveTimerCount(80)).toBe(0);
+			expect(__loaderPerfCounters.renderRequests).toBe(1);
+			vi.advanceTimersByTime(1000);
+
+			expect(__loaderPerfCounters.callbackInvocations).toBe(62);
+			expect(__loaderPerfCounters.renderRequests).toBe(63);
+
+			const beforeMessage = __loaderPerfCounters.renderRequests;
+			loader.setMessage("Immediate");
+			expect(__loaderPerfCounters.renderRequests).toBe(beforeMessage + 1);
+
+			loader.dispose();
+			const callbacksAfterDispose = __loaderPerfCounters.callbackInvocations;
+			const requestsAfterDispose = __loaderPerfCounters.renderRequests;
+			vi.advanceTimersByTime(1000);
+			expect(__loaderPerfCounters.callbackInvocations).toBe(callbacksAfterDispose);
+			expect(__loaderPerfCounters.renderRequests).toBe(requestsAfterDispose);
+			expect(__loaderPerfCounters.liveIntervals).toBe(0);
+		} finally {
+			loader.dispose();
+			tui.stop();
+			restoreEnv();
+		}
+	});
+
+	it("keeps time-dependent loaders at 80ms over SSH", () => {
+		vi.useFakeTimers();
+		const restoreEnv = clearTerminalTransportEnv();
+		process.env.SSH_CONNECTION = "test";
+		const tui = new TUI(new VirtualTerminal(40, 4));
+		const loader = new Loader(
+			tui,
+			text => text,
+			text => text,
+			"Working",
+			["|"],
+			{
+				timeDependentColor: true,
+			},
+		);
+
+		try {
+			expect(__animationSchedulerTestHooks.getActiveTimerCount(16)).toBe(0);
+			expect(__animationSchedulerTestHooks.getActiveTimerCount(80)).toBe(1);
+		} finally {
+			loader.dispose();
+			tui.stop();
+			restoreEnv();
+		}
+	});
+
+	it("keeps time-dependent loaders at 80ms under a multiplexer", () => {
+		vi.useFakeTimers();
+		const restoreEnv = clearTerminalTransportEnv();
+		process.env.TMUX = "test";
+		const tui = new TUI(new VirtualTerminal(40, 4));
+		const loader = new Loader(
+			tui,
+			text => text,
+			text => text,
+			"Working",
+			["|"],
+			{
+				timeDependentColor: true,
+			},
+		);
+
+		try {
+			expect(__animationSchedulerTestHooks.getActiveTimerCount(16)).toBe(0);
+			expect(__animationSchedulerTestHooks.getActiveTimerCount(80)).toBe(1);
+		} finally {
+			loader.dispose();
+			tui.stop();
+			restoreEnv();
+		}
+	});
+	it("deduplicates unchanged output while callbacks remain bounded", () => {
+		vi.useFakeTimers();
+		const tui = new TUI(new VirtualTerminal(40, 4));
+		const loader = new Loader(
+			tui,
+			text => text,
+			text => text,
+			"Working",
+			["|"],
+		);
+
+		expect(__loaderPerfCounters.renderRequests).toBe(1);
+		vi.advanceTimersByTime(1000);
+
+		expect(__loaderPerfCounters.callbackInvocations).toBeLessThanOrEqual(13);
+		expect(__loaderPerfCounters.renderRequests).toBe(1);
+
+		loader.dispose();
 		tui.stop();
 	});
 });

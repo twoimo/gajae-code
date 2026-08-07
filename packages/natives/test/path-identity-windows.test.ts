@@ -8,6 +8,7 @@ import {
 	applyOwnerOnlyPathSecurity,
 	canonicalExistingDirectoryIdentity,
 	exactRemoveDirectoryTree,
+	exactReplacePath,
 	exactRestore,
 	exactUnlink,
 	renameNoReplacePath,
@@ -23,6 +24,26 @@ function sha256(contents: string): string {
 	return createHash("sha256").update(contents).digest("hex");
 }
 
+async function parentIdentity(pathname: string): Promise<{ parentDev: bigint; parentIno: bigint }> {
+	const parent = await fs.stat(path.dirname(pathname), { bigint: true });
+	return { parentDev: parent.dev, parentIno: parent.ino };
+}
+
+function expectRepairableOwnerOnlyMismatch(result: { ok: boolean; code?: string }): void {
+	expect(result.ok).toBe(false);
+	// Windows can assign a newly created object either to the token user SID or
+	// to its enabled owner group. Both are fail-closed pre-repair states: the
+	// former exposes an inherited DACL mismatch, while the latter is the more
+	// specific owner mismatch that apply/repair subsequently corrects.
+	if (!result.code) throw new Error("Missing fail-closed owner-only mismatch code");
+	expect(["acl_verify_failed", "owner_mismatch"]).toContain(result.code);
+}
+
+async function runIcacls(...args: string[]): Promise<void> {
+	const process = Bun.spawn(["icacls", ...args], { stdout: "pipe", stderr: "pipe" });
+	const [exitCode, stderr] = await Promise.all([process.exited, new Response(process.stderr).text()]);
+	if (exitCode !== 0) throw new Error(`icacls failed (${exitCode}): ${stderr}`);
+}
 function treeQuarantineName(entry: { relativePath: string; dev: string; ino: string }): string {
 	const material = Buffer.concat([
 		Buffer.from(entry.relativePath),
@@ -88,6 +109,287 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		expect(await fs.readFile(path.join(relocated, "state.jsonl"), "utf8")).toBe("authorized");
 		expect(verifyOwnerOnlyPathSecurity(file, "file")).toEqual({ ok: false, code: "reparse_point" });
 	});
+	it("binds exact replacement to both staged source and destination identities", async () => {
+		const root = await temporaryDirectory();
+		const source = path.join(root, "staged.json");
+		const destination = path.join(root, "state.json");
+		await fs.writeFile(source, "new-state");
+		await fs.writeFile(destination, "old-state");
+		const sourceStat = await fs.stat(source, { bigint: true });
+		const destinationStat = await fs.stat(destination, { bigint: true });
+		const parent = await parentIdentity(source);
+		const sourceIdentity = {
+			...parent,
+			dev: sourceStat.dev,
+			ino: sourceStat.ino,
+			size: sourceStat.size,
+			mtimeNs: sourceStat.mtimeNs,
+			sha256: sha256("new-state"),
+		};
+		const destinationIdentity = {
+			...parent,
+			dev: destinationStat.dev,
+			ino: destinationStat.ino,
+			size: destinationStat.size,
+			mtimeNs: destinationStat.mtimeNs,
+			sha256: sha256("old-state"),
+		};
+		expect(exactReplacePath(source, destination, sourceIdentity, destinationIdentity)).toEqual({ ok: true });
+		expect(await fs.readFile(destination, "utf8")).toBe("new-state");
+		await expect(fs.access(source)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("rejects a substituted staged source before deleting the exact destination", async () => {
+		const root = await temporaryDirectory();
+		const source = path.join(root, "staged.json");
+		const retainedSource = path.join(root, "retained-staged.json");
+		const destination = path.join(root, "state.json");
+		await fs.writeFile(source, "authorized-stage");
+		await fs.writeFile(destination, "old-state");
+		const sourceStat = await fs.stat(source, { bigint: true });
+		const destinationStat = await fs.stat(destination, { bigint: true });
+		const parent = await parentIdentity(source);
+		const sourceIdentity = {
+			...parent,
+			dev: sourceStat.dev,
+			ino: sourceStat.ino,
+			size: sourceStat.size,
+			mtimeNs: sourceStat.mtimeNs,
+			sha256: sha256("authorized-stage"),
+		};
+		const destinationIdentity = {
+			...parent,
+			dev: destinationStat.dev,
+			ino: destinationStat.ino,
+			size: destinationStat.size,
+			mtimeNs: destinationStat.mtimeNs,
+			sha256: sha256("old-state"),
+		};
+		await fs.rename(source, retainedSource);
+		await fs.writeFile(source, "substituted-stage");
+
+		expect(exactReplacePath(source, destination, sourceIdentity, destinationIdentity)).toEqual({
+			ok: false,
+			code: "identity_mismatch",
+		});
+		expect(await fs.readFile(destination, "utf8")).toBe("old-state");
+		expect(await fs.readFile(source, "utf8")).toBe("substituted-stage");
+		expect(await fs.readFile(retainedSource, "utf8")).toBe("authorized-stage");
+	});
+
+	it("rejects exact unlink while a foreign hard link preserves transcript bytes", async () => {
+		const root = await temporaryDirectory();
+		const target = path.join(root, "session.jsonl");
+		const alias = path.join(root, "foreign-session.jsonl");
+		const contents = "transcript payload";
+		await fs.writeFile(target, contents);
+		await fs.link(target, alias);
+		const stat = await fs.stat(target, { bigint: true });
+
+		expect(
+			exactUnlink(target, {
+				dev: stat.dev,
+				ino: stat.ino,
+				size: stat.size,
+				mtimeNs: stat.mtimeNs,
+				sha256: sha256(contents),
+			}),
+		).toEqual({ ok: false, code: "hard_link_unsupported" });
+		expect(await fs.readFile(target, "utf8")).toBe(contents);
+		expect(await fs.readFile(alias, "utf8")).toBe(contents);
+	});
+
+	it("rejects exact replacement when the staged source has a foreign hard link", async () => {
+		const root = await temporaryDirectory();
+		const source = path.join(root, "source.json");
+		const sourceAlias = path.join(root, "source-alias.json");
+		const destination = path.join(root, "destination.json");
+		await fs.writeFile(source, "new-state");
+		await fs.link(source, sourceAlias);
+		await fs.writeFile(destination, "old-state");
+		const [sourceStat, destinationStat] = await Promise.all([
+			fs.stat(source, { bigint: true }),
+			fs.stat(destination, { bigint: true }),
+		]);
+		const parent = await parentIdentity(source);
+
+		expect(
+			exactReplacePath(
+				source,
+				destination,
+				{
+					...parent,
+					dev: sourceStat.dev,
+					ino: sourceStat.ino,
+					size: sourceStat.size,
+					mtimeNs: sourceStat.mtimeNs,
+					sha256: sha256("new-state"),
+				},
+				{
+					...parent,
+					dev: destinationStat.dev,
+					ino: destinationStat.ino,
+					size: destinationStat.size,
+					mtimeNs: destinationStat.mtimeNs,
+					sha256: sha256("old-state"),
+				},
+			),
+		).toEqual({ ok: false, code: "hard_link_unsupported" });
+		expect(await fs.readFile(source, "utf8")).toBe("new-state");
+		expect(await fs.readFile(sourceAlias, "utf8")).toBe("new-state");
+		expect(await fs.readFile(destination, "utf8")).toBe("old-state");
+	});
+
+	it("rejects exact replacement when the committed destination has a foreign hard link", async () => {
+		const root = await temporaryDirectory();
+		const source = path.join(root, "source.json");
+		const destination = path.join(root, "destination.json");
+		const destinationAlias = path.join(root, "destination-alias.json");
+		await fs.writeFile(source, "new-state");
+		await fs.writeFile(destination, "old-state");
+		await fs.link(destination, destinationAlias);
+		const [sourceStat, destinationStat] = await Promise.all([
+			fs.stat(source, { bigint: true }),
+			fs.stat(destination, { bigint: true }),
+		]);
+		const parent = await parentIdentity(source);
+
+		expect(
+			exactReplacePath(
+				source,
+				destination,
+				{
+					...parent,
+					dev: sourceStat.dev,
+					ino: sourceStat.ino,
+					size: sourceStat.size,
+					mtimeNs: sourceStat.mtimeNs,
+					sha256: sha256("new-state"),
+				},
+				{
+					...parent,
+					dev: destinationStat.dev,
+					ino: destinationStat.ino,
+					size: destinationStat.size,
+					mtimeNs: destinationStat.mtimeNs,
+					sha256: sha256("old-state"),
+				},
+			),
+		).toEqual({ ok: false, code: "hard_link_unsupported" });
+		expect(await fs.readFile(source, "utf8")).toBe("new-state");
+		expect(await fs.readFile(destination, "utf8")).toBe("old-state");
+		expect(await fs.readFile(destinationAlias, "utf8")).toBe("old-state");
+	});
+
+	it("rejects exact restore when retained content has a foreign hard link", async () => {
+		const root = await temporaryDirectory();
+		const detached = path.join(root, ".gjc-delete-session");
+		const alias = path.join(root, "foreign-session.jsonl");
+		const original = path.join(root, "session.jsonl");
+		const contents = "retained transcript";
+		await fs.writeFile(detached, contents);
+		await fs.link(detached, alias);
+		const stat = await fs.stat(detached, { bigint: true });
+		const parent = await parentIdentity(detached);
+
+		expect(
+			exactRestore(detached, original, {
+				...parent,
+				dev: stat.dev,
+				ino: stat.ino,
+				size: stat.size,
+				mtimeNs: stat.mtimeNs,
+				sha256: sha256(contents),
+			}),
+		).toEqual({ ok: false, code: "hard_link_unsupported" });
+		expect(await fs.readFile(detached, "utf8")).toBe(contents);
+		expect(await fs.readFile(alias, "utf8")).toBe(contents);
+		await expect(fs.stat(original)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("rejects exact tree removal when a child gains a foreign hard link", async () => {
+		const root = await temporaryDirectory();
+		const tree = path.join(root, "tree");
+		const child = path.join(tree, "artifact.bin");
+		const alias = path.join(root, "foreign-artifact.bin");
+		await fs.mkdir(tree);
+		await fs.writeFile(child, "artifact payload");
+		const snapshot = snapshotDirectoryTree(tree);
+		if (!snapshot.ok || !snapshot.snapshot) throw new Error("Missing tree snapshot");
+		await fs.link(child, alias);
+
+		expect(exactRemoveDirectoryTree(tree, snapshot.snapshot)).toMatchObject({
+			ok: false,
+			code: "hard_link_unsupported",
+		});
+		expect(await fs.readFile(child, "utf8")).toBe("artifact payload");
+		expect(await fs.readFile(alias, "utf8")).toBe("artifact payload");
+	});
+
+	it("refuses exact unlink while another writer can mutate the file", async () => {
+		const root = await temporaryDirectory();
+		const target = path.join(root, "contended.jsonl");
+		await fs.writeFile(target, "contended transcript");
+		const stat = await fs.stat(target, { bigint: true });
+		const writer = await fs.open(target, "r+");
+		try {
+			expect(
+				exactUnlink(target, {
+					dev: stat.dev,
+					ino: stat.ino,
+					size: stat.size,
+					mtimeNs: stat.mtimeNs,
+					sha256: sha256("contended transcript"),
+				}),
+			).toMatchObject({ ok: false });
+			expect(await fs.readFile(target, "utf8")).toBe("contended transcript");
+		} finally {
+			await writer.close();
+		}
+	});
+
+	it("refuses exact restore while another writer can mutate retained content", async () => {
+		const root = await temporaryDirectory();
+		const detached = path.join(root, ".gjc-delete-contended");
+		const original = path.join(root, "contended.jsonl");
+		await fs.writeFile(detached, "retained content");
+		const stat = await fs.stat(detached, { bigint: true });
+		const parent = await parentIdentity(detached);
+		const writer = await fs.open(detached, "r+");
+		try {
+			expect(
+				exactRestore(detached, original, {
+					...parent,
+					dev: stat.dev,
+					ino: stat.ino,
+					size: stat.size,
+					mtimeNs: stat.mtimeNs,
+					sha256: sha256("retained content"),
+				}),
+			).toMatchObject({ ok: false });
+			expect(await fs.readFile(detached, "utf8")).toBe("retained content");
+			await expect(fs.stat(original)).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			await writer.close();
+		}
+	});
+
+	it("refuses exact tree removal while another writer can mutate a child", async () => {
+		const root = await temporaryDirectory();
+		const tree = path.join(root, "contended-tree");
+		const child = path.join(tree, "artifact.bin");
+		await fs.mkdir(tree);
+		await fs.writeFile(child, "contended artifact");
+		const snapshot = snapshotDirectoryTree(tree);
+		if (!snapshot.ok || !snapshot.snapshot) throw new Error("Missing tree snapshot");
+		const writer = await fs.open(child, "r+");
+		try {
+			expect(exactRemoveDirectoryTree(tree, snapshot.snapshot)).toMatchObject({ ok: false });
+			expect(await fs.readFile(child, "utf8")).toBe("contended artifact");
+		} finally {
+			await writer.close();
+		}
+	});
 	it("rejects a replaced ancestor junction during exact restore and retains detached content", async () => {
 		const root = await temporaryDirectory();
 		const managed = path.join(root, "managed");
@@ -97,7 +399,9 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		await fs.mkdir(managed);
 		await fs.writeFile(original, "authorized");
 		const stat = await fs.stat(original, { bigint: true });
+		const parent = await parentIdentity(original);
 		const identity = {
+			...parent,
 			dev: stat.dev,
 			ino: stat.ino,
 			size: stat.size,
@@ -122,8 +426,8 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		await fs.mkdir(directory);
 		await fs.writeFile(file, contents);
 
-		expect(verifyOwnerOnlyPathSecurity(directory, "directory")).toEqual({ ok: false, code: "acl_verify_failed" });
-		expect(verifyOwnerOnlyPathSecurity(file, "file")).toEqual({ ok: false, code: "acl_verify_failed" });
+		expectRepairableOwnerOnlyMismatch(verifyOwnerOnlyPathSecurity(directory, "directory"));
+		expectRepairableOwnerOnlyMismatch(verifyOwnerOnlyPathSecurity(file, "file"));
 		expect(applyOwnerOnlyPathSecurity(directory, "directory")).toEqual({ ok: true });
 		expect(applyOwnerOnlyPathSecurity(file, "file")).toEqual({ ok: true });
 		expect(verifyOwnerOnlyPathSecurity(directory, "directory")).toEqual({ ok: true });
@@ -140,8 +444,8 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		const directoryStat = await fs.stat(directory, { bigint: true });
 		const fileStat = await fs.stat(file, { bigint: true });
 
-		expect(verifyOwnerOnlyPathSecurity(directory, "directory")).toEqual({ ok: false, code: "acl_verify_failed" });
-		expect(verifyOwnerOnlyPathSecurity(file, "file")).toEqual({ ok: false, code: "acl_verify_failed" });
+		expectRepairableOwnerOnlyMismatch(verifyOwnerOnlyPathSecurity(directory, "directory"));
+		expectRepairableOwnerOnlyMismatch(verifyOwnerOnlyPathSecurity(file, "file"));
 		expect(repairOwnerOnlyPathSecurityExpected(file, "directory", fileStat.dev, fileStat.ino)).toMatchObject({
 			ok: false,
 		});
@@ -153,6 +457,26 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		expect(verifyOwnerOnlyPathSecurity(directory, "directory")).toEqual({ ok: true });
 		expect(verifyOwnerOnlyPathSecurity(file, "file")).toEqual({ ok: true });
 		expect(await fs.readFile(file, "utf8")).toBe(contents);
+	});
+
+	it("repairs an owner-correct DACL without requiring WRITE_OWNER", async () => {
+		const root = await temporaryDirectory();
+		const file = path.join(root, "dacl-only.json");
+		const user = process.env.USERNAME;
+		if (!user) throw new Error("Missing Windows username");
+		await fs.writeFile(file, "owner-correct");
+		expect(applyOwnerOnlyPathSecurity(file, "file")).toEqual({ ok: true });
+		await runIcacls(file, "/inheritance:r", "/grant:r", `${user}:(RC,WDAC,S,D,RD,WD,AD,REA,WEA,X,DC,RA,WA)`);
+		const identity = await fs.stat(file, { bigint: true });
+
+		try {
+			expect(verifyOwnerOnlyPathSecurity(file, "file")).toEqual({ ok: false, code: "acl_verify_failed" });
+			expect(repairOwnerOnlyPathSecurityExpected(file, "file", identity.dev, identity.ino)).toEqual({ ok: true });
+			expect(verifyOwnerOnlyPathSecurityExpected(file, "file", identity.dev, identity.ino)).toEqual({ ok: true });
+			expect(await fs.readFile(file, "utf8")).toBe("owner-correct");
+		} finally {
+			await runIcacls(file, "/reset");
+		}
 	});
 	it("verifies only the captured identity without mutating a swapped replacement", async () => {
 		const root = await temporaryDirectory();
@@ -169,7 +493,7 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 			ok: false,
 			code: "identity_mismatch",
 		});
-		expect(verifyOwnerOnlyPathSecurity(target, "file")).toEqual({ ok: false, code: "acl_verify_failed" });
+		expectRepairableOwnerOnlyMismatch(verifyOwnerOnlyPathSecurity(target, "file"));
 		expect(await fs.readFile(target, "utf8")).toBe("replacement");
 		expect(await fs.readFile(retained, "utf8")).toBe("authorized");
 	});
@@ -326,7 +650,9 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		const detached = path.join(root, ".gjc-delete-state");
 		await fs.writeFile(original, "authorized");
 		const stat = await fs.stat(original, { bigint: true });
+		const parent = await parentIdentity(original);
 		const identity = {
+			...parent,
 			dev: stat.dev,
 			ino: stat.ino,
 			size: stat.size,
@@ -347,7 +673,9 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		const detached = path.join(root, ".gjc-delete-state");
 		await fs.writeFile(original, "authorized");
 		const stat = await fs.stat(original, { bigint: true });
+		const parent = await parentIdentity(original);
 		const identity = {
+			...parent,
 			dev: stat.dev,
 			ino: stat.ino,
 			size: stat.size,
@@ -370,7 +698,9 @@ describe.skipIf(process.platform !== "win32")("Windows native path identity", ()
 		const detached = path.join(root, ".gjc-delete-state");
 		await fs.writeFile(original, "authorized");
 		const stat = await fs.stat(original, { bigint: true });
+		const parent = await parentIdentity(original);
 		const identity = {
+			...parent,
 			dev: stat.dev,
 			ino: stat.ino,
 			size: stat.size,

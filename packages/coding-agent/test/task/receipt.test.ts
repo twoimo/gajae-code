@@ -93,6 +93,7 @@ describe("task result receipts", () => {
 			sizeBytes: Buffer.byteLength(output),
 			lineCount: output.split("\n").length,
 			sha256,
+			durability: "session",
 		});
 		expect(receipt.outputUnavailable).toBeUndefined();
 		expect(receipt.review?.overallCorrectness).toBe("patch is correct");
@@ -150,6 +151,65 @@ describe("task result receipts", () => {
 		expect(findRawTaskLeakKeys(receipt)).toEqual([]);
 	});
 
+	it("exposes a canonical findings reference without leaking full findings", () => {
+		const receipt = buildTaskReceipt(
+			makeRaw({
+				reviewFindingsRef: {
+					uri: "artifact://7",
+					sizeBytes: 4096,
+					sha256: "a".repeat(64),
+					findingCount: 21,
+				},
+				extractedToolData: {
+					report_finding: Array.from({ length: 21 }, (_, index) => ({
+						priority: "P1",
+						title: `finding ${index}`,
+						body: `${"detail ".repeat(40)}${index === 20 ? "FULL-FINDING-TAIL-SENTINEL" : ""}`,
+						file_path: "/tmp/private/example.ts",
+					})),
+				},
+			}),
+		);
+
+		expect(receipt.review?.findingCount).toBe(21);
+		expect(receipt.review?.findings).toHaveLength(20);
+		expect(receipt.review?.findingsRef).toEqual({
+			uri: "artifact://7",
+			sizeBytes: 4096,
+			sha256: "a".repeat(64),
+			findingCount: 21,
+		});
+		expect(JSON.stringify(receipt)).not.toContain("FULL-FINDING-TAIL-SENTINEL");
+		expect(JSON.stringify(receipt)).not.toContain("/tmp/private");
+		expect(findRawTaskLeakKeys(receipt)).toEqual([]);
+	});
+
+	it("keeps review metadata visible when only the canonical reference remains", () => {
+		const receipt = buildTaskReceipt(
+			makeRaw({
+				reviewFindingsRef: {
+					uri: "artifact://8",
+					sizeBytes: 128,
+					sha256: "b".repeat(64),
+					findingCount: 2,
+				},
+			}),
+		);
+
+		expect(receipt.review).toEqual({
+			overallCorrectness: undefined,
+			findingCount: 2,
+			findings: undefined,
+			findingsRef: {
+				uri: "artifact://8",
+				sizeBytes: 128,
+				sha256: "b".repeat(64),
+				findingCount: 2,
+			},
+		});
+		expect(receipt.roi?.materialContribution).toBe(true);
+	});
+
 	it("buildTaskReceipt marks output unavailable when no artifact metadata is present", () => {
 		const receipt = buildTaskReceipt(makeRaw());
 		expect(receipt.outputRef).toBeUndefined();
@@ -203,7 +263,7 @@ describe("task result receipts", () => {
 	it("sanitizeTaskToolDetails maps raw results to receipts and preserves usage", () => {
 		const raw = {
 			projectAgentsDir: null,
-			results: [makeRaw()],
+			results: [makeRaw({ fastMode: true })],
 			totalDurationMs: 10,
 			usage: CANONICAL_USAGE,
 			outputPaths: ["/tmp/LEAK_SENTINEL_DO_NOT_DIGEST/0-Test.md"],
@@ -211,6 +271,7 @@ describe("task result receipts", () => {
 		const sanitized = sanitizeTaskToolDetails(raw);
 		expect(sanitized.usage).toBe(CANONICAL_USAGE);
 		expect(sanitized.results[0]?.preview).toBe("Task completed; output artifact unavailable.");
+		expect(sanitized.results[0]?.fastMode).toBe(true);
 		expect(sanitized.roiSummary).toEqual({ childCount: 1, totalTokens: 20, lowRoiChildIds: [] });
 		expect(findRawTaskLeakKeys(sanitized)).toEqual([]);
 		expect("outputPaths" in sanitized).toBe(false);
@@ -341,6 +402,73 @@ describe("task result receipts", () => {
 		expect(findRawTaskLeakKeys(receipt)).toEqual([]);
 	});
 
+	it("exposes identity-bound isolated persistence and recovery outcomes", () => {
+		const applied = buildTaskReceipt(
+			makeRaw({
+				persistence: {
+					outcome: "applied",
+					ownerWorktreeApplied: true,
+					recoveryRef: {
+						uri: "local://subagents/0-Applied.patch",
+						sizeBytes: 64,
+						sha256: "b".repeat(64),
+						durability: "session",
+					},
+				},
+			}),
+		);
+		expect(applied.status).toBe("completed");
+		expect(applied.persistence).toMatchObject({ outcome: "applied", ownerWorktreeApplied: true });
+		expect(applied.preview).toContain("persisted to the owner worktree");
+		expect(applied.persistence?.recoveryRef?.uri).toBe("local://subagents/0-Applied.patch");
+
+		const recovery = buildTaskReceipt(
+			makeRaw({
+				recoveryRef: {
+					uri: "local://subagents/0-Recovery.patch",
+					sizeBytes: 128,
+					sha256: "a".repeat(64),
+					durability: "session",
+				},
+				persistence: {
+					outcome: "recovery_available",
+					ownerWorktreeApplied: false,
+					recoveryRef: {
+						uri: "local://subagents/0-Recovery.patch",
+						sizeBytes: 128,
+						sha256: "a".repeat(64),
+						durability: "session",
+					},
+				},
+			}),
+		);
+		expect(recovery.status).toBe("merge_failed");
+		expect(recovery.persistence?.recoveryRef?.uri).toBe("local://subagents/0-Recovery.patch");
+		expect(recovery.preview).toContain("changes were not persisted");
+		expect(recovery.preview).toContain("local://subagents/0-Recovery.patch");
+	});
+
+	it.each(["paused", "aborted"] as const)("keeps %s recovery identity in the public receipt", status => {
+		const ref = {
+			uri: `local://subagents/0-${status}.patch`,
+			sizeBytes: 96,
+			sha256: "d".repeat(64),
+			durability: "session" as const,
+		};
+		const receipt = buildTaskReceipt(
+			makeRaw({
+				...(status === "paused" ? { paused: true } : { aborted: true, abortReason: "test abort" }),
+				recoveryRef: ref,
+				persistence: { outcome: "recovery_available", ownerWorktreeApplied: false, recoveryRef: ref },
+			}),
+		);
+
+		expect(receipt.status).toBe(status);
+		expect(receipt.persistence?.recoveryRef?.uri).toBe(ref.uri);
+		expect(receipt.preview).toContain("changes were not persisted");
+		expect(receipt.preview).toContain(ref.uri);
+	});
+
 	it("renders task-summary with synopsis refs and without raw payloads or paths", () => {
 		const sentinel = "LEAK_SENTINEL_DO_NOT_DIGEST";
 		const receipt = buildTaskReceipt(
@@ -377,6 +505,27 @@ describe("task result receipts", () => {
 		expect(rendered).not.toContain("/tmp/");
 		expect(rendered).not.toContain("raw ");
 		expect(rendered).not.toContain("stderr");
+	});
+	it("preserves duplicate disposition in a receipt and converts failed scheduling to failure", () => {
+		const warned = buildTaskReceipt(
+			makeRaw({ id: "DuplicateWarned", duplicateDisposition: { action: "warned", predecessorIds: ["Earlier"] } }),
+		);
+		expect(warned.status).toBe("completed");
+		expect(warned.duplicateDisposition).toEqual({ action: "warned", predecessorIds: ["Earlier"] });
+
+		const failedSchedule = buildTaskReceipt(
+			makeRaw({
+				id: "DuplicateSupersedeFailed",
+				exitCode: 1,
+				output: "",
+				stderr: "duplicate_supersede_failed",
+				error: "duplicate_supersede_failed",
+				duplicateDisposition: { action: "superseded", predecessorIds: ["Earlier"] },
+			}),
+		);
+		expect(failedSchedule.status).toBe("failed");
+		expect(failedSchedule.errorSummary).toBe("Error recorded.");
+		expect(failedSchedule.duplicateDisposition).toEqual({ action: "superseded", predecessorIds: ["Earlier"] });
 	});
 });
 

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-import { $flag, $pickenvpos, $pickflag, filterProcessEnv, parseEnvFile, parseShellEnvFile } from "../src/env";
+import { $envpos, $flag, $pickenvpos, $pickflag, filterProcessEnv, parseEnvFile, parseShellEnvFile } from "../src/env";
 
 const tempDirs: string[] = [];
 
@@ -120,6 +120,9 @@ assertEqual($env.GJC_ENV_TEST_INHERITED_ONLY, "overlay-after-import", "live $env
 Bun.env.GJC_ENV_TEST_FALLBACK_ONLY = "fallback-after-import";
 assertEqual($inheritedEnv("GJC_ENV_TEST_FALLBACK_ONLY"), undefined, "absent inherited value");
 assertEqual($env.GJC_ENV_TEST_FALLBACK_ONLY, "fallback-after-import", "fallback remains available through $env");
+delete Bun.env.GJC_ENV_TEST_INHERITED_ONLY;
+assertEqual($inheritedEnv("GJC_ENV_TEST_INHERITED_ONLY"), undefined, "deleted key is no longer inherited");
+assertEqual($env.GJC_ENV_TEST_INHERITED_ONLY, undefined, "deleted key is gone from merged env");
 `,
 			{ GJC_ENV_TEST_INHERITED_ONLY: "shell-from-parent" },
 			dir,
@@ -381,6 +384,36 @@ describe("$pickflag", () => {
 	});
 });
 
+describe("$envpos", () => {
+	const NAME = "__GJC_UTILS_ENVPOS_PROBE";
+
+	afterEach(() => {
+		delete process.env[NAME];
+	});
+
+	it.each([
+		"12oops",
+		"1.5",
+		"1e3",
+		"0",
+		"-1",
+		String(Number.MAX_SAFE_INTEGER + 1),
+	])("returns the default for invalid complete-token value %j", value => {
+		process.env[NAME] = value;
+		expect($envpos(NAME, 100)).toBe(100);
+	});
+
+	it("accepts a whitespace-padded positive safe integer", () => {
+		process.env[NAME] = " 42 ";
+		expect($envpos(NAME, 100)).toBe(42);
+	});
+
+	it("accepts a zero-padded positive safe integer", () => {
+		process.env[NAME] = "00042";
+		expect($envpos(NAME, 100)).toBe(42);
+	});
+});
+
 describe("$pickenvpos", () => {
 	const GJC_NAME = "__GJC_UTILS_PICKENVPOS_PROBE";
 	const PI_NAME = "__PI_UTILS_PICKENVPOS_PROBE";
@@ -411,6 +444,12 @@ describe("$pickenvpos", () => {
 
 	it("skips a set-but-invalid GJC key and falls through to a valid PI key", () => {
 		process.env[GJC_NAME] = "-5";
+		process.env[PI_NAME] = "3";
+		expect($pickenvpos([GJC_NAME, PI_NAME], 100)).toBe(3);
+	});
+
+	it("skips a partially parsed GJC value and falls through to a valid PI key", () => {
+		process.env[GJC_NAME] = "12oops";
 		process.env[PI_NAME] = "3";
 		expect($pickenvpos([GJC_NAME, PI_NAME], 100)).toBe(3);
 	});

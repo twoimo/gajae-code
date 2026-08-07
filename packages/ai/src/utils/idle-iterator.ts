@@ -1,10 +1,13 @@
 import { $env } from "@gajae-code/utils";
+import { STREAM_FIRST_EVENT_TIMEOUT_PROVIDER_CODE } from "./fallback-transport";
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_STREAM_FIRST_EVENT_TIMEOUT_MS = 100_000;
+const ALIBABA_TOKEN_PLAN_FIRST_EVENT_TIMEOUT_MS = 600_000;
 const KIMI_CODE_FIRST_EVENT_TIMEOUT_MS = 300_000;
 
 export function getProviderFirstEventTimeoutFallbackMs(provider: string): number | undefined {
+	if (provider === "alibaba-token-plan") return ALIBABA_TOKEN_PLAN_FIRST_EVENT_TIMEOUT_MS;
 	return provider === "kimi-code" ? KIMI_CODE_FIRST_EVENT_TIMEOUT_MS : undefined;
 }
 
@@ -19,7 +22,7 @@ function normalizeIdleTimeoutMs(value: string | undefined, fallback: number): nu
 /**
  * Returns the idle timeout used for provider streaming transports.
  *
- * `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS` is accepted as a backward-compatible alias.
+ * `GJC_OPENAI_STREAM_IDLE_TIMEOUT_MS` is honored first; `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS` is a backward-compatible alias.
  * Set `PI_STREAM_IDLE_TIMEOUT_MS=0` to disable the watchdog.
  *
  * Providers that legitimately stream much slower than the global default can pass
@@ -27,17 +30,20 @@ function normalizeIdleTimeoutMs(value: string | undefined, fallback: number): nu
  * Caller options still take precedence; env overrides still trump the fallback.
  */
 export function getStreamIdleTimeoutMs(fallbackMs: number = DEFAULT_STREAM_IDLE_TIMEOUT_MS): number | undefined {
-	return normalizeIdleTimeoutMs($env.PI_STREAM_IDLE_TIMEOUT_MS ?? $env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS, fallbackMs);
+	return normalizeIdleTimeoutMs(
+		$env.GJC_OPENAI_STREAM_IDLE_TIMEOUT_MS ?? $env.PI_STREAM_IDLE_TIMEOUT_MS ?? $env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS,
+		fallbackMs,
+	);
 }
 
 /**
  * Returns the idle timeout used for OpenAI-family streaming transports.
  *
- * Set `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS=0` to disable the watchdog.
+ * Honors `GJC_OPENAI_STREAM_IDLE_TIMEOUT_MS` first (`PI_OPENAI_STREAM_IDLE_TIMEOUT_MS` is the legacy alias). Set `=0` to disable.
  */
 export function getOpenAIStreamIdleTimeoutMs(): number | undefined {
 	return normalizeIdleTimeoutMs(
-		$env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS ?? $env.PI_STREAM_IDLE_TIMEOUT_MS,
+		$env.GJC_OPENAI_STREAM_IDLE_TIMEOUT_MS ?? $env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS ?? $env.PI_STREAM_IDLE_TIMEOUT_MS,
 		DEFAULT_STREAM_IDLE_TIMEOUT_MS,
 	);
 }
@@ -62,7 +68,46 @@ export function getStreamFirstEventTimeoutMs(
 	return normalizeIdleTimeoutMs($env.PI_STREAM_FIRST_EVENT_TIMEOUT_MS, fallback);
 }
 
+/**
+ * Resolves the OpenAI SDK client `timeout` so stalled-before-headers requests are
+ * bounded by the same first-event window the transport watchdog uses after
+ * `create()` returns. Without this, providers that only arm
+ * `iterateWithIdleTimeout` post-setup can wait the full SDK default (10 minutes
+ * per attempt) before any provider-owned watchdog exists.
+ *
+ * - Explicit `0` disables the request timeout (the SDK treats `timeout: 0` as an
+ *   immediate failure, so callers that disable the first-event watchdog must not
+ *   pass a timeout).
+ * - Providers with a first-event fallback (Alibaba, Kimi) honor an explicit
+ *   nonzero override as-is, even when shorter than the fallback.
+ * - Other providers floor an explicit override at the env/default first-event
+ *   window so a short post-connect first-event budget cannot kill legitimate
+ *   slow setup.
+ */
+export function resolveOpenAISdkRequestTimeoutMs(
+	provider: string,
+	streamFirstEventTimeoutOverride?: number,
+): number | undefined {
+	const providerFirstEventFallbackMs = getProviderFirstEventTimeoutFallbackMs(provider);
+	const envSdkTimeoutMs = getStreamFirstEventTimeoutMs(getOpenAIStreamIdleTimeoutMs(), providerFirstEventFallbackMs);
+	if (streamFirstEventTimeoutOverride === 0) return undefined;
+	if (streamFirstEventTimeoutOverride !== undefined) {
+		return providerFirstEventFallbackMs !== undefined
+			? streamFirstEventTimeoutOverride
+			: Math.max(envSdkTimeoutMs ?? 0, streamFirstEventTimeoutOverride);
+	}
+	return envSdkTimeoutMs;
+}
+
 export type Watchdog = NodeJS.Timeout | undefined;
+export class FirstEventTimeoutError extends Error {
+	readonly providerCode = STREAM_FIRST_EVENT_TIMEOUT_PROVIDER_CODE;
+
+	constructor(message: string) {
+		super(message);
+		this.name = "FirstEventTimeoutError";
+	}
+}
 
 const dummyWatchdog = setTimeout(() => {}, 1);
 clearTimeout(dummyWatchdog);
@@ -173,8 +218,6 @@ export async function* iterateWithIdleTimeout<T>(
 			}
 		}
 
-		const nextResultPromise = withRacy(iterator.next());
-
 		const racers: Array<
 			Promise<
 				| { kind: "next"; result: IteratorResult<T> }
@@ -182,7 +225,7 @@ export async function* iterateWithIdleTimeout<T>(
 				| { kind: "timeout" }
 				| { kind: "abort" }
 			>
-		> = [nextResultPromise];
+		> = [];
 
 		let timer: NodeJS.Timeout | undefined;
 		let resolveTimeout: ((value: { kind: "timeout" }) => void) | undefined;
@@ -207,6 +250,13 @@ export async function* iterateWithIdleTimeout<T>(
 			racers.push(promise);
 		}
 
+		// Arm timeout/abort races before asking the source for its next item. A
+		// periodic keepalive iterator commonly registers its own timer inside
+		// `next()`; registering that first lets equal-deadline keepalives win every
+		// race and extend the idle window forever. Already-buffered items still
+		// settle as microtasks before a 0ms watchdog.
+		racers.unshift(withRacy(iterator.next()));
+
 		try {
 			const outcome = await Promise.race(racers);
 			if (outcome.kind === "abort") {
@@ -220,9 +270,9 @@ export async function* iterateWithIdleTimeout<T>(
 					options.onFirstItemTimeout?.();
 				}
 				closeIterator();
-				throw new Error(
-					!awaitingFirstItem ? options.errorMessage : (options.firstItemErrorMessage ?? options.errorMessage),
-				);
+				throw awaitingFirstItem
+					? new FirstEventTimeoutError(options.firstItemErrorMessage ?? options.errorMessage)
+					: new Error(options.errorMessage);
 			}
 			if (outcome.kind === "error") {
 				throw outcome.error;

@@ -1,4 +1,6 @@
 import { PROMPT_CLIENT_REF_MAX_LENGTH } from "../../prompt-status.js";
+import type { ActiveProviderDescriptor } from "../../providers.js";
+import { ActiveProviderResolutionError } from "../../providers.js";
 import {
 	assertCursorSelector,
 	type CursorEnvelope,
@@ -22,6 +24,7 @@ export interface SessionSurface {
 	getUsage(): unknown | Promise<unknown>;
 	getModels(): unknown | Promise<unknown>;
 	getSkillState(): unknown | Promise<unknown>;
+	getActiveProviders?(): ActiveProviderDescriptor[] | Promise<ActiveProviderDescriptor[]>;
 	/** Q12 rows preserve workflow gate fields and include stable durable gate metadata. */
 	getGates(): unknown | Promise<unknown>;
 	getConfigItems(): unknown | Promise<unknown>;
@@ -46,6 +49,11 @@ export interface SessionSurface {
 	getJobs(): unknown | Promise<unknown>;
 	/** Q26 keyed lookup of a submitted prompt's authoritative reconciliation status. */
 	getPromptStatus?(selector: { commandId?: string; turnId?: string; clientRef?: string }): unknown | Promise<unknown>;
+	getSkillInvokeStatus?(selector: {
+		commandId?: string;
+		turnId?: string;
+		clientRef?: string;
+	}): unknown | Promise<unknown>;
 	/** Q27 effective model-profile catalog from the live session registry. */
 	getModelProfiles?(): unknown[] | Promise<unknown[]>;
 	/** Query rows backed by the session's installed binding map. */
@@ -97,6 +105,7 @@ const sources: Record<string, { resource: string; method: keyof SessionSurface; 
 	Q21: { resource: "queue", method: "getQueueMessages", mvcc: true },
 	Q22: { resource: "extensions", method: "getExtensions", mvcc: true },
 	Q25: { resource: "jobs", method: "getJobs", mvcc: false },
+	Q29: { resource: "activeProviders", method: "getActiveProviders", mvcc: false },
 	Q27: { resource: "modelProfiles", method: "getModelProfiles", mvcc: true },
 };
 const names = [
@@ -127,6 +136,8 @@ const names = [
 	"runtime.jobs.list",
 	"turn.prompt_status",
 	"models.profiles.list",
+	"skill.invoke_status",
+	"providers.list/active",
 ];
 
 export class QueryHandlers {
@@ -156,11 +167,21 @@ export class QueryHandlers {
 			if (query === "Q02") return await this.#transcriptBody(request);
 			if (query === "Q23") return await this.#resourceBody(request);
 			if (query === "Q26") return await this.#promptStatus(request);
+			if (query === "Q28") return await this.#skillInvokeStatus(request);
 			if (query === "Q24") return await this.#artifact(request);
 			if (query === "Q27" && request.input && Object.keys(request.input).length > 0)
 				return this.#error(request, "invalid_request", false, "models.profiles.list does not accept input fields.");
 			if (query === "Q27" && typeof this.surface.getModelProfiles !== "function")
 				return this.#error(request, "unavailable", false, "models.profiles.list is unavailable for this session.");
+			if (query === "Q29" && request.input && Object.keys(request.input).length > 0)
+				return this.#error(
+					request,
+					"invalid_request",
+					false,
+					"providers.list/active does not accept input fields.",
+				);
+			if (query === "Q29" && typeof this.surface.getActiveProviders !== "function")
+				return this.#error(request, "unavailable", false, "providers.list/active is unavailable for this session.");
 			const source = sources[query];
 			if (!source) return this.#error(request, "invalid_request");
 			return await this.#pageSource(request, query, source);
@@ -250,7 +271,12 @@ export class QueryHandlers {
 				source.resource === "transcript" ? { highWatermark: cursor.highWatermark } : {},
 			);
 		} else {
-			snapshot = await (this.surface[source.method] as () => unknown)();
+			try {
+				snapshot = await (this.surface[source.method] as () => unknown)();
+			} catch (error) {
+				if (queryId === "Q29") throw new ActiveProviderResolutionError();
+				throw error;
+			}
 			revision = await this.revisions.createRevision(source.resource, resourceId, snapshot);
 		}
 		if (snapshot === undefined) return this.#error(request, "resource_gone");
@@ -515,6 +541,54 @@ export class QueryHandlers {
 			page.preview = true;
 		}
 		return { id: request.id, ok: true, page };
+	}
+
+	async #skillInvokeStatus(request: QueryRequest): Promise<QueryResponse> {
+		if (request.cursor)
+			return this.#error(request, "invalid_request", false, "skill.invoke_status does not support cursors.");
+		const input = request.input ?? {};
+		for (const key of Object.keys(input))
+			if (key !== "commandId" && key !== "turnId" && key !== "clientRef")
+				return this.#error(
+					request,
+					"invalid_request",
+					false,
+					`skill.invoke_status does not accept selector field "${key}".`,
+				);
+		const commandId = typeof input.commandId === "string" && input.commandId ? input.commandId : undefined;
+		const turnId = typeof input.turnId === "string" && input.turnId ? input.turnId : undefined;
+		const rawClientRef = typeof input.clientRef === "string" ? input.clientRef : undefined;
+		const trimmedClientRef = rawClientRef?.trim();
+		if (rawClientRef !== undefined && (!trimmedClientRef || trimmedClientRef.length > PROMPT_CLIENT_REF_MAX_LENGTH))
+			return this.#error(
+				request,
+				"invalid_request",
+				false,
+				"clientRef must be a non-empty string of at most 128 characters.",
+			);
+		const clientRef = trimmedClientRef || undefined;
+		if ((commandId === undefined) !== (turnId === undefined))
+			return this.#error(request, "invalid_request", false, "commandId and turnId must be provided together.");
+		if (commandId !== undefined && clientRef !== undefined)
+			return this.#error(
+				request,
+				"invalid_request",
+				false,
+				"Provide exactly one selector: a commandId/turnId pair or a clientRef.",
+			);
+		if (commandId === undefined && clientRef === undefined)
+			return this.#error(
+				request,
+				"invalid_request",
+				false,
+				"skill.invoke_status requires a commandId/turnId pair or a clientRef.",
+			);
+		if (typeof this.surface.getSkillInvokeStatus !== "function")
+			return this.#error(request, "unavailable", false, "skill.invoke_status is unavailable for this session.");
+		const result = await this.surface.getSkillInvokeStatus(
+			clientRef !== undefined ? { clientRef } : { commandId: commandId!, turnId: turnId! },
+		);
+		return { id: request.id, ok: true, result };
 	}
 
 	async #promptStatus(request: QueryRequest): Promise<QueryResponse> {

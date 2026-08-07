@@ -50,3 +50,7 @@ read from:
 
 This is the companion to issue 09: persistence provides the durable session, the
 registry provides discovery + reattach.
+
+## Status
+
+**Deferred architectural follow-up.** Cross-process RPC session discovery depends on a persistent transport/session design and is not an active low-hanging fix on current `dev`.

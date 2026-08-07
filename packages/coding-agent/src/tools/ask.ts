@@ -351,15 +351,23 @@ function parseEncodedContainer(value: unknown): unknown {
 function isRoundZeroRecoveryCandidate(value: unknown): boolean {
 	const root = parseEncodedContainer(value);
 	if (typeof root !== "object" || root === null || !Object.hasOwn(root, "questions")) return false;
-	const questionsValue = parseEncodedContainer((root as Record<string, unknown>).questions);
+	const rawQuestions = (root as Record<string, unknown>).questions;
+	const questionsValue = parseEncodedContainer(rawQuestions);
 	if (!Array.isArray(questionsValue)) return questionsValue === null;
+	const rootEncoded = typeof value === "string" || typeof rawQuestions === "string";
 	return questionsValue.some(rawQuestion => {
 		const question = parseEncodedContainer(rawQuestion);
 		if (typeof question !== "object" || question === null || !Object.hasOwn(question, "deepInterview")) return false;
-		const deepInterview = parseEncodedContainer((question as Record<string, unknown>).deepInterview);
+		const rawDeepInterview = (question as Record<string, unknown>).deepInterview;
+		const deepInterview = parseEncodedContainer(rawDeepInterview);
 		if (typeof deepInterview !== "object" || deepInterview === null) return false;
 		const metadata = deepInterview as Record<string, unknown>;
-		return Object.hasOwn(metadata, "intent_contract") || Object.hasOwn(metadata, "intent_review");
+		const hasContract = Object.hasOwn(metadata, "intent_contract");
+		const hasReview = Object.hasOwn(metadata, "intent_review");
+		// A JSON-string container is terminal only for the retired contract+review
+		// pair; canonical single-sided asks stay eligible for generic JSON coercion.
+		const encoded = rootEncoded || typeof rawQuestion === "string" || typeof rawDeepInterview === "string";
+		return encoded ? hasContract && hasReview : hasContract || hasReview;
 	});
 }
 
@@ -1252,6 +1260,14 @@ export class AskTool implements AgentTool<AskParametersSchema, AskToolDetails> {
 			receipt: AskRemoteReceipt;
 			settlement?: AskSettlement;
 		};
+		const ignoreRemoteAnswerFailure = (error: unknown): Promise<never> => {
+			if (!(error instanceof Error && error.name === "AbortError")) {
+				logger.warn("Ask remote answer source failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			return new Promise<never>(() => {});
+		};
 		const settleActiveRemote = async (settlement: AskSettlement): Promise<void> => {
 			const receipt = activeRemoteReceipt;
 			activeRemoteReceipt = undefined;
@@ -1265,9 +1281,11 @@ export class AskTool implements AgentTool<AskParametersSchema, AskToolDetails> {
 		// attended TUI asks would route to emitGate() and hang forever waiting on
 		// a remote responder.
 		const hasInteractiveUi = context?.hasUI === true && !!context.ui;
-		const canUseWorkflowGate = !hasInteractiveUi && gateEmitter?.supportsRemoteGateAnswers() === true;
-		// Headless fallback: SDK workflow gates are the non-TUI answer path.
-		if (!canUseWorkflowGate && (!context?.hasUI || !context.ui)) {
+		const initialAnswerSource = this.session.getAskAnswerSource?.();
+		const canUseWorkflowGate =
+			!hasInteractiveUi && !initialAnswerSource && gateEmitter?.supportsRemoteGateAnswers() === true;
+		// Headless fallback: an SDK answer source or workflow gate is the non-TUI answer path.
+		if (!hasInteractiveUi && !initialAnswerSource && !canUseWorkflowGate) {
 			context?.abort();
 			throw new ToolAbortError("Ask tool requires interactive mode");
 		}
@@ -1275,9 +1293,11 @@ export class AskTool implements AgentTool<AskParametersSchema, AskToolDetails> {
 		const extensionUi = context?.ui;
 		const ui: UIContext = {
 			select: (prompt, options, dialogOptions) => {
-				if (!extensionUi) throw new ToolAbortError("Ask tool requires interactive mode");
 				const source = this.session.getAskAnswerSource?.();
-				if (!source) return extensionUi.select(prompt, options, dialogOptions);
+				if (!source) {
+					if (!extensionUi) throw new ToolAbortError("Ask tool requires interactive mode");
+					return extensionUi.select(prompt, options, dialogOptions);
+				}
 				// Race the local UI against a remote answer (e.g. an SDK reply) so asks
 				// can be answered without local UI interaction. The first valid answer
 				// wins; the loser is aborted so neither side is left hanging:
@@ -1304,93 +1324,107 @@ export class AskTool implements AgentTool<AskParametersSchema, AskToolDetails> {
 								remoteController.signal,
 							)
 						: source.awaitAnswer(prompt, options, remoteController.signal)
-				).then((answer): RemoteRaceResult | Promise<RemoteRaceResult> => {
-					if (answer === undefined) return new Promise<never>(() => {});
-					const receipt = typeof answer === "string" ? legacyAskReceipt(answer) : answer;
-					if (generation !== remoteGeneration) {
-						return receipt
-							.settle({ kind: "resolve_without_commit", reason: "aborted" })
-							.then(() => new Promise<never>(() => {}));
-					}
-					const remoteValue = receipt.interaction.kind === "value" ? receipt.interaction.value : undefined;
-					const value = remoteValue ?? REMOTE_NAVIGATION_FORWARD;
-					const selectedValue =
-						remoteValue === undefined
-							? value
-							: (options.find(
-									option =>
-										option === remoteValue ||
-										option === `${theme.checkbox.checked} ${remoteValue}` ||
-										option === `${theme.checkbox.unchecked} ${remoteValue}`,
-								) ?? value);
-					const normalizedRemoteValue = remoteValue?.startsWith(`${theme.checkbox.checked} `)
-						? remoteValue.slice(`${theme.checkbox.checked} `.length)
-						: remoteValue?.startsWith(`${theme.checkbox.unchecked} `)
-							? remoteValue.slice(`${theme.checkbox.unchecked} `.length)
-							: remoteValue;
-					const semanticRemoteValue = normalizedRemoteValue?.replace(/^\s*\d+[.)]\s+/, "");
-					const transitionReason =
-						semanticRemoteValue === OTHER_OPTION
-							? "other_transition"
-							: semanticRemoteValue === ASK_CLARIFICATION_OPTION
-								? "clarification_transition"
-								: undefined;
-					if (transitionReason) {
-						return {
-							winner: "remote" as const,
-							value: selectedValue,
-							receipt,
-							settlement: { kind: "resolve_without_commit", reason: transitionReason },
-						};
-					}
-					if (
-						remoteValue !== undefined &&
-						activeRemoteRequest?.interaction === "selector" &&
-						activeRemoteRequest.controls.length > 0 &&
-						activeRemoteRequest.options.includes(remoteValue)
-					) {
-						return {
-							winner: "remote" as const,
-							value: selectedValue,
-							receipt,
-							settlement: { kind: "resolve_without_commit", reason: "toggle" },
-						};
-					}
-					return { winner: "remote" as const, value: selectedValue, receipt };
-				});
-
-				const local = extensionUi
-					.select(prompt, options, { ...dialogOptions, signal: localController.signal })
-					.then(answer => {
-						if (generation === remoteGeneration) remoteGeneration++;
-						remoteController.abort();
-						return { winner: "local" as const, value: answer };
+				)
+					.then((answer): RemoteRaceResult | Promise<RemoteRaceResult> => {
+						if (answer === undefined) {
+							if (!extensionUi) throw new ToolAbortError("Ask was cancelled by the remote client");
+							return new Promise<never>(() => {});
+						}
+						const receipt = typeof answer === "string" ? legacyAskReceipt(answer) : answer;
+						if (generation !== remoteGeneration) {
+							return receipt
+								.settle({ kind: "resolve_without_commit", reason: "aborted" })
+								.then(() => new Promise<never>(() => {}));
+						}
+						const remoteValue = receipt.interaction.kind === "value" ? receipt.interaction.value : undefined;
+						const value = remoteValue ?? REMOTE_NAVIGATION_FORWARD;
+						const selectedValue =
+							remoteValue === undefined
+								? value
+								: (options.find(
+										option =>
+											option === remoteValue ||
+											option === `${theme.checkbox.checked} ${remoteValue}` ||
+											option === `${theme.checkbox.unchecked} ${remoteValue}`,
+									) ?? value);
+						const normalizedRemoteValue = remoteValue?.startsWith(`${theme.checkbox.checked} `)
+							? remoteValue.slice(`${theme.checkbox.checked} `.length)
+							: remoteValue?.startsWith(`${theme.checkbox.unchecked} `)
+								? remoteValue.slice(`${theme.checkbox.unchecked} `.length)
+								: remoteValue;
+						const semanticRemoteValue = normalizedRemoteValue?.replace(/^\s*\d+[.)]\s+/, "");
+						const transitionReason =
+							semanticRemoteValue === OTHER_OPTION
+								? "other_transition"
+								: semanticRemoteValue === ASK_CLARIFICATION_OPTION
+									? "clarification_transition"
+									: undefined;
+						if (transitionReason) {
+							return {
+								winner: "remote" as const,
+								value: selectedValue,
+								receipt,
+								settlement: { kind: "resolve_without_commit", reason: transitionReason },
+							};
+						}
+						if (
+							remoteValue !== undefined &&
+							activeRemoteRequest?.interaction === "selector" &&
+							activeRemoteRequest.controls.length > 0 &&
+							activeRemoteRequest.options.includes(remoteValue)
+						) {
+							return {
+								winner: "remote" as const,
+								value: selectedValue,
+								receipt,
+								settlement: { kind: "resolve_without_commit", reason: "toggle" },
+							};
+						}
+						return { winner: "remote" as const, value: selectedValue, receipt };
 					})
 					.catch(error => {
-						if (generation === remoteGeneration) remoteGeneration++;
-						remoteController.abort();
-						throw error;
+						if (!extensionUi) throw error;
+						return ignoreRemoteAnswerFailure(error);
 					});
+
+				const local = extensionUi
+					? extensionUi
+							.select(prompt, options, { ...dialogOptions, signal: localController.signal })
+							.then(answer => {
+								if (generation === remoteGeneration) remoteGeneration++;
+								remoteController.abort();
+								return { winner: "local" as const, value: answer };
+							})
+							.catch(error => {
+								if (generation === remoteGeneration) remoteGeneration++;
+								remoteController.abort();
+								throw error;
+							})
+					: new Promise<never>(() => {});
 				// The losing selector may reject when aborted after the race already settled;
 				// swallow that so it is not an unhandled rejection (the race result is unaffected).
 				void local.catch(() => undefined);
-				return Promise.race([local, remote]).then(async result => {
-					if (result.winner === "remote") {
-						localController.abort();
-						if (result.settlement) await result.receipt.settle(result.settlement);
-						else activeRemoteReceipt = result.receipt;
-					} else {
-						void remote.then(remoteResult =>
-							remoteResult.receipt.settle({ kind: "resolve_without_commit", reason: "aborted" }),
-						);
-					}
-					return result.value;
-				});
+				return Promise.race([local, remote])
+					.then(async result => {
+						if (result.winner === "remote") {
+							localController.abort();
+							if (result.settlement) await result.receipt.settle(result.settlement);
+							else activeRemoteReceipt = result.receipt;
+						} else {
+							void remote.then(remoteResult =>
+								remoteResult.receipt.settle({ kind: "resolve_without_commit", reason: "aborted" }),
+							);
+						}
+						return result.value;
+					})
+					.finally(() => toolSignal?.removeEventListener("abort", abortRace));
 			},
 			editor: (title, prefill, dialogOptions, editorOptions) => {
-				if (!extensionUi) throw new ToolAbortError("Ask tool requires interactive mode");
 				const source = this.session.getAskAnswerSource?.();
-				if (!source) return extensionUi.editor(title, prefill, dialogOptions, editorOptions);
+				if (!source) {
+					if (!extensionUi) throw new ToolAbortError("Ask tool requires interactive mode");
+					return extensionUi.editor(title, prefill, dialogOptions, editorOptions);
+				}
 				// Race the local editor against a remote free-text answer so "Other / type
 				// your own" custom input can be provided remotely (e.g. a typed Telegram
 				// reply) instead of blocking on the local-only editor. Mirrors `select`.
@@ -1419,42 +1453,59 @@ export class AskTool implements AgentTool<AskParametersSchema, AskToolDetails> {
 								remoteController.signal,
 							)
 						: source.awaitAnswer(title, [], remoteController.signal)
-				).then((answer): RemoteRaceResult | Promise<RemoteRaceResult> => {
-					if (answer === undefined) return new Promise<never>(() => {});
-					const receipt = typeof answer === "string" ? legacyAskReceipt(answer) : answer;
-					if (generation !== remoteGeneration) {
-						return receipt
-							.settle({ kind: "resolve_without_commit", reason: "aborted" })
-							.then(() => new Promise<never>(() => {}));
-					}
-					const value =
-						receipt.interaction.kind === "control" ? REMOTE_NAVIGATION_FORWARD : receipt.interaction.value;
-					return { winner: "remote" as const, value, receipt };
-				});
-				const local = extensionUi
-					.editor(title, prefill, { ...(dialogOptions ?? {}), signal: localController.signal }, editorOptions)
-					.then(answer => {
-						if (generation === remoteGeneration) remoteGeneration++;
-						remoteController.abort();
-						return { winner: "local" as const, value: answer };
+				)
+					.then((answer): RemoteRaceResult | Promise<RemoteRaceResult> => {
+						if (answer === undefined) {
+							if (!extensionUi) throw new ToolAbortError("Ask was cancelled by the remote client");
+							return new Promise<never>(() => {});
+						}
+						const receipt = typeof answer === "string" ? legacyAskReceipt(answer) : answer;
+						if (generation !== remoteGeneration) {
+							return receipt
+								.settle({ kind: "resolve_without_commit", reason: "aborted" })
+								.then(() => new Promise<never>(() => {}));
+						}
+						const value =
+							receipt.interaction.kind === "control" ? REMOTE_NAVIGATION_FORWARD : receipt.interaction.value;
+						return { winner: "remote" as const, value, receipt };
 					})
 					.catch(error => {
-						if (generation === remoteGeneration) remoteGeneration++;
-						remoteController.abort();
-						throw error;
+						if (!extensionUi) throw error;
+						return ignoreRemoteAnswerFailure(error);
 					});
+				const local = extensionUi
+					? extensionUi
+							.editor(
+								title,
+								prefill,
+								{ ...(dialogOptions ?? {}), signal: localController.signal },
+								editorOptions,
+							)
+							.then(answer => {
+								if (generation === remoteGeneration) remoteGeneration++;
+								remoteController.abort();
+								return { winner: "local" as const, value: answer };
+							})
+							.catch(error => {
+								if (generation === remoteGeneration) remoteGeneration++;
+								remoteController.abort();
+								throw error;
+							})
+					: new Promise<never>(() => {});
 				void local.catch(() => undefined);
-				return Promise.race([local, remote]).then(result => {
-					if (result.winner === "remote") {
-						activeRemoteReceipt = result.receipt;
-						localController.abort();
-					} else {
-						void remote.then(remoteResult =>
-							remoteResult.receipt.settle({ kind: "resolve_without_commit", reason: "aborted" }),
-						);
-					}
-					return result.value;
-				});
+				return Promise.race([local, remote])
+					.then(result => {
+						if (result.winner === "remote") {
+							activeRemoteReceipt = result.receipt;
+							localController.abort();
+						} else {
+							void remote.then(remoteResult =>
+								remoteResult.receipt.settle({ kind: "resolve_without_commit", reason: "aborted" }),
+							);
+						}
+						return result.value;
+					})
+					.finally(() => toolSignal?.removeEventListener("abort", abortRace));
 			},
 		};
 
@@ -1562,7 +1613,7 @@ export class AskTool implements AgentTool<AskParametersSchema, AskToolDetails> {
 					signal,
 					initialSelection,
 					navigation: options?.navigation,
-					scrollTitleRows: isDeepInterviewQuestion ? DEEP_INTERVIEW_SELECTOR_SCROLL_TITLE_ROWS : undefined,
+					scrollTitleRows: DEEP_INTERVIEW_SELECTOR_SCROLL_TITLE_ROWS,
 					otherOptionLabel,
 					autoSelectOnTimeout: !intentContract(q.deepInterview) && !intentReview(q.deepInterview),
 					clarificationOptionLabel,

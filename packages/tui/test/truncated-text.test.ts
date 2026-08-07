@@ -20,6 +20,15 @@ describe("TruncatedText component", () => {
 		expect(visibleLen).toBe(13);
 	});
 
+	it("shrinks horizontal padding to stay within narrow render widths", () => {
+		const text = new TruncatedText("Hello", 2, 0);
+
+		for (const width of [0, 1, 2, 3]) {
+			expect(visibleWidth(text.render(width)[0])).toBeLessThanOrEqual(width);
+		}
+		expect(text.render(2)[0]).toContain("…");
+	});
+
 	it("pads output with vertical padding lines to width", () => {
 		const text = new TruncatedText("Hello", 0, 2);
 		const lines = text.render(40);

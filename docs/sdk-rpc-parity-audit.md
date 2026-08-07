@@ -5,6 +5,8 @@ RPC contract at `6e147d58~1:docs/rpc.md` with SDK v3; it is not an event-plane
 parity claim. The CLI rejects the retired `--mode rpc`, `rpc-ui`, and `bridge`
 modes and directs external control to the SDK (`packages/coding-agent/src/cli/args.ts:117-127`).
 
+The historical issue files (01–08, 11–21) are archived under `issues/archive/` as provenance only. Their current disposition is recorded in `issues/README.md`: implementation findings are resolved, retired RPC documentation findings are obsolete, and persistent-session/registry items (09/10) remain deferred architectural follow-ups. Do not treat this closed audit as an active implementation backlog.
+
 ## Method and classifications
 
 The inventory below is **closed**. Command, frame, and sub-protocol rows were

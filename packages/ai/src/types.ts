@@ -124,6 +124,7 @@ export type KnownProvider =
 	| "google-vertex"
 	| "openai"
 	| "openai-codex"
+	| "opencodex"
 	| "kimi-code"
 	| "minimax-code"
 	| "minimax-code-cn"
@@ -148,6 +149,8 @@ export type KnownProvider =
 	| "opencode-go"
 	| "opencode-zen"
 	| "opengateway"
+	| "bizrouter"
+	| "mara"
 	| "synthetic"
 	| "cloudflare-ai-gateway"
 	| "huggingface"
@@ -383,19 +386,29 @@ export interface StreamOptions {
 	/**
 	 * Optional callback for inspecting or replacing provider payloads before sending.
 	 * Return undefined to keep the payload unchanged.
+	 * The `scope` parameter carries the per-attempt identity for execution attribution.
 	 */
-	onPayload?: (payload: unknown, model?: Model<Api>) => unknown | undefined | Promise<unknown | undefined>;
+	onPayload?: (
+		payload: unknown,
+		model?: Model<Api>,
+		scope?: AttemptScopeRef,
+	) => unknown | undefined | Promise<unknown | undefined>;
 	/**
 	 * Optional callback for provider response metadata after headers are received.
+	 * The `scope` parameter carries the per-attempt identity for execution attribution.
 	 */
-	onResponse?: (response: ProviderResponseMetadata, model?: Model<Api>) => void | Promise<void>;
+	onResponse?: (
+		response: ProviderResponseMetadata,
+		model?: Model<Api>,
+		scope?: AttemptScopeRef,
+	) => void | Promise<void>;
 	/**
 	 * Optional callback for raw Server-Sent Events as they arrive from HTTP streaming providers.
 	 *
 	 * Diagnostic only: provider implementations must ignore callback failures and must not
 	 * let observers alter stream contents.
 	 */
-	onSseEvent?: (event: RawSseEvent, model?: Model<Api>) => void;
+	onSseEvent?: (event: RawSseEvent, model?: Model<Api>, scope?: AttemptScopeRef) => void;
 	/**
 	 * Optional override for the first streamed event watchdog in milliseconds.
 	 * Set to 0 to disable the first-event watchdog for this request.
@@ -425,6 +438,23 @@ export interface StreamOptions {
 	authCredentialType?: "api_key" | "oauth";
 	/** Cursor exec/MCP tool handlers (cursor-agent only). */
 	execHandlers?: CursorExecHandlers;
+	/** Per-attempt identity for execution attribution. Threaded into onPayload/onResponse calls. */
+	attemptScope?: AttemptScopeRef;
+}
+
+/**
+ * Low-level structural carrier for per-attempt identity attribution.
+ *
+ * Defined in `packages/ai` so that {@link SimpleStreamOptions} and provider
+ * hook signatures can carry an attempt identity without a reverse dependency
+ * on `packages/agent`. The concrete `AttemptScope` in `packages/agent` is
+ * structurally assignable to this interface (same `attemptId` + `generation`
+ * + `lineage` fields).
+ */
+export interface AttemptScopeRef {
+	readonly attemptId: string;
+	readonly generation: number;
+	readonly lineage: string;
 }
 
 // Unified options with reasoning passed to streamSimple() and completeSimple()
@@ -960,6 +990,19 @@ export interface ModelRequestTransform {
 	extraBody?: Record<string, unknown>;
 }
 
+export interface ModelCost {
+	input: number; // $/million tokens
+	output: number; // $/million tokens
+	cacheRead: number; // $/million tokens
+	cacheWrite: number; // $/million tokens
+}
+
+export interface LongContextPricing {
+	/** Input-token count above which the long-context rates apply to the full request. */
+	threshold: number;
+	cost: ModelCost;
+}
+
 export interface Model<TApi extends Api = any> {
 	id: string;
 	name: string;
@@ -976,12 +1019,9 @@ export interface Model<TApi extends Api = any> {
 	 * provider/id heuristics.
 	 */
 	output?: ("text" | "image")[];
-	cost: {
-		input: number; // $/million tokens
-		output: number; // $/million tokens
-		cacheRead: number; // $/million tokens
-		cacheWrite: number; // $/million tokens
-	};
+	cost: ModelCost;
+	/** Optional long-context rates selected from the request's total input-token count. */
+	longContextPricing?: LongContextPricing;
 	/** Premium Copilot requests charged per user-initiated request (defaults to 1). */
 	premiumMultiplier?: number;
 	contextWindow: number;

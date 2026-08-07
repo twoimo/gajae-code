@@ -10,6 +10,7 @@
  * lazy wrappers below), so this file IS the main streaming path's provider
  * loader: heavy SDKs stay out of the CLI startup parse graph.
  */
+
 import type {
 	Api,
 	AssistantMessage,
@@ -21,7 +22,14 @@ import type {
 } from "../types";
 import { type AbortSourceTracker, createAbortSourceTracker } from "../utils/abort";
 import { AssistantMessageEventStream as EventStreamImpl } from "../utils/event-stream";
-import { getStreamFirstEventTimeoutMs, getStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
+import { transportFailureFacts } from "../utils/fallback-transport";
+import {
+	FirstEventTimeoutError,
+	getProviderFirstEventTimeoutFallbackMs,
+	getStreamFirstEventTimeoutMs,
+	getStreamIdleTimeoutMs,
+	iterateWithIdleTimeout,
+} from "../utils/idle-iterator";
 import type { BedrockOptions } from "./amazon-bedrock";
 import type { AnthropicOptions } from "./anthropic";
 import type { AzureOpenAIResponsesOptions } from "./azure-openai-responses";
@@ -159,6 +167,7 @@ export function setBedrockProviderModule(module: BedrockProviderModule): void {
 
 const LAZY_STREAM_IDLE_TIMEOUT_ERROR = "Provider stream stalled while waiting for the next event";
 const LAZY_STREAM_FIRST_EVENT_TIMEOUT_ERROR = "Provider stream timed out while waiting for the first event";
+const LAZY_STREAM_NON_PROGRESS_EVENT_TYPES = new Set(["start", "toolChoiceIncapability"]);
 
 function hasFinalResult(
 	source: AsyncIterable<AssistantMessageEvent>,
@@ -176,7 +185,13 @@ function hasFinalResult(
 interface LazyStreamLimits {
 	defaultFirstEventTimeoutMs?: number;
 	defaultIdleTimeoutMs?: number;
+	/** The provider already watches raw transport events, which this normalized wrapper cannot observe. */
+	providerOwnsWatchdog?: boolean;
 }
+
+const PROVIDER_OWNED_STREAM_WATCHDOG: LazyStreamLimits = {
+	providerOwnsWatchdog: true,
+};
 
 /**
  * Cloud Code Assist (google-gemini-cli / google-antigravity) routinely takes
@@ -190,13 +205,12 @@ interface LazyStreamLimits {
 const GOOGLE_GEMINI_CLI_LAZY_STREAM_LIMITS: LazyStreamLimits = {
 	defaultFirstEventTimeoutMs: 300_000,
 };
-const SLOW_FIRST_EVENT_PROVIDERS = new Set(["alibaba-token-plan", "kimi-code"]);
 
 /**
  * Resolves the first-event timeout fallback for the outer lazy-stream watchdog.
  * A configured wrapper-specific fallback (from `LazyStreamLimits`) always wins;
- * otherwise providers known to have slow first events get a five-minute floor
- * matching their inner provider-level override. Returns `undefined` for
+ * otherwise providers known to have slow first events use the same centralized
+ * fallback as their inner provider-level watchdog. Returns `undefined` for
  * providers that should use the shared default.
  */
 export function resolveLazyStreamFirstEventFallbackMs(
@@ -204,7 +218,7 @@ export function resolveLazyStreamFirstEventFallbackMs(
 	configuredFallbackMs?: number,
 ): number | undefined {
 	if (configuredFallbackMs !== undefined) return configuredFallbackMs;
-	return SLOW_FIRST_EVENT_PROVIDERS.has(provider) ? 300_000 : undefined;
+	return getProviderFirstEventTimeoutFallbackMs(provider);
 }
 
 function forwardStream<TApi extends Api>(
@@ -217,27 +231,34 @@ function forwardStream<TApi extends Api>(
 ): void {
 	(async () => {
 		try {
-			const idleTimeoutMs = options.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(limits?.defaultIdleTimeoutMs);
-			const firstEventFallbackMs = resolveLazyStreamFirstEventFallbackMs(
-				model.provider,
-				limits?.defaultFirstEventTimeoutMs,
-			);
-			const watchedSource = iterateWithIdleTimeout(source, {
-				idleTimeoutMs,
-				firstItemTimeoutMs:
-					options.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs, firstEventFallbackMs),
-				errorMessage: LAZY_STREAM_IDLE_TIMEOUT_ERROR,
-				firstItemErrorMessage: LAZY_STREAM_FIRST_EVENT_TIMEOUT_ERROR,
-				onIdle: () => abortTracker.abortLocally(new Error(LAZY_STREAM_IDLE_TIMEOUT_ERROR)),
-				onFirstItemTimeout: () => abortTracker.abortLocally(new Error(LAZY_STREAM_FIRST_EVENT_TIMEOUT_ERROR)),
-				abortSignal: options.signal,
-				// The synthetic `start` event is yielded immediately by every provider before
-				// the upstream model has emitted any tokens. Treating it as the first "real"
-				// item would flip the watchdog from `firstItemTimeoutMs` to the much shorter
-				// `idleTimeoutMs` while we're still legitimately waiting on the model's
-				// first response (slow first-token from reasoning models, cold proxies, etc.).
-				isProgressItem: event => (event as AssistantMessageEvent).type !== "start",
-			});
+			let watchedSource = source;
+			if (!limits?.providerOwnsWatchdog) {
+				const idleTimeoutMs = options.streamIdleTimeoutMs ?? getStreamIdleTimeoutMs(limits?.defaultIdleTimeoutMs);
+				const firstEventFallbackMs = resolveLazyStreamFirstEventFallbackMs(
+					model.provider,
+					limits?.defaultFirstEventTimeoutMs,
+				);
+				watchedSource = iterateWithIdleTimeout(source, {
+					idleTimeoutMs,
+					firstItemTimeoutMs:
+						options.streamFirstEventTimeoutMs ??
+						getStreamFirstEventTimeoutMs(idleTimeoutMs, firstEventFallbackMs),
+					errorMessage: LAZY_STREAM_IDLE_TIMEOUT_ERROR,
+					firstItemErrorMessage: LAZY_STREAM_FIRST_EVENT_TIMEOUT_ERROR,
+					onIdle: () => abortTracker.abortLocally(new Error(LAZY_STREAM_IDLE_TIMEOUT_ERROR)),
+					onFirstItemTimeout: () =>
+						abortTracker.abortLocally(new FirstEventTimeoutError(LAZY_STREAM_FIRST_EVENT_TIMEOUT_ERROR)),
+					abortSignal: options.signal,
+					// Synthetic starts and tool-capability negotiation are control-plane events,
+					// not model progress. Keep the first-event window active until assistant output
+					// arrives instead of switching early to the shorter idle timeout.
+					isProgressItem: event => {
+						if (!event || typeof event !== "object") return true;
+						const eventType = (event as { type?: unknown }).type;
+						return typeof eventType !== "string" || !LAZY_STREAM_NON_PROGRESS_EVENT_TYPES.has(eventType);
+					},
+				});
+			}
 
 			for await (const event of watchedSource) {
 				target.push(event);
@@ -261,6 +282,7 @@ function createLazyLoadErrorMessage<TApi extends Api>(
 	error: unknown,
 	stopReason: Extract<AssistantMessage["stopReason"], "aborted" | "error"> = "error",
 ): AssistantMessage {
+	const transportFailure = transportFailureFacts(error);
 	return {
 		role: "assistant",
 		content: [],
@@ -278,6 +300,7 @@ function createLazyLoadErrorMessage<TApi extends Api>(
 		stopReason,
 		errorMessage:
 			stopReason === "aborted" ? "Request was aborted" : error instanceof Error ? error.message : String(error),
+		...(transportFailure ? { transportFailure } : {}),
 		timestamp: Date.now(),
 	};
 }
@@ -413,17 +436,29 @@ function loadBedrockProviderModule(): Promise<LazyProviderModule<"bedrock-conver
 // are loaded on first use instead of during package initialization.
 // ---------------------------------------------------------------------------
 
-export const streamAnthropic = createLazyStream(loadAnthropicProviderModule);
-export const streamAzureOpenAIResponses = createLazyStream(loadAzureOpenAIResponsesProviderModule);
+export const streamAnthropic = createLazyStream(loadAnthropicProviderModule, PROVIDER_OWNED_STREAM_WATCHDOG);
+export const streamAzureOpenAIResponses = createLazyStream(
+	loadAzureOpenAIResponsesProviderModule,
+	PROVIDER_OWNED_STREAM_WATCHDOG,
+);
 export const streamGoogle = createLazyStream(loadGoogleProviderModule);
 export const streamGoogleGeminiCli = createLazyStream(
 	loadGoogleGeminiCliProviderModule,
 	GOOGLE_GEMINI_CLI_LAZY_STREAM_LIMITS,
 );
 export const streamGoogleVertex = createLazyStream(loadGoogleVertexProviderModule);
-export const streamOpenAICodexResponses = createLazyStream(loadOpenAICodexResponsesProviderModule);
-export const streamOpenAICompletions = createLazyStream(loadOpenAICompletionsProviderModule);
-export const streamOpenAIResponses = createLazyStream(loadOpenAIResponsesProviderModule);
+export const streamOpenAICodexResponses = createLazyStream(
+	loadOpenAICodexResponsesProviderModule,
+	PROVIDER_OWNED_STREAM_WATCHDOG,
+);
+export const streamOpenAICompletions = createLazyStream(
+	loadOpenAICompletionsProviderModule,
+	PROVIDER_OWNED_STREAM_WATCHDOG,
+);
+export const streamOpenAIResponses = createLazyStream(
+	loadOpenAIResponsesProviderModule,
+	PROVIDER_OWNED_STREAM_WATCHDOG,
+);
 export const streamCursor = createLazyStream(loadCursorProviderModule);
 export const streamOllama = createLazyStream(loadOllamaProviderModule);
 

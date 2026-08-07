@@ -11,7 +11,7 @@ describe("MiniMax M3 support (issue #385)", () => {
 
 			expect(model.id).toBe("minimax-m3");
 			expect(model.provider).toBe(provider);
-			expect(model.contextWindow).toBe(512_000);
+			expect(model.contextWindow).toBe(1_000_000);
 			expect(model.maxTokens).toBe(128_000);
 			expect(model.input).toContain("text");
 			expect(model.input).toContain("image");
@@ -29,5 +29,9 @@ describe("MiniMax M3 support (issue #385)", () => {
 			const model = getBundledModel(provider, "minimax-m3");
 			expect(model.name).toBe("MiniMax-M3");
 		}
+	});
+
+	test("does not widen unrelated MiniMax catalog aliases", () => {
+		expect(getBundledModel("minimax-code", "minimax-v3").contextWindow).toBe(512_000);
 	});
 });

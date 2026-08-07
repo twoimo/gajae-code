@@ -33,8 +33,8 @@ async function captureProcess(command: string[], cwd: string): Promise<ScenarioR
 	return { stdout, stderr, exitCode };
 }
 
-async function runScenario(scenario: string): Promise<ScenarioResult> {
-	return captureProcess([process.execPath, fixturePath, scenario], utilsDirectory);
+async function runScenario(scenario: string, extraArgs: readonly string[] = []): Promise<ScenarioResult> {
+	return captureProcess([process.execPath, fixturePath, scenario, ...extraArgs], utilsDirectory);
 }
 
 async function runPipelineCommand(command: readonly string[]): Promise<ScenarioResult> {
@@ -205,6 +205,21 @@ describe("postmortem process stdout EPIPE policy", () => {
 		}
 	}, 15_000);
 
+	it("handles a rejecting async callback registered after plain cleanup without an unhandled rejection", async () => {
+		const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "postmortem-late-registration-"));
+		const resultPath = path.join(temporaryDirectory, "result.json");
+		try {
+			const result = await runScenario("late-registration-async-rejection", [resultPath]);
+
+			expect(result.exitCode).toBe(0);
+			expect(JSON.parse(await fs.readFile(resultPath, "utf8"))).toEqual({ count: 1 });
+			expect(combinedOutput(result)).toContain("Cleanup callback failed");
+			expect(combinedOutput(result)).not.toContain("[Unhandled Rejection]");
+		} finally {
+			await fs.rm(temporaryDirectory, { recursive: true, force: true });
+		}
+	}, 15_000);
+
 	it("keeps a later ordinary fatal diagnostic and status 1 without rerunning quiet cleanup", async () => {
 		const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "postmortem-ordinary-fatal-"));
 		const resultPath = path.join(temporaryDirectory, "result.json");
@@ -270,5 +285,29 @@ describe("postmortem process stdout EPIPE policy", () => {
 
 		expectOrdinaryFatal(exception, "Uncaught Exception", "fixture: genuine fatal error");
 		expectOrdinaryFatal(rejection, "Unhandled Rejection", "fixture: genuine rejected fatal error");
+	}, 15_000);
+});
+
+describe("postmortem process stdout closed-stream family (EIO/EBADF, issue #3810)", () => {
+	it("exits quietly with 141 for an attributed stdout EIO (pty torn down)", async () => {
+		const result = await runScenario("stdout-fd-eio-unhandled-rejection");
+
+		expect(result.exitCode).toBe(141);
+		expect(result.stderr).not.toContain("[Unhandled Rejection]");
+		expect(result.stderr).not.toContain("EIO");
+	}, 15_000);
+
+	it("exits quietly with 141 for an attributed stdout EBADF (fd gone)", async () => {
+		const result = await runScenario("stdout-fd-ebadf-unhandled-rejection");
+
+		expect(result.exitCode).toBe(141);
+		expect(result.stderr).not.toContain("[Unhandled Rejection]");
+		expect(result.stderr).not.toContain("EBADF");
+	}, 15_000);
+
+	it("keeps a non-stdout EIO fatal — only stdout's own sink is benign", async () => {
+		const result = await runScenario("non-stdout-eio-fatal");
+
+		expectOrdinaryFatal(result, "Uncaught Exception", "fixture: non-stdout EIO stays fatal");
 	}, 15_000);
 });

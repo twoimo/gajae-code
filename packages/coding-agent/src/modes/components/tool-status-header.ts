@@ -2,7 +2,6 @@ import * as fs from "node:fs";
 
 import { type Component, truncateToWidth, visibleWidth } from "@gajae-code/tui";
 import { formatCount, getProjectDir } from "@gajae-code/utils";
-import { $ } from "bun";
 import {
 	type AppKeybinding,
 	KEYBINDINGS,
@@ -20,6 +19,7 @@ import type { ActionRegistry, FocusDomain } from "../action-registry";
 import { EMPTY_JOBS_SNAPSHOT, type JobsSnapshot } from "../jobs-observer";
 import { sanitizeStatusText } from "../shared";
 import { renderSkillHudBar } from "./skill-hud/render";
+import { lookupCurrentPr } from "./status-line/gh";
 import {
 	canReuseCachedPr,
 	createPrCacheContext,
@@ -70,16 +70,13 @@ export interface StatusLineActionHint {
 
 const ACTION_HINT_PRIORITY: readonly AppKeybinding[] = [
 	"app.message.sendNow",
-	"app.message.queue",
 	"app.message.followUp",
+	"app.message.queue",
 	"app.message.dequeue",
 	"app.commandPalette.open",
 	"app.plan.toggle",
 	"app.mode.cycle",
-	"app.thinking.cycle",
-	"app.model.select",
 	"app.model.cycleForward",
-	"app.history.search",
 	"app.session.togglePath",
 	"app.session.toggleSort",
 	"app.session.rename",
@@ -209,7 +206,6 @@ export class StatusLineComponent implements Component {
 			separator: settings.get("statusLine.separator"),
 			showHookStatus: settings.get("statusLine.showHookStatus"),
 			showSkillHud: settings.get("statusLine.showSkillHud"),
-			showActionHints: settings.get("statusLine.showActionHints"),
 			segmentOptions: settings.getGroup("statusLine").segmentOptions,
 			sessionAccent: settings.get("statusLine.sessionAccent"),
 			maxRows: settings.get("statusLine.maxRows"),
@@ -419,19 +415,8 @@ export class StatusLineComponent implements Component {
 			};
 			try {
 				// Requires `gh repo set-default` to be configured; fails gracefully if not
-				const result = await $`gh pr view --json number,url`.quiet().nothrow();
-				if (result.exitCode !== 0) {
-					setCachedPr(null);
-					return;
-				}
-				const pr = JSON.parse(result.stdout.toString()) as { number: number; url: string };
-				if (typeof pr.number === "number") {
-					setCachedPr({ number: pr.number, url: pr.url });
-				} else {
-					setCachedPr(null);
-				}
-			} catch {
-				setCachedPr(null);
+				const pr = await lookupCurrentPr();
+				setCachedPr(pr);
 			} finally {
 				this.#prLookupInFlight = false;
 				if (this.#onBranchChange) {

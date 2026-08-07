@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getAgentDir, getConfigRootDir } from "./dirs";
@@ -6,111 +5,10 @@ import { isSafeEnvName, isSafeEnvValue } from "./spawn-env";
 
 export { filterProcessEnv, isSafeEnvName, isSafeEnvValue } from "./spawn-env";
 
-const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+import { parseEnvFile, parseShellEnvFile } from "./env-file";
 
-/**
- * Strict shell-identifier shape. Used for dotenv keys we accept into
- * `Bun.env` — those should be referenceable as `$NAME` from POSIX shells,
- * so we reject anything outside `[A-Za-z_][A-Za-z0-9_]*`.
- */
-export function isValidEnvName(name: string): boolean {
-	return ENV_NAME_RE.test(name);
-}
-
-function stripInlineShellComment(value: string): string {
-	let quote: '"' | "'" | undefined;
-	for (let i = 0; i < value.length; i++) {
-		const char = value[i];
-		if (char === "\\") {
-			i++;
-			continue;
-		}
-		if ((char === '"' || char === "'") && (!quote || quote === char)) {
-			quote = quote ? undefined : char;
-			continue;
-		}
-		if (char === "#" && !quote && (i === 0 || /\s/.test(value[i - 1] ?? ""))) {
-			return value.slice(0, i).trimEnd();
-		}
-	}
-	return value.trimEnd();
-}
-
-/**
- * Parses simple POSIX shell environment assignments from files such as
- * ~/.zshrc without executing user shell code. Supports `export KEY=value` and
- * `KEY=value`, including single/double quoted literal values. Dynamic shell
- * expressions are intentionally ignored because evaluating startup files would
- * run arbitrary code during CLI startup.
- */
-export function parseShellEnvFile(filePath: string): Record<string, string> {
-	const result: Record<string, string> = {};
-	try {
-		const content = fs.readFileSync(filePath, "utf-8");
-		for (const line of content.split("\n")) {
-			const trimmed = line.trim();
-			if (!trimmed || trimmed.startsWith("#")) continue;
-
-			const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(trimmed);
-			if (!match) continue;
-
-			const key = match[1];
-			if (!isValidEnvName(key)) continue;
-
-			let value = stripInlineShellComment(match[2] ?? "").trim();
-			if (value.endsWith(";")) value = value.slice(0, -1).trimEnd();
-			if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-				value = value.slice(1, -1);
-			}
-			if (!isSafeEnvValue(value)) continue;
-			if (/[$`]/.test(value)) continue;
-
-			result[key] = value;
-		}
-	} catch {
-		// File doesn't exist or can't be read - return empty result
-	}
-
-	return result;
-}
-
-/**
- * Parses a .env file synchronously and extracts key-value string pairs.
- * Ignores lines that are empty or start with '#'. Trims whitespace.
- * Allows values to be quoted with single or double quotes.
- * Returns an object of key-value pairs.
- */
-export function parseEnvFile(filePath: string): Record<string, string> {
-	const result: Record<string, string> = {};
-	try {
-		const content = fs.readFileSync(filePath, "utf-8");
-		for (const line of content.split("\n")) {
-			const trimmed = line.trim();
-			// Skip comments and blank lines
-			if (!trimmed || trimmed.startsWith("#")) continue;
-
-			const eqIndex = trimmed.indexOf("=");
-			if (eqIndex === -1) continue;
-
-			const key = trimmed.slice(0, eqIndex).trim();
-			if (!isValidEnvName(key)) continue;
-
-			let value = trimmed.slice(eqIndex + 1).trim();
-
-			// Remove surrounding quotes (" or ')
-			if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-				value = value.slice(1, -1);
-			}
-			if (!isSafeEnvValue(value)) continue;
-
-			result[key] = value;
-		}
-	} catch {
-		// File doesn't exist or can't be read - return empty result
-	}
-
-	return result;
-}
+// Re-exported so the public surface of this module is unchanged.
+export { isValidEnvName, parseEnvFile, parseShellEnvFile } from "./env-file";
 
 function resolveFileEnvValue(file: Record<string, string>, name: string): string | undefined {
 	if (!isSafeEnvName(name)) return undefined;
@@ -154,7 +52,17 @@ const projectEnv = parseEnvFile(path.join(process.cwd(), ".env"));
 const inheritedEnv = filterCredentialInheritedEnv(Bun.env);
 
 export function $inheritedEnv(name: string): string | undefined {
-	return resolveFileEnvValue(inheritedEnv, name);
+	const snapshotValue = resolveFileEnvValue(inheritedEnv, name);
+	if (snapshotValue === undefined) return undefined;
+	// The snapshot records provenance — this key was inherited from the launching
+	// shell rather than the caller's cwd/.env — and pins the value so a later
+	// in-process write cannot swap the credential we authenticate with. It is not
+	// a cache that outlives the variable: once the key is removed from the live
+	// environment it is no longer inherited, so deletion is honoured. Without
+	// this, a credential present at import time can never be suppressed (tests
+	// that clear provider env vars silently keep resolving the real credential).
+	if (Bun.env[name] === undefined) return undefined;
+	return snapshotValue;
 }
 
 function resolveLiveCredentialEnvValue(name: string): string | undefined {
@@ -239,16 +147,20 @@ export function $pickCredentialEnv(...keys: string[]): string | undefined {
 	return undefined;
 }
 
+function parsePositiveInteger(raw: string | undefined): number | undefined {
+	const value = raw?.trim();
+	if (!value || !/^\d+$/.test(value)) return undefined;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 /**
  * Parses a positive decimal integer from `$env[name]`.
- * Empty, invalid, NaN, zero, or negative values return `defaultValue`.
+ * Empty, invalid, unsafe, zero, or negative values return `defaultValue`.
  */
 export function $envpos(name: string, defaultValue: number): number {
-	const raw = $env[name];
-	if (!raw) return defaultValue;
-	const parsed = Number.parseInt(raw, 10);
-	if (Number.isNaN(parsed) || parsed <= 0) return defaultValue;
-	return parsed;
+	const parsed = parsePositiveInteger($env[name]);
+	return parsed ?? defaultValue;
 }
 
 /** True when `BUN_ENV` or `NODE_ENV` is the string `test`. */
@@ -292,10 +204,8 @@ export function $pickflag(...keys: string[]): boolean {
 /** Resolve the first positive integer among keys, else defaultValue (GJC-first). Set-but-invalid keys are skipped. */
 export function $pickenvpos(keys: string[], defaultValue: number): number {
 	for (const key of keys) {
-		const raw = $env[key]?.trim();
-		if (!raw) continue;
-		const parsed = Number.parseInt(raw, 10);
-		if (!Number.isNaN(parsed) && parsed > 0) return parsed;
+		const parsed = parsePositiveInteger($env[key]);
+		if (parsed !== undefined) return parsed;
 	}
 	return defaultValue;
 }

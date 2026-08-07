@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { APP_NAME, extractHttpStatusFromError, getLogsDir } from "@gajae-code/utils";
 import { isCopilotTransientModelError } from "./retry.js";
@@ -25,6 +26,34 @@ type ErrorWithStatus = {
 };
 
 const SENSITIVE_HEADERS = ["authorization", "x-api-key", "api-key", "cookie", "set-cookie", "proxy-authorization"];
+
+/**
+ * Connection-level failure codes, meaning the request never reached the
+ * provider and no HTTP status exists. Bun reports the first group for `fetch`;
+ * the `E*`/`UND_ERR_*` group comes from Node-style DNS and socket errors.
+ *
+ * Deliberately excludes aborts and TLS/certificate codes: an abort is a
+ * user/watchdog outcome with its own display path, and its message must keep
+ * matching the abort normalizers in `modes/utils/abort-message`.
+ */
+const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
+	"ConnectionClosed",
+	"ConnectionRefused",
+	"ConnectionReset",
+	"ConnectionTimeout",
+	"FailedToOpenSocket",
+	"HTTP2Unsupported",
+	"EAI_AGAIN",
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"EHOSTUNREACH",
+	"ENETUNREACH",
+	"ENOTFOUND",
+	"EPIPE",
+	"ETIMEDOUT",
+	"UND_ERR_CONNECT_TIMEOUT",
+	"UND_ERR_SOCKET",
+]);
 
 /**
  * Privacy note appended next to a saved raw HTTP request dump. The dump is
@@ -66,6 +95,49 @@ export function formatModelUnavailableGuidance(dump: RawHttpRequestDump | undefi
 	].join("\n");
 }
 
+/**
+ * Cap on retained HTTP 400 request dumps.
+ *
+ * Each dump carries the full sanitized request body, so they are large: a
+ * developer machine accumulated 27,249 files totalling 7.0 GB, averaging 264 KB
+ * each, because nothing ever removed them. The rotating application log already
+ * bounds itself (`maxSize: 10m`, `maxFiles: 5`); these diagnostics get the same
+ * treatment so the newest failures stay available without unbounded growth.
+ */
+const MAX_RETAINED_DUMPS = 50;
+
+/** Directory holding the retained HTTP 400 dumps. */
+export function httpRequestDumpDir(): string {
+	return path.join(getLogsDir(), "http-400-requests");
+}
+
+/**
+ * Drop the oldest dumps beyond the cap. Best-effort: diagnostics must never turn
+ * a request failure into a second failure, so every step swallows its error.
+ *
+ * File names are `${Date.now()}-${hash}.json`, so a lexical sort is chronological
+ * for the millisecond timestamps this writer produces.
+ */
+export async function pruneHttpRequestDumps(dir: string = httpRequestDumpDir()): Promise<number> {
+	const entries = await fs.readdir(dir).catch(() => undefined);
+	if (!entries) return 0;
+
+	const dumps = entries.filter(name => name.endsWith(".json")).sort();
+	if (dumps.length <= MAX_RETAINED_DUMPS) return 0;
+
+	let removed = 0;
+	for (const name of dumps.slice(0, dumps.length - MAX_RETAINED_DUMPS)) {
+		if (
+			await fs.rm(path.join(dir, name), { force: true }).then(
+				() => true,
+				() => false,
+			)
+		)
+			removed++;
+	}
+	return removed;
+}
+
 export async function appendRawHttpRequestDumpFor400(
 	message: string,
 	error: unknown,
@@ -77,15 +149,65 @@ export async function appendRawHttpRequestDumpFor400(
 
 	const sanitizedDump = sanitizeDump(dump);
 	const fileName = `${Date.now()}-${Bun.hash(JSON.stringify(sanitizedDump)).toString(36)}.json`;
-	const filePath = path.join(getLogsDir(), "http-400-requests", fileName);
+	const dumpDir = httpRequestDumpDir();
+	const filePath = path.join(dumpDir, fileName);
 
 	try {
 		await Bun.write(filePath, `${JSON.stringify(sanitizedDump, null, 2)}\n`);
+		await pruneHttpRequestDumps(dumpDir);
 		return `${message}\nraw-http-request=${filePath}\n${RAW_HTTP_REQUEST_PRIVACY_NOTE}`;
 	} catch (writeError) {
 		const writeMessage = writeError instanceof Error ? writeError.message : String(writeError);
 		return `${message}\nraw-http-request-save-failed=${writeMessage}`;
 	}
+}
+
+/** Origin and path of `value`, dropping query, fragment, and credentials so a
+ *  key carried in the request URL (Google `?key=`, signed URLs) never lands in
+ *  a user-visible error string. */
+function redactRequestUrl(value: unknown): string | undefined {
+	if (typeof value !== "string" || value.trim().length === 0) return undefined;
+	try {
+		const url = new URL(value);
+		return `${url.origin}${url.pathname}`;
+	} catch {
+		return undefined;
+	}
+}
+
+function findTransportFailure(error: unknown, depth: number): { code: string; url?: string } | undefined {
+	if (!error || typeof error !== "object" || depth > 2) return undefined;
+	const info = error as { code?: unknown; path?: unknown; url?: unknown; cause?: unknown };
+	if (typeof info.code === "string" && TRANSPORT_FAILURE_CODES.has(info.code)) {
+		return { code: info.code, url: redactRequestUrl(info.path) ?? redactRequestUrl(info.url) };
+	}
+	return findTransportFailure(info.cause, depth + 1);
+}
+
+/**
+ * Name the failed connection when the request never produced an HTTP status.
+ *
+ * Bun raises DNS and socket failures as a bare `Error` whose message is a
+ * standalone hint ("Was there a typo in the url or port?", "Unable to connect.
+ * Is the computer able to access the url?") while the actionable facts live on
+ * `code` and `path`. Those properties are dropped when only `message` reaches
+ * the assistant message, so a provider outage, a local DNS failure, and a
+ * mistyped custom base URL all render as the same context-free sentence.
+ * Appending the code and the target URL tells the user which host failed and
+ * whether the fault is theirs.
+ */
+export function appendTransportFailureContext(
+	message: string,
+	error: unknown,
+	rawRequestDump: RawHttpRequestDump | undefined,
+): string {
+	if (extractHttpStatusFromError(error) !== undefined) return message;
+	const failure = findTransportFailure(error, 0);
+	if (!failure) return message;
+
+	const url = failure.url ?? redactRequestUrl(rawRequestDump?.url);
+	const context = url ? `transport=${failure.code} url=${url}` : `transport=${failure.code}`;
+	return message.includes(context) ? message : `${message} (${context})`;
 }
 
 export async function finalizeErrorMessage(
@@ -105,6 +227,7 @@ export async function finalizeErrorMessage(
 	if (isModelUnavailableError(message, error)) {
 		message = `${message}\n\n${formatModelUnavailableGuidance(rawRequestDump)}`;
 	}
+	message = appendTransportFailureContext(message, error, rawRequestDump);
 	return appendRawHttpRequestDumpFor400(message, error, rawRequestDump);
 }
 
@@ -144,6 +267,7 @@ export function rewriteCopilotError(errorMessage: string, error: unknown, provid
 function sanitizeDump(dump: RawHttpRequestDump): RawHttpRequestDump {
 	return {
 		...dump,
+		url: redactRequestUrl(dump.url),
 		headers: redactHeaders(dump.headers),
 		body: sanitizeDumpBody(dump.body),
 	};

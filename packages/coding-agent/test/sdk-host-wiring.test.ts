@@ -15,6 +15,15 @@ import type {
 	ExtensionContextActions,
 	ExtensionUIContext,
 } from "../src/extensibility/extensions/types";
+
+async function firePreflightAccept(options?: {
+	onPreflightAccepted?: () => void;
+	onPreflightAcceptCommit?: () => void | Promise<void>;
+}): Promise<void> {
+	if (options?.onPreflightAcceptCommit) await options.onPreflightAcceptCommit();
+	else options?.onPreflightAccepted?.();
+}
+
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
 import { buildAskGateAnswerSchema as buildDeepInterviewAskGateAnswerSchema } from "../src/modes/shared/agent-wire/deep-interview-gate";
 import {
@@ -31,7 +40,7 @@ import {
 import type { InteractiveModeContext } from "../src/modes/types";
 import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
 import { SessionIndex } from "../src/sdk/broker/session-index";
-import { createNotificationsExtension, PresentationArbiter } from "../src/sdk/bus";
+import { createNotificationsExtension, formatPromptSettlementDiagnostic, PresentationArbiter } from "../src/sdk/bus";
 import { getTelegramFileSink } from "../src/sdk/bus/attachment-registry";
 import { getNotificationConfig } from "../src/sdk/bus/config";
 import { NotificationSessionController } from "../src/sdk/bus/session-control";
@@ -52,7 +61,7 @@ import type {
 	ClientBridgePermissionToolCall,
 } from "../src/session/client-bridge";
 import { SessionManager } from "../src/session/session-manager";
-import { getAskAnswerSource } from "../src/tools/ask-answer-registry";
+import { getAskAnswerSource, registerAskAnswerSource } from "../src/tools/ask-answer-registry";
 import { startProductionSdkHost } from "./helpers/sdk-production-host";
 
 type SdkPermissionProvider =
@@ -119,8 +128,9 @@ function start(
 		cwd: string;
 		sessionId: string;
 		onRegistered?: (registration: telegramDaemon.RegisterNotificationRootResult) => void;
-	}) => Promise<"attached">,
+	}) => Promise<"attached" | "blocked">,
 	controller?: NotificationSessionController,
+	ensureProviderDaemon?: (provider: "discord" | "slack", settings: Settings) => Promise<unknown>,
 ): Map<string, (event: unknown, context: unknown) => unknown> {
 	const handlers = new Map<string, (event: unknown, context: unknown) => unknown>();
 	const api = {
@@ -134,8 +144,15 @@ function start(
 			options?: Parameters<ExtensionActions["sendUserMessage"]>[1],
 		) => {
 			if (forwardPreflightCallbacks) return Promise.resolve(sendUserMessage(content, options));
-			const { onPreflightAccepted, ...delivery } = options ?? {};
+			const { onPreflightAccepted, onPreflightAcceptCommit, ...delivery } = options ?? {};
 			const submission = sendUserMessage(content, Object.keys(delivery).length > 0 ? delivery : undefined);
+			// Prefer awaitable durable fence; fall back to legacy sync accept for older mocks.
+			if (onPreflightAcceptCommit) {
+				return Promise.resolve(onPreflightAcceptCommit()).then(() => {
+					onPreflightAccepted?.();
+					return submission;
+				});
+			}
 			onPreflightAccepted?.();
 			return Promise.resolve(submission);
 		},
@@ -146,7 +163,9 @@ function start(
 		(lifecycle ? ({ get: () => undefined, getAgentDir: () => ctx.cwd } as unknown as Settings) : undefined);
 	createNotificationsExtension(
 		api,
-		effectiveSettings ? { settings: effectiveSettings, ensureTelegramDaemon, controller } : undefined,
+		effectiveSettings
+			? { settings: effectiveSettings, ensureTelegramDaemon, ensureProviderDaemon, controller }
+			: undefined,
 	);
 	if (autoStart) void handlers.get("session_start")?.({ type: "session_start" }, ctx);
 	return handlers;
@@ -189,6 +208,7 @@ function context(
 		getContextUsage: () => ({ tokens: 3, contextWindow: 100, percent: 3 }),
 		model: { provider: "fixture-provider", id: "reasoning-model" },
 		getThinkingLevel: () => "low",
+		getActivePromptHandle: () => undefined,
 		modelRegistry: {
 			getAll: () => [
 				{
@@ -215,6 +235,7 @@ function context(
 					},
 				},
 			],
+			getActiveProviders: () => [{ provider: "fixture-provider", connectionKind: "credential" }],
 		},
 		getSystemPrompt: () => ["test"],
 		isIdle: () => live.idle ?? true,
@@ -261,6 +282,37 @@ function context(
 	};
 }
 
+test("prompt settlement diagnostics are bounded and redact raw resource labels", () => {
+	const now = 100_000_000;
+	const labels = Array.from({ length: 10 }, (_, index) => `secret-provider-tool-label-${index}`);
+	const diagnostic = formatPromptSettlementDiagnostic(
+		{
+			status: "unfenced",
+			reason: "resources_pending",
+			pending: labels.map((label, index) => ({
+				id: String(index),
+				kind: index % 2 === 0 ? "provider_iterator" : "tool",
+				label,
+				registeredAt: index === 0 ? now + 1_000 : index === 1 ? now - 100_000_000 : now - index,
+			})),
+		},
+		now,
+	);
+	const parsed = JSON.parse(diagnostic) as {
+		reason: string;
+		pending: Array<{ kind: string; labelHash: string; ageMs: number }>;
+		omitted: number;
+	};
+
+	expect(parsed.reason).toBe("resources_pending");
+	expect(parsed.pending).toHaveLength(8);
+	expect(parsed.omitted).toBe(2);
+	expect(parsed.pending[0]?.ageMs).toBe(0);
+	expect(parsed.pending[1]?.ageMs).toBe(86_400_000);
+	expect(parsed.pending.every(entry => /^[0-9a-f]{16}$/.test(entry.labelHash))).toBe(true);
+	expect(labels.every(label => !diagnostic.includes(label))).toBe(true);
+	expect(new TextEncoder().encode(diagnostic).byteLength).toBeLessThanOrEqual(2_048);
+});
 test("shared ask-gate schema and stage-state authority preserves generic producer inputs", () => {
 	const labels = Array.from({ length: 33 }, (_, index) => (index === 32 ? "option-0" : `option-${index}`));
 	const question = { id: "generic-ask", multi: true, allowEmpty: false };
@@ -469,13 +521,11 @@ test("Telegram root release failure is retained and retried through lifecycle sh
 	const settings = telegramSettings(path.join(cwd, "agent"), true);
 	const capability = new SdkStartupCapability(new SdkStartupRollbackTracker());
 	const unregisterImpl = telegramDaemon.unregisterNotificationRoot;
-	let initialRegistrationToken: string | undefined;
-	let failedInitialCleanup = false;
+	let unregisterAttempts = 0;
 	const unregister = spyOn(telegramDaemon, "unregisterNotificationRoot").mockImplementation(async input => {
-		if (!failedInitialCleanup && input.registrationToken === initialRegistrationToken) {
-			failedInitialCleanup = true;
-			throw new Error("roots write failed");
-		}
+		unregisterAttempts++;
+		// Fail the first owner-release attempt for the live registration token.
+		if (unregisterAttempts === 1) throw new Error("roots write failed");
 		return await unregisterImpl(input);
 	});
 	const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
@@ -488,31 +538,33 @@ test("Telegram root release failure is retained and retried through lifecycle sh
 			false,
 			new Map(),
 			{ startupCapability: capability, lifecycleRequired: true },
-			true,
+			false,
 			async input => {
 				const registration = await telegramDaemon.registerNotificationRoot(input);
-				initialRegistrationToken ??= registration.token;
 				input.onRegistered?.(registration);
 				return "attached";
 			},
 		);
+		// Await full start+reconcile so shutdown uses the final replacement token only.
+		await handlers.get("session_start")!({ type: "session_start" }, sessionContext);
 		await expect(capability.promise).resolves.toEqual({ status: "started" });
 		const rootsFile = telegramDaemon.daemonPaths(settings.getAgentDir()).roots;
 		expect(JSON.parse(fs.readFileSync(rootsFile, "utf8")).sessions[sessionId]).toBe(path.join(cwd, ".gjc", "state"));
 		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
-		expect(unregister).toHaveBeenCalledTimes(2);
-		expect(unregister.mock.calls.map(call => call[0].registrationToken)).toEqual([
-			expect.any(String),
-			expect.any(String),
-		]);
-		expect(unregister.mock.calls[1]?.[0].registrationToken).not.toBe(unregister.mock.calls[0]?.[0].registrationToken);
+		// First shutdown retains the failed owner release (exactly one attempt).
+		expect(unregister).toHaveBeenCalledTimes(1);
+		expect(unregister.mock.calls[0]?.[0].registrationToken).toEqual(expect.any(String));
 		expect(
 			errorSpy.mock.calls.some(([message]) =>
 				String(message).includes(`SDK notification runtime ${sessionId} owner release failed`),
 			),
 		).toBe(true);
-		expect(JSON.parse(fs.readFileSync(rootsFile, "utf8")).sessions[sessionId]).toBeUndefined();
+		expect(JSON.parse(fs.readFileSync(rootsFile, "utf8")).sessions[sessionId]).toBe(path.join(cwd, ".gjc", "state"));
+		// Explicit later lifecycle shutdown retries the retained release and succeeds.
 		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
+		expect(unregister).toHaveBeenCalledTimes(2);
+		expect(unregister.mock.calls[1]?.[0].registrationToken).toBe(unregister.mock.calls[0]?.[0].registrationToken);
+		expect(JSON.parse(fs.readFileSync(rootsFile, "utf8")).sessions[sessionId]).toBeUndefined();
 		expect(JSON.parse(fs.readFileSync(rootsFile, "utf8"))).toEqual({
 			version: 1,
 			roots: [],
@@ -520,16 +572,97 @@ test("Telegram root release failure is retained and retried through lifecycle sh
 			sessions: {},
 			registrationTokens: {},
 		});
-		expect(unregister).toHaveBeenCalledTimes(3);
 		await expect(
 			handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext),
 		).resolves.toBeUndefined();
+		expect(unregister).toHaveBeenCalledTimes(2);
 	} finally {
 		unregister.mockRestore();
 		errorSpy.mockRestore();
 	}
 }, 60_000);
 
+test("Telegram cleanup is never retained without a registration token", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-telegram-root-tokenless-"));
+	dirs.push(cwd);
+	const sessionId = `telegram-root-tokenless-${Date.now()}`;
+	const settings = telegramSettings(path.join(cwd, "agent"), true);
+	const capability = new SdkStartupCapability(new SdkStartupRollbackTracker());
+	const unregister = spyOn(telegramDaemon, "unregisterNotificationRoot");
+	try {
+		const sessionContext = context(cwd, sessionId);
+		const handlers = start(
+			sessionContext,
+			settings,
+			() => {},
+			false,
+			new Map(),
+			{ startupCapability: capability, lifecycleRequired: true },
+			false,
+			async () => "attached",
+		);
+		await handlers.get("session_start")!({ type: "session_start" }, sessionContext);
+		await expect(capability.promise).resolves.toEqual({ status: "started" });
+		await handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
+		expect(unregister).not.toHaveBeenCalled();
+	} finally {
+		unregister.mockRestore();
+	}
+}, 60_000);
+
+test("Telegram ownership races publish safe siblings only in broker-authorized chat scope", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-telegram-sibling-isolation-"));
+	dirs.push(cwd);
+	const agentDir = path.join(cwd, "agent");
+	const sessionId = `telegram-sibling-isolation-${Date.now()}`;
+	const base = Settings.isolated({
+		"notifications.enabled": true,
+		"notifications.telegram.botToken": "123456:token",
+		"notifications.telegram.chatId": "42",
+		"notifications.discord.enabled": true,
+		"notifications.discord.botToken": "discord-token",
+		"notifications.discord.applicationId": "discord-app",
+		"notifications.discord.guildId": "discord-guild",
+		"notifications.discord.parentChannelId": "discord-parent",
+	});
+	const settings = new Proxy(base, {
+		get(target, prop) {
+			if (prop === "getAgentDir") return () => agentDir;
+			const value = Reflect.get(target, prop, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	}) as Settings;
+	const capability = new SdkStartupCapability(new SdkStartupRollbackTracker());
+	const sessionContext = context(cwd, sessionId);
+	const handlers = start(
+		sessionContext,
+		settings,
+		() => {},
+		false,
+		new Map(),
+		{ startupCapability: capability, lifecycleRequired: true },
+		false,
+		async () => "blocked",
+		undefined,
+		async () => "attached",
+	);
+	await handlers.get("session_start")!({ type: "session_start" }, sessionContext);
+	await expect(capability.promise).resolves.toEqual({ status: "started" });
+	const defaultEndpoint = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	const chatStateRoot = path.join(cwd, ".gjc", "state", "chat");
+	const chatEndpoint = path.join(chatStateRoot, "sdk", `${sessionId}.json`);
+	expect(fs.existsSync(defaultEndpoint)).toBe(false);
+	expect(fs.existsSync(chatEndpoint)).toBe(true);
+	const sessions = (await new SessionIndex(agentDir).open()).listSessions().sessions;
+	expect(sessions).toContainEqual(
+		expect.objectContaining({
+			sessionId,
+			locator: { repo: path.resolve(cwd), stateRoot: chatStateRoot },
+			endpointMtimeMs: fs.statSync(chatEndpoint).mtimeMs,
+		}),
+	);
+	await handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
+}, 60_000);
 test("Telegram root ownership is recorded when reconciliation configures Telegram after startup", async () => {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-telegram-root-reconcile-"));
 	dirs.push(cwd);
@@ -671,10 +804,36 @@ test("session_start swallows startup plus owner-release failure without surfacin
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-startup-cleanup-double-failure-"));
 	dirs.push(cwd);
 	const sessionId = `startup-cleanup-double-failure-${Date.now()}`;
-	const serverStart = spyOn(NotificationServer.prototype, "start").mockRejectedValueOnce(
-		new Error("server start failed"),
-	);
-	const hostStop = spyOn(SessionSdkHost.prototype, "stop").mockRejectedValueOnce(new Error("host stop failed"));
+	// `mockRejectedValueOnce` on a shared prototype is a one-shot global: a peer
+	// test scheduled concurrently in the same shard can consume the single
+	// rejection, after which this test's own `start`/`stop` resolve, startup
+	// never sets `suppressExtensionError`, and the error surfaces. Scope the
+	// rejection to this test's first call instead so shard composition cannot
+	// steal it.
+	let serverStartRejected = false;
+	const serverStartImpl = NotificationServer.prototype.start;
+	const serverStart = spyOn(NotificationServer.prototype, "start").mockImplementation(async function (
+		this: NotificationServer,
+		...args: Parameters<NotificationServer["start"]>
+	) {
+		if (!serverStartRejected) {
+			serverStartRejected = true;
+			throw new Error("server start failed");
+		}
+		return await serverStartImpl.apply(this, args);
+	});
+	let hostStopRejected = false;
+	const hostStopImpl = SessionSdkHost.prototype.stop;
+	const hostStop = spyOn(SessionSdkHost.prototype, "stop").mockImplementation(async function (
+		this: SessionSdkHost,
+		...args: Parameters<SessionSdkHost["stop"]>
+	) {
+		if (!hostStopRejected) {
+			hostStopRejected = true;
+			throw new Error("host stop failed");
+		}
+		return await hostStopImpl.apply(this, args);
+	});
 	const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
 	let restored = false;
 	try {
@@ -1513,6 +1672,35 @@ test("SDK host directly delivers correlated lifecycle frames for an accepted pro
 		},
 		sessionContext,
 	);
+	await handlers.get("tool_execution_start")?.(
+		{
+			type: "tool_execution_start",
+			toolCallId: "tool-read-1",
+			toolName: "read",
+			args: { path: "README.md" },
+		},
+		sessionContext,
+	);
+	await handlers.get("tool_execution_update")?.(
+		{
+			type: "tool_execution_update",
+			toolCallId: "tool-read-1",
+			toolName: "read",
+			args: { path: "README.md" },
+			partialResult: { content: [{ type: "text", text: "reading" }] },
+		},
+		sessionContext,
+	);
+	await handlers.get("tool_execution_end")?.(
+		{
+			type: "tool_execution_end",
+			toolCallId: "tool-read-1",
+			toolName: "read",
+			result: { content: [{ type: "text", text: "# Gajae-Code" }] },
+			isError: false,
+		},
+		sessionContext,
+	);
 	socket.send(
 		JSON.stringify({
 			type: "control_request",
@@ -1529,11 +1717,24 @@ test("SDK host directly delivers correlated lifecycle frames for an accepted pro
 		ok: false,
 		error: { code: "busy" },
 	});
-	await handlers.get("agent_end")?.({ type: "agent_end" }, sessionContext);
+	await handlers.get("agent_end")?.(
+		{
+			type: "agent_end",
+			messages: [
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "final answer" }],
+					stopReason: "stop",
+				},
+			],
+		} as never,
+		sessionContext,
+	);
 	await waitFor(
 		() => frames.some(frame => frame.type === "agent_start") && frames.some(frame => frame.type === "agent_end"),
 		"correlated accepted prompt lifecycle",
 	);
+	expect(frames.find(frame => frame.type === "agent_end")).toMatchObject({ finalText: "final answer" });
 	await waitFor(
 		() =>
 			frames.some(
@@ -1544,6 +1745,13 @@ test("SDK host directly delivers correlated lifecycle frames for an accepted pro
 						?.assistantMessageEvent?.delta === "hi",
 			),
 		"correlated assistant message event",
+	);
+	await waitFor(
+		() =>
+			frames.some(frame => frame.type === "event" && frame.kind === "tool_execution_start") &&
+			frames.some(frame => frame.type === "event" && frame.kind === "tool_execution_update") &&
+			frames.some(frame => frame.type === "event" && frame.kind === "tool_execution_end"),
+		"correlated tool lifecycle events",
 	);
 	observer.send(JSON.stringify({ type: "event_replay", id: "observer-replay", sinceSeq: 0 }));
 	await waitFor(
@@ -1565,6 +1773,15 @@ test("SDK host directly delivers correlated lifecycle frames for an accepted pro
 	]);
 	expect(observerFrames.some(frame => frame.type === "agent_start" || frame.type === "agent_end")).toBe(false);
 	expect(observerFrames.some(frame => frame.type === "event" && frame.kind === "message_update")).toBe(false);
+	expect(
+		observerFrames.some(
+			frame =>
+				frame.type === "event" &&
+				(frame.kind === "tool_execution_start" ||
+					frame.kind === "tool_execution_update" ||
+					frame.kind === "tool_execution_end"),
+		),
+	).toBe(false);
 	expect(observerReplay.events?.some(frame => frame.kind === "message_update")).toBe(false);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 });
@@ -1578,8 +1795,8 @@ test("SDK host buffers synchronous pre-ack start and end until after acknowledge
 	handlers = start(
 		sessionContext,
 		undefined,
-		(_content, options) => {
-			options?.onPreflightAccepted?.();
+		async (_content, options) => {
+			await firePreflightAccept(options);
 			void handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
 			void handlers.get("agent_end")?.({ type: "agent_end" }, sessionContext);
 		},
@@ -1636,8 +1853,8 @@ test("SDK host buffers synchronous pre-ack accepted failure until after acknowle
 	handlers = start(
 		sessionContext,
 		undefined,
-		(_content, options) => {
-			options?.onPreflightAccepted?.();
+		async (_content, options) => {
+			await firePreflightAccept(options);
 			void handlers.get("agent_start")?.({ type: "agent_start" }, sessionContext);
 			throw Object.assign(new Error("synchronous accepted failure"), { code: "unavailable" });
 		},
@@ -1763,7 +1980,14 @@ test("SDK host replays an accepted prompt terminal after its requester disconnec
 	);
 	expect(lifecycle).toEqual([
 		expect.objectContaining({ payload: { type: "agent_start", sessionId, ...correlation } }),
-		expect.objectContaining({ payload: { type: "agent_end", sessionId, ...correlation } }),
+		expect.objectContaining({
+			payload: {
+				type: "agent_end",
+				sessionId,
+				...correlation,
+				outcome: { kind: "stopped", reason: "end_turn", provenance: "agent" },
+			},
+		}),
 	]);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 });
@@ -1783,7 +2007,7 @@ test("SDK host serializes concurrent prompt admission and replays correlated lif
 			submissions.push(String(content));
 			preflightStarted.resolve();
 			await releasePreflight.promise;
-			options?.onPreflightAccepted?.();
+			await firePreflightAccept(options);
 		},
 		true,
 	);
@@ -1886,7 +2110,14 @@ test("SDK host serializes concurrent prompt admission and replays correlated lif
 	);
 	expect(replayedLifecycle).toEqual([
 		expect.objectContaining({ payload: { type: "agent_start", sessionId, ...correlation } }),
-		expect.objectContaining({ payload: { type: "agent_end", sessionId, ...correlation } }),
+		expect.objectContaining({
+			payload: {
+				type: "agent_end",
+				sessionId,
+				...correlation,
+				outcome: { kind: "stopped", reason: "end_turn", provenance: "agent" },
+			},
+		}),
 	]);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, sessionContext);
 });
@@ -1960,7 +2191,7 @@ test("SDK host terminalizes a cancelled preflight and releases prompt authority"
 					throw Object.assign(new Error("Prompt preflight was cancelled before execution."), { code: "busy" });
 				}
 			}
-			options?.onPreflightAccepted?.();
+			await firePreflightAccept(options);
 		},
 		true,
 	);
@@ -2027,7 +2258,9 @@ test("SDK host terminalizes a never-resolving preflight on abort and fences late
 		undefined,
 		async (content, options) => {
 			if (content !== "never resolve") return;
-			latePreflightAccepted = options?.onPreflightAccepted;
+			latePreflightAccepted = options?.onPreflightAcceptCommit
+				? () => void options.onPreflightAcceptCommit?.()
+				: options?.onPreflightAccepted;
 			preflightStarted.resolve();
 			await neverPreflight.promise;
 		},
@@ -2107,7 +2340,7 @@ test("SDK host abort-and-prompt cancels a never-resolving preflight before repla
 				preflightStarted.resolve();
 				await neverPreflight.promise;
 			}
-			options?.onPreflightAccepted?.();
+			await firePreflightAccept(options);
 		},
 		true,
 	);
@@ -2186,9 +2419,9 @@ test("SDK host waits for asynchronous abort unwind before delivering an abort-an
 	const handlers = start(
 		sessionContext,
 		undefined,
-		(content, options) => {
+		async (content, options) => {
 			deliveries.push([content, options]);
-			options?.onPreflightAccepted?.();
+			await firePreflightAccept(options);
 		},
 		true,
 	);
@@ -2288,7 +2521,7 @@ test("SDK session switches rotate endpoint authority before publishing the repla
 });
 
 for (const eventType of ["session_switch", "session_branch"] as const) {
-	test(`SDK ${eventType} rotation swallows a retained owner-release failure without surfacing an extension error`, async () => {
+	test(`SDK ${eventType} rotation fails closed when predecessor release is uncertain`, async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), `gjc-sdk-rotate-fail-${eventType}-`));
 		dirs.push(cwd);
 		const sessionA = `rotate-fail-a-${Date.now()}`;
@@ -2312,7 +2545,6 @@ for (const eventType of ["session_switch", "session_branch"] as const) {
 		// Fail A's owner release exactly once so the rotate-time stopSession(prevId)
 		// throws the retained-retry AggregateError.
 		const stop = spyOn(SessionSdkHost.prototype, "stop").mockRejectedValueOnce(new Error("host stop failed"));
-		const errorSpy = spyOn(logger, "error").mockImplementation(() => {});
 		try {
 			const startupCapability = new SdkStartupCapability();
 			const handlers = start(ctx, undefined, () => {}, false, new Map(), {
@@ -2324,55 +2556,20 @@ for (const eventType of ["session_switch", "session_branch"] as const) {
 			await waitFor(() => fs.existsSync(endpointAPath), "session A endpoint");
 
 			activeSessionId = sessionB;
-			// Drive the rotation handler through a real ExtensionRunner so the onError
-			// seam proves the swallowed failure is not surfaced as a red extension error.
-			const rotationExt = {
-				path: "test-rotation-ext",
-				handlers: new Map([
-					[
-						eventType,
-						[
-							async () => {
-								await handlers.get(eventType)!(
-									{
-										type: eventType,
-										reason: "new",
-										previousSessionFile: path.join(cwd, "sessions", `ts_${sessionA}.jsonl`),
-									},
-									ctx,
-								);
-							},
-						],
-					],
-				]),
+			// A retained predecessor cleanup must fail closed and rethrow before any
+			// successor endpoint can publish.
+			const rotationEvent = {
+				type: eventType,
+				reason: "new",
+				previousSessionFile: path.join(cwd, "sessions", `ts_${sessionA}.jsonl`),
 			};
-			const runner = new ExtensionRunner([rotationExt as never], {} as never, cwd, {} as never, {} as never);
-			runner.initialize({} as never, {} as never);
-			const surfaced: Array<{ event: string }> = [];
-			runner.onError(error => surfaced.push(error));
-			await expect(
-				runner.emit({
-					type: eventType,
-					reason: "new",
-					previousSessionFile: path.join(cwd, "sessions", `ts_${sessionA}.jsonl`),
-				} as never),
-			).resolves.toBeUndefined();
-			expect(surfaced).toEqual([]);
+			await expect(handlers.get(eventType)!(rotationEvent, ctx)).rejects.toThrow(
+				`SDK notification runtime ${sessionA} owner release failed`,
+			);
 
-			// Rotation still publishes B and retires A despite the swallowed failure.
+			// The failed predecessor release quarantines B: no successor endpoint is published.
 			const endpointBPath = path.join(cwd, ".gjc", "state", "sdk", `${sessionB}.json`);
-			await waitFor(() => !fs.existsSync(endpointAPath) && fs.existsSync(endpointBPath), "rotated session endpoint");
-
-			// The failure is logged at error severity with the shared prefix and A's
-			// identity, never surfaced as a red extension error.
-			const breadcrumbs = errorSpy.mock.calls.map(args => String(args[0]));
-			expect(
-				breadcrumbs.some(
-					message =>
-						message.startsWith("notifications: SDK notification runtime cleanup failed: ") &&
-						message.includes(`SDK notification runtime ${sessionA} owner release failed`),
-				),
-			).toBe(true);
+			expect(fs.existsSync(endpointBPath)).toBe(false);
 
 			// With the mock restored, A's retained cleanup can still complete.
 			stop.mockRestore();
@@ -2386,7 +2583,6 @@ for (const eventType of ["session_switch", "session_branch"] as const) {
 			await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx);
 		} finally {
 			stop.mockRestore();
-			errorSpy.mockRestore();
 		}
 	});
 }
@@ -2428,6 +2624,21 @@ test("SDK host binds session query and control seams and excludes uninstalled re
 		const response = await request(`query-${query}`, { type: "query_request", id: `query-${query}`, query });
 		expect(response).toMatchObject({ ok: true, page: { items: [expect.objectContaining(expected)] } });
 	}
+	const activeProviders = await request("query-Q29", {
+		type: "query_request",
+		id: "query-Q29",
+		query: "Q29",
+	});
+	expect(activeProviders).toEqual({
+		type: "query_response",
+		id: "query-Q29",
+		ok: true,
+		page: {
+			items: [{ provider: "fixture-provider", connectionKind: "credential" }],
+			complete: true,
+			revision: "1",
+		},
+	});
 	for (const query of ["Q10", "models.list/current", "models.list", "models.current"]) {
 		const response = await request(`query-${query}`, {
 			type: "query_request",
@@ -2565,8 +2776,228 @@ test("SDK host routes pure ACP permission prompts through a live reverse provide
 		}),
 	);
 	expect(await requested).toEqual({ outcome: "selected", optionId: "allow_once", kind: "allow_once" });
+	const cancelledPermissionAbort = new AbortController();
+	const cancelledPermission = permissionProvider!(
+		{ toolCallId: "call-2", toolName: "bash", title: "printf cancelled", status: "pending" },
+		[{ optionId: "reject_once", name: "Reject once", kind: "reject_once" }],
+		cancelledPermissionAbort.signal,
+	).catch(error => error);
+	await waitFor(
+		() => frames.filter(frame => frame.type === "reverse_request").length >= 2,
+		"second reverse permission request",
+	);
+	const cancelledRequest = frames.filter(frame => frame.type === "reverse_request")[1]!;
+	cancelledPermissionAbort.abort();
+	await waitFor(
+		() => frames.some(frame => frame.type === "reverse_cancel" && frame.id === cancelledRequest.id),
+		"permission reverse cancellation",
+	);
+	expect(await cancelledPermission).toMatchObject({ message: "request_cancelled" });
+	socket.send(
+		JSON.stringify({
+			type: "reverse_response",
+			id: cancelledRequest.id,
+			connectionId,
+			leaseId: cancelledRequest.leaseId,
+			ok: true,
+			result: { outcome: "selected", optionId: "reject_once", kind: "reject_once" },
+		}),
+	);
+	await waitFor(
+		() =>
+			frames.some(
+				frame => frame.type === "reverse_response" && frame.id === cancelledRequest.id && frame.ok === false,
+			),
+		"stale reverse permission response",
+	);
+	expect(frames.filter(frame => frame.type === "reverse_cancel" && frame.id === cancelledRequest.id)).toHaveLength(1);
+	expect(frames.find(frame => frame.type === "reverse_response" && frame.id === cancelledRequest.id)).toMatchObject({
+		ok: false,
+		error: { code: "unknown_request" },
+	});
 	socket.close();
 	await waitFor(() => permissionProvider === undefined, "permission provider removal after disconnect");
+});
+
+test("SDK host routes AskUserQuestion through a live ACP form elicitation provider", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-ui-provider-"));
+	dirs.push(cwd);
+	const sessionId = `sdk-ui-provider-${Date.now()}`;
+	process.env.GJC_NOTIFICATIONS = "1";
+	start(context(cwd, sessionId));
+	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
+	const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
+	const socket = new WebSocket(`${endpoint.url}/?token=${encodeURIComponent(endpoint.token)}`);
+	sockets.push(socket);
+	const frames: Record<string, unknown>[] = [];
+	socket.addEventListener("message", event => frames.push(JSON.parse(String(event.data))));
+	await new Promise<void>((resolve, reject) => {
+		socket.addEventListener("open", () => resolve(), { once: true });
+		socket.addEventListener("error", () => reject(new Error("WS error")), { once: true });
+	});
+	await waitFor(() => frames.some(frame => frame.type === "hello"), "SDK hello");
+	const priorAnswerSource = { awaitAnswer: async () => "fallback" };
+	const disposePriorAnswerSource = registerAskAnswerSource(sessionId, priorAnswerSource);
+	expect(getAskAnswerSource(sessionId)).toBe(priorAnswerSource);
+	const connectionId = String(frames.find(frame => frame.type === "hello")?.connectionId);
+	socket.send(
+		JSON.stringify({
+			type: "register_provider",
+			id: "ui",
+			connectionId,
+			capability: "ui",
+			definitions: [],
+		}),
+	);
+	await waitFor(
+		() => frames.some(frame => frame.type === "register_provider_result" && frame.id === "ui"),
+		"UI provider registration",
+	);
+	const requested = getAskAnswerSource(sessionId)!.awaitAnswerRequest!(
+		{ question: "Choose one", options: ["First", "Second"], interaction: "selector", controls: [] },
+		new AbortController().signal,
+	);
+	await waitFor(() => frames.some(frame => frame.type === "reverse_request"), "reverse elicitation request");
+	const request = frames.find(frame => frame.type === "reverse_request")!;
+	expect(request).toMatchObject({
+		payload: {
+			method: "ui.elicit",
+			payload: {
+				mode: "form",
+				message: "Choose one",
+				requestedSchema: {
+					type: "object",
+					properties: {
+						value: {
+							type: "string",
+							oneOf: [
+								{ const: "option:0", title: "First" },
+								{ const: "option:1", title: "Second" },
+							],
+						},
+					},
+					required: ["value"],
+				},
+			},
+		},
+	});
+	socket.send(
+		JSON.stringify({
+			type: "reverse_response",
+			id: request.id,
+			connectionId,
+			leaseId: request.leaseId,
+			ok: true,
+			result: { action: "accept", content: { value: "option:1" } },
+		}),
+	);
+	expect(await requested).toBe("Second");
+	const freeText = getAskAnswerSource(sessionId)!.awaitAnswerRequest!(
+		{ question: "Explain", options: [], interaction: "custom_editor", controls: [] },
+		new AbortController().signal,
+	);
+	await waitFor(
+		() => frames.filter(frame => frame.type === "reverse_request").length >= 2,
+		"reverse free-text elicitation",
+	);
+	const freeTextRequest = frames.filter(frame => frame.type === "reverse_request")[1]!;
+	expect(freeTextRequest).toMatchObject({
+		payload: {
+			method: "ui.elicit",
+			payload: {
+				mode: "form",
+				message: "Explain",
+				requestedSchema: {
+					type: "object",
+					properties: { value: { type: "string" } },
+					required: ["value"],
+				},
+			},
+		},
+	});
+	socket.send(
+		JSON.stringify({
+			type: "reverse_response",
+			id: freeTextRequest.id,
+			connectionId,
+			leaseId: freeTextRequest.leaseId,
+			ok: true,
+			result: { action: "accept", content: { value: "Because" } },
+		}),
+	);
+	expect(await freeText).toBe("Because");
+
+	const navigation = getAskAnswerSource(sessionId)!.awaitAnswerRequest!(
+		{
+			question: "Continue",
+			options: [],
+			interaction: "selector",
+			controls: [{ id: "navigation_forward", kind: "navigation", label: "Done", enabled: true }],
+		},
+		new AbortController().signal,
+	);
+	await waitFor(
+		() => frames.filter(frame => frame.type === "reverse_request").length >= 3,
+		"reverse navigation elicitation",
+	);
+	const navigationRequest = frames.filter(frame => frame.type === "reverse_request")[2]!;
+	expect(navigationRequest).toMatchObject({
+		payload: {
+			payload: {
+				requestedSchema: {
+					properties: {
+						value: {
+							type: "string",
+							oneOf: [{ const: "control:navigation_forward", title: "Done" }],
+						},
+					},
+				},
+			},
+		},
+	});
+	socket.send(
+		JSON.stringify({
+			type: "reverse_response",
+			id: navigationRequest.id,
+			connectionId,
+			leaseId: navigationRequest.leaseId,
+			ok: true,
+			result: { action: "accept", content: { value: "control:navigation_forward" } },
+		}),
+	);
+	const navigationReceipt = await navigation;
+	expect(navigationReceipt).toMatchObject({
+		source: "remote",
+		interaction: { kind: "control", controlId: "navigation_forward" },
+	});
+	if (!navigationReceipt || typeof navigationReceipt === "string")
+		throw new Error("Expected a typed navigation receipt.");
+	expect(await navigationReceipt.settle({ kind: "commit" })).toEqual({
+		kind: "committed",
+		ack: { status: "failed", reason: "unsupported" },
+	});
+	const aborted = new AbortController();
+	const cancelled = getAskAnswerSource(sessionId)!.awaitAnswerRequest!(
+		{ question: "Cancel me", options: ["Wait"], interaction: "selector", controls: [] },
+		aborted.signal,
+	);
+	const cancelledOutcome = cancelled.catch(error => error);
+	await waitFor(
+		() => frames.filter(frame => frame.type === "reverse_request").length >= 4,
+		"abortable reverse elicitation",
+	);
+	const cancelledRequest = frames.filter(frame => frame.type === "reverse_request")[3]!;
+	aborted.abort();
+	await waitFor(
+		() => frames.some(frame => frame.type === "reverse_cancel" && frame.id === cancelledRequest.id),
+		"reverse elicitation cancellation",
+	);
+	expect(await cancelledOutcome).toMatchObject({ message: "request_cancelled" });
+
+	socket.close();
+	await waitFor(() => getAskAnswerSource(sessionId) === priorAnswerSource, "prior UI answer source restoration");
+	disposePriorAnswerSource();
 });
 
 test("rejects malformed provider definitions without replacing a valid tools registry", async () => {
@@ -3535,18 +3966,22 @@ test("session teardown drains admitted direct gate resolution before detaching i
 	dirs.push(cwd);
 	const sessionId = `direct-resolution-drain-${Date.now()}`;
 	const emitter = new BrokerWorkflowGateEmitter(sessionId, new FileGateStore(path.join(cwd, "gates.json")));
-	const resolution = Promise.withResolvers<{ status: "accepted" }>();
-	const sessionClosedBarrier = Promise.withResolvers<void>();
-	const sessionClosedReached = Promise.withResolvers<void>();
+	const resolution = Promise.withResolvers<void>();
+	const preDrainBarrier = Promise.withResolvers<void>();
+	const sessionClosedDrained = Promise.withResolvers<void>();
+	const terminalized = Promise.withResolvers<void>();
 	const events: string[] = [];
+	let controllerAttached = false;
 	let resolutionStarted = false;
 	const originalRegisterController = emitter.registerGateTerminalController!.bind(emitter);
 	const originalResolveGate = emitter.resolveGate!.bind(emitter);
 	const originalPushFrameAndWait = NotificationServer.prototype.pushFrameAndWait;
 	const registerController = spyOn(emitter, "registerGateTerminalController").mockImplementation(controller => {
 		const detach = originalRegisterController(controller);
+		controllerAttached = true;
 		return () => {
 			events.push("controller-detached");
+			controllerAttached = false;
 			detach();
 		};
 	});
@@ -3555,6 +3990,7 @@ test("session teardown drains admitted direct gate resolution before detaching i
 		await resolution.promise;
 		const resolved = await originalResolveGate(response);
 		events.push("gate-terminalized");
+		terminalized.resolve();
 		return resolved;
 	});
 	const pushFrameAndWait = spyOn(NotificationServer.prototype, "pushFrameAndWait").mockImplementation(async function (
@@ -3562,16 +3998,18 @@ test("session teardown drains admitted direct gate resolution before detaching i
 		frame,
 		timeout,
 	) {
+		const delivered = await originalPushFrameAndWait.call(this, frame, timeout);
 		if ((JSON.parse(frame) as { type?: unknown }).type === "session_closed") {
-			sessionClosedReached.resolve();
-			await sessionClosedBarrier.promise;
+			sessionClosedDrained.resolve();
+			await preDrainBarrier.promise;
 		}
-		return await originalPushFrameAndWait.call(this, frame, timeout);
+		return delivered;
 	});
 	process.env.GJC_NOTIFICATIONS = "1";
 	const sessionContext = context(cwd, sessionId, "main", {}, emitter);
 	const handlers = start(sessionContext);
 	const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+	let shutdown: Promise<unknown> | undefined;
 	try {
 		await waitFor(() => fs.existsSync(endpointFile), "SDK endpoint");
 		const endpoint = JSON.parse(fs.readFileSync(endpointFile, "utf8")) as { url: string; token: string };
@@ -3585,7 +4023,11 @@ test("session teardown drains admitted direct gate resolution before detaching i
 		emitter.onGateEmitted!(gate => {
 			gateId = gate.gate_id;
 		});
-		void emitter.emitGate({ stage: "ralplan", kind: "approval", schema: { type: "string" } }).catch(() => {});
+		const gateContinuation = emitter.emitGate({
+			stage: "ralplan",
+			kind: "approval",
+			schema: { type: "string" },
+		});
 		await waitFor(() => gateId !== "", "workflow gate");
 		socket.send(
 			JSON.stringify({
@@ -3602,14 +4044,22 @@ test("session teardown drains admitted direct gate resolution before detaching i
 			}),
 		);
 		await waitFor(() => resolutionStarted, "direct gate resolution");
-		const shutdown = handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext);
-		await sessionClosedReached.promise;
-		expect(events).toEqual([]);
-		sessionClosedBarrier.resolve();
-		resolution.resolve({ status: "accepted" });
+		shutdown = Promise.resolve(handlers.get("session_shutdown")!({ type: "session_shutdown" }, sessionContext));
+		await sessionClosedDrained.promise;
+		expect(controllerAttached).toBe(true);
+		preDrainBarrier.resolve();
+		await new Promise<void>(resolve => setImmediate(resolve));
+		expect(controllerAttached).toBe(true);
+		resolution.resolve();
+		expect(await gateContinuation).toBe("approve");
+		await terminalized.promise;
+		expect(controllerAttached).toBe(true);
 		await shutdown;
 		expect(events).toEqual(["gate-terminalized", "controller-detached"]);
 	} finally {
+		preDrainBarrier.resolve();
+		resolution.resolve();
+		await shutdown?.catch(() => {});
 		pushFrameAndWait.mockRestore();
 		resolveGate.mockRestore();
 		registerController.mockRestore();
@@ -3774,10 +4224,23 @@ test("PresentationArbiter serializes ordinary and workflow asks, fences queued c
 	expect(publications[0]).toMatchObject({ options: ["one", "two"], recommendedIndex: 1 });
 	arbiter.complete("ordinary");
 	expect(publications.map(action => action.workflowGateId)).toEqual([undefined, "workflow-first"]);
+	expect(publications[1]).toMatchObject({
+		options: ["one", "two"],
+		selectedOptionIndices: [],
+		recommendedIndex: 0,
+	});
 	const firstActionId = publications[1]!.id as string;
 	expect(arbiter.toggle(firstActionId, "one")).toBe(true);
 	expect(publications).toHaveLength(3);
-	expect(publications[2]).toMatchObject({ options: ["one", "two"], recommendedIndex: 0 });
+	expect(publications[2]).toMatchObject({
+		question: "(1 selected) workflow-first",
+		options: ["one", "two"],
+		selectedOptionIndices: [0],
+		recommendedIndex: 0,
+	});
+	const replayedActionId = publications[2]!.id as string;
+	arbiter.retain(gate("workflow-first", true, 0));
+	expect(arbiter.presentationFor(replayedActionId)?.selectedOptions).toEqual(["one"]);
 	arbiter.retain(gate("workflow-second"));
 	const queued = arbiter.prepareDirectControl("workflow-second");
 	expect(queued).toEqual({ status: "queued", ordinal: 1 });
@@ -3793,6 +4256,84 @@ test("PresentationArbiter serializes ordinary and workflow asks, fences queued c
 	arbiter.finishDirectControl("workflow-second", uncertain as { status: "retired"; ordinal: number }, "unknown");
 	await Promise.resolve();
 	expect(publications).toHaveLength(4);
+});
+
+test("PresentationArbiter retires and republishes an active replay whose option snapshot changed", () => {
+	const publications: Array<Record<string, unknown>> = [];
+	const retired: string[] = [];
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				const action = JSON.parse(json) as Record<string, unknown>;
+				publications.push(action);
+				return { actionId: action.id as string, registrationEpoch: publications.length };
+			},
+			retireIfUnclaimed(lease: { actionId: string }) {
+				retired.push(lease.actionId);
+				return { status: "retired" as const };
+			},
+		} as never,
+		() => false,
+		"test",
+	);
+	const presentation = (options: string[]) => ({
+		gateId: "workflow",
+		workflowGateId: "workflow",
+		sessionId: "session",
+		question: "Pick",
+		options,
+		controls: [],
+		multi: true,
+		allowEmpty: false,
+		selectedOptions: [],
+	});
+
+	arbiter.retain(presentation(["one", "two"]));
+	const firstActionId = publications[0]!.id as string;
+	expect(arbiter.toggle(firstActionId, "one")).toBe(true);
+	const selectedActionId = publications[1]!.id as string;
+	arbiter.retain(presentation(["two", "three"]));
+
+	expect(retired).toContain(selectedActionId);
+	expect(publications).toHaveLength(3);
+	expect(publications[2]).toMatchObject({
+		options: ["two", "three"],
+		selectedOptionIndices: [],
+	});
+});
+
+test("PresentationArbiter keeps the routed option snapshot when replay retirement lacks terminal proof", () => {
+	const publications: Array<Record<string, unknown>> = [];
+	const arbiter = new PresentationArbiter(
+		{
+			registerArbitratedAsk(json: string) {
+				const action = JSON.parse(json) as Record<string, unknown>;
+				publications.push(action);
+				return { actionId: action.id as string, registrationEpoch: publications.length };
+			},
+			retireIfUnclaimed: () => ({ status: "claimed" as const }),
+		} as never,
+		() => false,
+		"test",
+	);
+	const presentation = (options: string[]) => ({
+		gateId: "workflow",
+		workflowGateId: "workflow",
+		sessionId: "session",
+		question: "Pick",
+		options,
+		controls: [],
+		multi: false,
+		allowEmpty: false,
+		selectedOptions: [],
+	});
+
+	arbiter.retain(presentation(["one", "two"]));
+	const actionId = publications[0]!.id as string;
+	arbiter.retain(presentation(["two", "three"]));
+
+	expect(publications).toHaveLength(1);
+	expect(arbiter.presentationFor(actionId)?.options).toEqual(["one", "two"]);
 });
 
 test("PresentationArbiter terminalizes a queued direct control with explicit non-published proof", () => {
@@ -4501,12 +5042,17 @@ test("clientRef admission reservation is released when a submission is rejected 
 	const handlers = start(
 		sessionContext,
 		undefined,
-		(content: unknown, options: { onPreflightAccepted?: () => void } | undefined) => {
+		async (
+			content: unknown,
+			options:
+				| { onPreflightAccepted?: () => void; onPreflightAcceptCommit?: () => void | Promise<void> }
+				| undefined,
+		) => {
 			const text = String(content);
 			deliveries.push(text);
 			if (text === "doomed preflight")
 				return Promise.reject(Object.assign(new Error("submission lost"), { code: "unavailable" }));
-			options?.onPreflightAccepted?.();
+			await firePreflightAccept(options);
 			return Promise.resolve();
 		},
 		true,
@@ -4606,8 +5152,13 @@ test("accepted-then-failed submission retains its reconciliation record and bloc
 	const handlers = start(
 		sessionContext,
 		undefined,
-		(_content: unknown, options: { onPreflightAccepted?: () => void } | undefined) => {
-			options?.onPreflightAccepted?.();
+		async (
+			_content: unknown,
+			options:
+				| { onPreflightAccepted?: () => void; onPreflightAcceptCommit?: () => void | Promise<void> }
+				| undefined,
+		) => {
+			await firePreflightAccept(options);
 			throw Object.assign(new Error("synchronous accepted failure"), { code: "unavailable" });
 		},
 		true,

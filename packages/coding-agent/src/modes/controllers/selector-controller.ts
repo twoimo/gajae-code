@@ -19,7 +19,7 @@ import { GJC_MODEL_ASSIGNMENT_TARGETS, type GjcModelAssignmentTargetId } from ".
 import { formatModelSelectorValue } from "../../config/model-resolver";
 import { selectorHead } from "../../config/model-selector-value";
 import type { ModelProfileConfig } from "../../config/models-config-schema";
-import { type Settings, settings } from "../../config/settings";
+import { type Settings, type SettingsAtomicReceipt, settings } from "../../config/settings";
 import { DebugSelectorComponent } from "../../debug";
 import { disableProvider, enableProvider } from "../../discovery";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -30,6 +30,7 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../../extensibility/plugins/marketplace";
+import { INTERACTIVE_SELECTOR_RESUME_ORIGIN } from "../../extensibility/shared-events";
 import {
 	getAvailableThemes,
 	getCurrentThemeName,
@@ -42,17 +43,36 @@ import {
 	setTheme,
 	theme,
 } from "../../modes/theme/theme";
-import type { InteractiveModeContext, OAuthSelectorOptions } from "../../modes/types";
-import { getNotificationConfig, isTelegramConfigured, maskToken } from "../../sdk/bus/config";
+import {
+	clearInteractiveActivityLoaders,
+	type InteractiveModeContext,
+	type OAuthSelectorOptions,
+	stopInteractiveActivityIndicator,
+	suspendInteractiveActivityIndicator,
+} from "../../modes/types";
+import { ChatDaemonController } from "../../sdk/bus/chat-daemon-control";
+import {
+	getCurrentTelegramActivationMarker,
+	getNotificationConfig,
+	isProviderEffectivelyEnabled,
+	isTelegramComplete,
+	maskToken,
+	type NotificationProvider,
+} from "../../sdk/bus/config";
 import {
 	clearTelegramActivationMarker,
 	createTelegramActivationMarker,
+	mutateNotificationProvider,
+	type NotificationProviderConfigurationMutation,
+	type NotificationProviderRuntimeAuthority,
 	observedTelegramActivationMarker,
 	persistTelegramActivationMarker,
 	proposedTelegramIdentity,
 	reconcileCommittedTelegramConfiguration,
+	removeNotificationProvider,
 	removeTelegramConfiguration,
 	saveTelegramInactive,
+	setGlobalNotificationsEnabled,
 } from "../../sdk/bus/notification-orchestration";
 import {
 	buildNotificationStatusReport,
@@ -129,10 +149,12 @@ import { CustomProviderWizardComponent, type CustomProviderWizardSubmit } from "
 import { ExtensionDashboard } from "../components/extensions";
 import type { PetMode } from "../components/gajae-pet-widget";
 import { HistorySearchComponent } from "../components/history-search";
+import { HookSelectorComponent } from "../components/hook-selector";
 import { JobsOverlayComponent } from "../components/jobs-overlay";
 import { ModelSelectorComponent } from "../components/model-selector";
 import type {
 	NotificationsEditorOperations,
+	PreparedNotificationProviderConfiguration,
 	PreparedTelegramConfiguration,
 } from "../components/notifications-settings-editor";
 import { OAuthSelectorComponent } from "../components/oauth-selector";
@@ -165,6 +187,7 @@ import type { JobsObserver } from "../jobs-observer";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import type { TasksAggregator } from "../tasks-aggregator";
 import type { TranscriptItemRegistry } from "../transcript-item-registry";
+import { acquireResumeProgressLease, type ResumeProgressLease } from "../utils/ui-helpers";
 
 const CALLBACK_SERVER_PROVIDERS = new Set<string>([
 	"anthropic",
@@ -177,6 +200,11 @@ const CALLBACK_SERVER_PROVIDERS = new Set<string>([
 ]);
 
 const MANUAL_LOGIN_TIP = "Tip: You can complete pairing with /login <redirect URL>.";
+
+/** Providers whose authorization server can display a code for `/login <provider> --manual`. */
+const MANUAL_CODE_PROVIDERS = new Set<string>(["anthropic"]);
+
+const MANUAL_CODE_LOGIN_TIP = "Tip: You can complete pairing with /login <code>.";
 
 function isThemePreviewSuperseded(result: { success: boolean; error?: string }): boolean {
 	return !result.success && result.error?.includes("superseded by a newer request") === true;
@@ -194,7 +222,6 @@ export function buildStatusLineSettings(settingsInstance: Settings): StatusLineS
 		rightSegments: settingsInstance.get("statusLine.rightSegments"),
 		separator: settingsInstance.get("statusLine.separator"),
 		showHookStatus: settingsInstance.get("statusLine.showHookStatus"),
-		showActionHints: settingsInstance.get("statusLine.showActionHints"),
 		sessionAccent: settingsInstance.get("statusLine.sessionAccent"),
 		maxRows: settingsInstance.get("statusLine.maxRows"),
 		segmentOptions: settingsInstance.get("statusLine.segmentOptions"),
@@ -226,6 +253,7 @@ type TelegramDaemonStopResult = {
 
 export interface NotificationsEditorOperationDependencies {
 	getNotificationConfig: typeof getNotificationConfig;
+	getCurrentTelegramActivationMarker: typeof getCurrentTelegramActivationMarker;
 	maskToken: typeof maskToken;
 	buildNotificationStatusReport: typeof buildNotificationStatusReport;
 	checkNotificationHealth: typeof checkNotificationHealth;
@@ -250,10 +278,12 @@ export interface NotificationsEditorOperationDependencies {
 	reloadTelegramDaemon(settings: Settings): Promise<{ ok: boolean; message: string }>;
 	restartTelegramDaemon(settings: Settings): Promise<{ ok: boolean; message: string }>;
 	stopTelegramDaemon(settings: Settings): Promise<TelegramDaemonStopResult>;
+	providerRuntime?: NotificationProviderRuntimeAuthority;
 }
 
 const notificationEditorOperationDependencies: NotificationsEditorOperationDependencies = {
 	getNotificationConfig,
+	getCurrentTelegramActivationMarker,
 	maskToken,
 	buildNotificationStatusReport,
 	checkNotificationHealth,
@@ -290,9 +320,9 @@ function unavailableNotificationSessionStatus(): NotificationSessionStatus {
 	return {
 		eligible: false,
 		locallyEnabled: true,
-		effectiveEnabled: false,
+		genericSessionEnabled: false,
+		genericEligibilitySource: "none",
 		running: false,
-		environment: "off",
 	};
 }
 
@@ -320,6 +350,10 @@ export function createNotificationsEditorOperations(
 ): NotificationsEditorOperations {
 	const services = { ...notificationEditorOperationDependencies, ...overrides };
 	const drafts = new WeakMap<PreparedTelegramConfiguration, string>();
+	const providerDrafts = new WeakMap<
+		PreparedNotificationProviderConfiguration,
+		{ botToken?: string; appToken?: string }
+	>();
 	const sessionContext = () => ({ sessionManager: ctx.sessionManager });
 	const notifyAfterDurableCommit = async (): Promise<void> => {
 		await ctx.notifyConfigChanged?.();
@@ -332,12 +366,52 @@ export function createNotificationsEditorOperations(
 		});
 	const telegramSetupPreflight = async (): Promise<TelegramSetupPreflight> =>
 		await services.resolveTelegramSetupPreflight(ctx.settings);
+	const providerRuntime: NotificationProviderRuntimeAuthority = services.providerRuntime ?? {
+		activate: async provider => {
+			if (provider === "telegram") {
+				const result = await reconnect();
+				if (result === "blocked_identity" || result === "disabled") {
+					throw new Error("Telegram activation failed after the durable save.");
+				}
+				await ctx.session.notificationSessionController?.reconcileCurrentSession(sessionContext());
+				return;
+			}
+			const result = await new ChatDaemonController(ctx.settings, provider).ensure();
+			if (result === "disabled") throw new Error(`${provider} activation failed after the durable save.`);
+		},
+		deactivate: async provider => {
+			if (provider === "telegram") {
+				const result = await services.stopTelegramDaemon(ctx.settings);
+				if (!result.ok) throw new Error(result.message);
+				await ctx.session.notificationSessionController?.reconcileCurrentSession(sessionContext());
+				return;
+			}
+			const result = await new ChatDaemonController(ctx.settings, provider).stop();
+			if (!result.ok) throw new Error(result.message);
+		},
+	};
 
 	return {
 		loadState: async () => {
 			const config = services.getNotificationConfig(ctx.settings);
+			const status = services.buildNotificationStatusReport(ctx.settings);
+			const runtime = async (provider: NotificationProvider) => {
+				const daemon =
+					provider === "telegram"
+						? await new TelegramDaemonController(ctx.settings).status()
+						: await new ChatDaemonController(ctx.settings, provider).status();
+				return daemon.health === "running" ? "ready" : daemon.health === "not_configured" ? "inactive" : "failed";
+			};
+			const [telegramRuntime, discordRuntime, slackRuntime] = await Promise.all([
+				runtime("telegram"),
+				runtime("discord"),
+				runtime("slack"),
+			]);
+			status.telegram.runtime = telegramRuntime;
+			status.discord.runtime = discordRuntime;
+			status.slack.runtime = slackRuntime;
 			return {
-				status: services.buildNotificationStatusReport(ctx.settings),
+				status,
 				session:
 					ctx.session.notificationSessionController?.query(sessionContext()) ??
 					unavailableNotificationSessionStatus(),
@@ -349,17 +423,19 @@ export function createNotificationsEditorOperations(
 					richDraftEnabled: config.richDraft.enabled,
 					toolActivityEnabled: config.toolActivity.enabled,
 					streamingEnabled: config.streaming.enabled,
+					sound: config.sound,
 				},
 			};
 		},
 
-		refreshHealth: async ({ probe, signal }) => {
+		refreshHealth: async ({ probe, provider, signal }) => {
 			if (signal?.aborted) throw new Error("Notification health refresh cancelled.");
 			try {
 				const input: Parameters<typeof checkNotificationHealth>[0] & { signal?: AbortSignal } = {
 					settings: ctx.settings,
 					stateRoot: path.join(ctx.sessionManager.getCwd(), ".gjc", "state"),
 					probe,
+					provider,
 					signal,
 				};
 				const report = await services.checkNotificationHealth(input);
@@ -381,9 +457,21 @@ export function createNotificationsEditorOperations(
 			}
 		},
 
-		sendTest: async () => {
+		sendTest: async provider => {
 			try {
-				const result = await services.sendNotificationTest({ settings: ctx.settings });
+				const result = await services.sendNotificationTest({
+					settings: ctx.settings,
+					provider,
+					deps: {
+						providerRuntimeStatus: async selected => {
+							const status =
+								selected === "telegram"
+									? await new TelegramDaemonController(ctx.settings).status()
+									: await new ChatDaemonController(ctx.settings, selected).status();
+							return status.health === "running" ? "ready" : "inactive";
+						},
+					},
+				});
 				return {
 					...result,
 					detail: services.sanitizeDiagnostic(
@@ -522,12 +610,14 @@ export function createNotificationsEditorOperations(
 		commitConfigure: async draft => {
 			const token = drafts.get(draft);
 			if (!token) throw new Error("The Telegram setup draft expired. Re-enter the masked bot token.");
+			let receipt: SettingsAtomicReceipt | undefined;
 			try {
 				const inactiveMarkerToClear = observedTelegramActivationMarker(ctx.settings, token, draft.chatId);
-				const receipt = await ctx.settings.commitAtomicBatch([
+				receipt = await ctx.settings.commitAtomicBatch([
 					{ path: "notifications.enabled", op: "set", value: true },
 					{ path: "notifications.telegram.botToken", op: "set", value: token },
 					{ path: "notifications.telegram.chatId", op: "set", value: draft.chatId },
+					{ path: "notifications.telegram.enabled", op: "set", value: true },
 					{ path: "notifications.telegram.rich.enabled", op: "set", value: draft.richEnabled },
 					{ path: "notifications.telegram.richDraft.enabled", op: "set", value: draft.richDraftEnabled },
 					{ path: "notifications.telegram.streaming.enabled", op: "set", value: draft.streamingEnabled },
@@ -562,12 +652,20 @@ export function createNotificationsEditorOperations(
 						marker: activationMarker,
 					},
 				});
-				await notifyAfterDurableCommit();
+				let observerFailed = false;
+				try {
+					await notifyAfterDurableCommit();
+				} catch {
+					observerFailed = true;
+				}
 				if (activation.status === "blocked_identity") {
 					return {
 						status: "blocked_identity" as const,
 						receipt,
-						message: services.sanitizeDiagnostic(activation.message, token),
+						message: services.sanitizeDiagnostic(
+							`${activation.message}${observerFailed ? " The settings observer also failed after the durable commit." : ""}`,
+							token,
+						),
 						restore: async () => {
 							const restored = await activation.restore();
 							if (restored.status === "restored" || restored.status === "still_blocked") {
@@ -578,12 +676,36 @@ export function createNotificationsEditorOperations(
 						retainCommitted: () => activation.retainCommitted(),
 					};
 				}
+				if (activation.status === "activation_failed") {
+					return {
+						status: "activation_failed" as const,
+						receipt,
+						message: services.sanitizeDiagnostic(
+							`${activation.message}${observerFailed ? " The settings observer also failed after the durable commit." : ""}`,
+							token,
+						),
+					};
+				}
+				if (observerFailed) {
+					return {
+						status: "observer_failed" as const,
+						receipt,
+						message: "Telegram configuration was saved and activated, but the settings observer failed.",
+					};
+				}
 				return {
 					status: "saved" as const,
 					receipt,
 					message: services.sanitizeDiagnostic("Telegram configuration saved and reconciled.", token),
 				};
 			} catch (error) {
+				if (receipt) {
+					return {
+						status: "activation_failed" as const,
+						receipt,
+						message: "Telegram configuration was saved, but post-commit activation failed.",
+					};
+				}
 				throw notificationOperationError(services, error, token);
 			}
 		},
@@ -598,7 +720,15 @@ export function createNotificationsEditorOperations(
 					chatId: draft.chatId,
 				});
 				drafts.delete(draft);
-				await notifyAfterDurableCommit();
+				try {
+					await notifyAfterDurableCommit();
+				} catch {
+					return {
+						status: "observer_failed" as const,
+						receipt: result.receipt,
+						message: "Telegram configuration was saved inactive, but the settings observer failed.",
+					};
+				}
 				return {
 					status: "saved_inactive" as const,
 					receipt: result.receipt,
@@ -613,28 +743,289 @@ export function createNotificationsEditorOperations(
 			drafts.delete(draft);
 		},
 
-		enableGlobally: async () => {
+		prepareProviderConfiguration: async input => {
+			const cfg = services.getNotificationConfig(ctx.settings);
+			const consumeSecret = (action: typeof input.botToken): string | undefined => {
+				if (!action.value) return undefined;
+				const value = action.value.consume();
+				return action.action === "replace" ? value : undefined;
+			};
+			const botToken = consumeSecret(input.botToken);
+			const appToken = input.appToken ? consumeSecret(input.appToken) : undefined;
+			if (input.botToken.action === "replace" && !botToken?.trim()) {
+				throw new Error("A non-blank bot token replacement is required.");
+			}
+			if (input.provider === "slack" && input.appToken?.action === "replace" && !appToken?.trim()) {
+				throw new Error("A non-blank Slack app token replacement is required.");
+			}
+			if (input.provider === "discord") {
+				const applicationId = input.applicationId?.trim() || undefined;
+				const guildId = input.guildId?.trim() || undefined;
+				const parentChannelId = input.parentChannelId?.trim() || undefined;
+				const resolvedApplicationId = applicationId ?? cfg.discord.applicationId;
+				const resolvedGuildId = guildId ?? cfg.discord.guildId;
+				const resolvedParentChannelId = parentChannelId ?? cfg.discord.parentChannelId;
+				const removesSecret = input.botToken.action === "remove";
+				if (!removesSecret && (!resolvedApplicationId || !resolvedGuildId || !resolvedParentChannelId)) {
+					throw new Error("Discord application, guild, and parent channel IDs are required.");
+				}
+				if (!removesSecret && input.botToken.action === "keep" && !cfg.discord.botToken) {
+					throw new Error("Discord has no stored bot token to keep.");
+				}
+				const draft: PreparedNotificationProviderConfiguration = {
+					provider: "discord",
+					botTokenDisposition: input.botToken.action,
+					botTokenMask: maskToken(botToken ?? cfg.discord.botToken),
+					...(applicationId === undefined ? {} : { applicationId }),
+					...(guildId === undefined ? {} : { guildId }),
+					...(parentChannelId === undefined ? {} : { parentChannelId }),
+					applicationIdDisplay: resolvedApplicationId,
+					guildIdDisplay: resolvedGuildId,
+					parentChannelIdDisplay: resolvedParentChannelId,
+				};
+				providerDrafts.set(draft, { ...(botToken === undefined ? {} : { botToken }) });
+				return draft;
+			}
+			const workspaceId = input.workspaceId?.trim() || undefined;
+			const channelId = input.channelId?.trim() || undefined;
+			const authorizedUserId = input.authorizedUserId?.trim() || undefined;
+			const resolvedWorkspaceId = workspaceId ?? cfg.slack.workspaceId;
+			const resolvedChannelId = channelId ?? cfg.slack.channelId;
+			const resolvedAuthorizedUserId = authorizedUserId ?? cfg.slack.authorizedUserId;
+			const appDisposition = input.appToken?.action ?? "keep";
+			const removesSecret = input.botToken.action === "remove" || appDisposition === "remove";
+			if (!removesSecret && (!resolvedWorkspaceId || !resolvedChannelId)) {
+				throw new Error("Slack workspace and channel IDs are required.");
+			}
+			if (!removesSecret && input.botToken.action === "keep" && !cfg.slack.botToken) {
+				throw new Error("Slack has no stored bot token to keep.");
+			}
+			if (!removesSecret && appDisposition === "keep" && !cfg.slack.appToken) {
+				throw new Error("Slack has no stored app token to keep.");
+			}
+			const draft: PreparedNotificationProviderConfiguration = {
+				provider: "slack",
+				botTokenDisposition: input.botToken.action,
+				botTokenMask: maskToken(botToken ?? cfg.slack.botToken),
+				appTokenDisposition: appDisposition,
+				appTokenMask: maskToken(appToken ?? cfg.slack.appToken),
+				...(workspaceId === undefined ? {} : { workspaceId }),
+				...(channelId === undefined ? {} : { channelId }),
+				...(authorizedUserId === undefined ? {} : { authorizedUserId }),
+				workspaceIdDisplay: resolvedWorkspaceId,
+				channelIdDisplay: resolvedChannelId,
+				authorizedUserIdDisplay: resolvedAuthorizedUserId,
+			};
+			providerDrafts.set(draft, {
+				...(botToken === undefined ? {} : { botToken }),
+				...(appToken === undefined ? {} : { appToken }),
+			});
+			return draft;
+		},
+
+		commitProviderConfiguration: async draft => {
+			const secrets = providerDrafts.get(draft) ?? {};
 			try {
-				const receipt = await ctx.settings.commitAtomicBatch([
-					{ path: "notifications.enabled", op: "set", value: true },
-				]);
-				await notifyAfterDurableCommit();
-				return { receipt, message: "Global notifications enabled using stored configuration." };
-			} catch (error) {
-				throw notificationOperationError(services, error, services.getNotificationConfig(ctx.settings).botToken);
+				let mutation: NotificationProviderConfigurationMutation;
+				if (draft.provider === "discord") {
+					mutation = {
+						provider: "discord",
+						botToken:
+							draft.botTokenDisposition === "replace"
+								? { action: "replace", value: secrets.botToken ?? "" }
+								: { action: draft.botTokenDisposition },
+						applicationId: draft.applicationId,
+						guildId: draft.guildId,
+						parentChannelId: draft.parentChannelId,
+					};
+				} else {
+					const appDisposition = draft.appTokenDisposition ?? "keep";
+					mutation = {
+						provider: "slack",
+						botToken:
+							draft.botTokenDisposition === "replace"
+								? { action: "replace", value: secrets.botToken ?? "" }
+								: { action: draft.botTokenDisposition },
+						appToken:
+							appDisposition === "replace"
+								? { action: "replace", value: secrets.appToken ?? "" }
+								: { action: appDisposition },
+						workspaceId: draft.workspaceId,
+						channelId: draft.channelId,
+						authorizedUserId: draft.authorizedUserId,
+					};
+				}
+				const removesSecret = draft.botTokenDisposition === "remove" || draft.appTokenDisposition === "remove";
+				const result = await mutateNotificationProvider({
+					settings: ctx.settings,
+					mutation,
+					configureAndActivate: !removesSecret,
+					...(removesSecret ? { desiredEnabled: false } : {}),
+					notifyConfigChanged: notifyAfterDurableCommit,
+					runtime: providerRuntime,
+				});
+				const outcome =
+					result.status === "commit_failed"
+						? "failed"
+						: result.status === "activation_failed" ||
+								result.status === "deactivation_failed" ||
+								result.observerFailed
+							? "degraded"
+							: "success";
+				const observerSuffix =
+					result.status !== "commit_failed" && result.observerFailed
+						? " The settings observer also failed after the durable commit."
+						: "";
+				return {
+					...(result.status === "commit_failed" ? {} : { receipt: result.receipt }),
+					outcome,
+					message:
+						(result.status === "activated"
+							? `${draft.provider} configuration saved and activated.`
+							: result.status === "activation_failed"
+								? `${draft.provider} configuration and desired intent were saved, but runtime activation failed.`
+								: result.status === "deactivation_failed"
+									? `${draft.provider} desired-off configuration was saved, but runtime deactivation failed.`
+									: result.status === "commit_failed"
+										? `${draft.provider} configuration was not saved because the CAS commit failed.`
+										: `${draft.provider} configuration saved.`) + observerSuffix,
+				};
+			} finally {
+				providerDrafts.delete(draft);
 			}
 		},
 
-		disableGlobally: async () => {
-			try {
-				const receipt = await ctx.settings.commitAtomicBatch([
-					{ path: "notifications.enabled", op: "set", value: false },
-				]);
-				await notifyAfterDurableCommit();
-				return { receipt, message: "Global notifications disabled." };
-			} catch (error) {
-				throw notificationOperationError(services, error, services.getNotificationConfig(ctx.settings).botToken);
+		discardProviderConfiguration: draft => {
+			providerDrafts.delete(draft);
+		},
+
+		setProviderDesired: async (provider, enabled) => {
+			if (provider === "telegram" && enabled) {
+				const config = services.getNotificationConfig(ctx.settings);
+				if (services.getCurrentTelegramActivationMarker(config)) {
+					return {
+						outcome: "failed",
+						message:
+							"Telegram remains inactive because its exact activation marker must be restored or cleared after safe owner readiness.",
+					};
+				}
 			}
+			const mutation: NotificationProviderConfigurationMutation =
+				provider === "telegram"
+					? { provider, botToken: { action: "keep" } }
+					: provider === "discord"
+						? { provider, botToken: { action: "keep" } }
+						: { provider, botToken: { action: "keep" }, appToken: { action: "keep" } };
+			const result = await mutateNotificationProvider({
+				settings: ctx.settings,
+				mutation,
+				desiredEnabled: enabled,
+				notifyConfigChanged: notifyAfterDurableCommit,
+				runtime: providerRuntime,
+			});
+			const outcome =
+				result.status === "commit_failed"
+					? "failed"
+					: result.status === "activation_failed" ||
+							result.status === "deactivation_failed" ||
+							result.observerFailed
+						? "degraded"
+						: "success";
+			return {
+				...(result.status === "commit_failed" ? {} : { receipt: result.receipt }),
+				outcome,
+				message:
+					(result.status === "activation_failed"
+						? `${provider} desired intent was saved, but activation failed.`
+						: result.status === "deactivation_failed"
+							? `${provider} desired-off intent was saved, but deactivation failed.`
+							: result.status === "commit_failed"
+								? `${provider} desired intent was not saved because the CAS commit failed.`
+								: `${provider} desired intent ${enabled ? "enabled" : "disabled"}.`) +
+					(result.status !== "commit_failed" && result.observerFailed
+						? " The settings observer also failed after the durable commit."
+						: ""),
+			};
+		},
+
+		removeProvider: async provider => {
+			if (provider === "telegram") {
+				return { message: "Use the Telegram removal action to preserve root-registration fencing." };
+			}
+			const result = await removeNotificationProvider({
+				settings: ctx.settings,
+				provider,
+				runtime: providerRuntime,
+				notifyConfigChanged: notifyAfterDurableCommit,
+			});
+			const degraded =
+				result.status === "deactivation_failed" || ("observerFailed" in result && result.observerFailed);
+			return {
+				...("receipt" in result && result.receipt ? { receipt: result.receipt } : {}),
+				outcome:
+					result.status === "commit_failed" || result.status === "commit_failed_after_teardown"
+						? "failed"
+						: degraded
+							? "degraded"
+							: "success",
+				message:
+					(result.status === "removed"
+						? `${provider} configuration removed.`
+						: result.status === "deactivation_failed"
+							? `${provider} configuration was removed, but runtime deactivation failed.`
+							: `${provider} configuration removal failed.`) +
+					("observerFailed" in result && result.observerFailed
+						? " The settings observer also failed after the durable commit."
+						: ""),
+			};
+		},
+
+		enableGlobally: async () => {
+			const result = await setGlobalNotificationsEnabled({
+				settings: ctx.settings,
+				enabled: true,
+				notifyConfigChanged: notifyAfterDurableCommit,
+				runtime: providerRuntime,
+			});
+			const degraded =
+				result.status === "global_activation_partial" || ("observerFailed" in result && result.observerFailed);
+			return {
+				...(result.status === "commit_failed" ? {} : { receipt: result.receipt }),
+				outcome: result.status === "commit_failed" ? "failed" : degraded ? "degraded" : "success",
+				message:
+					(result.status === "global_activation_partial"
+						? `Global notifications were enabled, but activation failed for ${result.failed.join(", ")}.`
+						: result.status === "commit_failed"
+							? "Global notifications were not enabled because the CAS commit failed."
+							: "Global notifications enabled using stored provider intent.") +
+					(result.status !== "commit_failed" && result.observerFailed
+						? " The settings observer also failed after the durable commit."
+						: ""),
+			};
+		},
+
+		disableGlobally: async () => {
+			const result = await setGlobalNotificationsEnabled({
+				settings: ctx.settings,
+				enabled: false,
+				notifyConfigChanged: notifyAfterDurableCommit,
+				runtime: providerRuntime,
+			});
+			const degraded =
+				result.status === "global_deactivation_partial" || ("observerFailed" in result && result.observerFailed);
+			return {
+				...(result.status === "commit_failed" ? {} : { receipt: result.receipt }),
+				outcome: result.status === "commit_failed" ? "failed" : degraded ? "degraded" : "success",
+				message:
+					(result.status === "global_deactivation_partial"
+						? `Global notifications were disabled, but teardown failed for ${result.failed.join(", ")}.`
+						: result.status === "commit_failed"
+							? "Global notifications were not disabled because the CAS commit failed."
+							: "Global notifications disabled; provider configuration and desired intent were preserved.") +
+					(result.status !== "commit_failed" && result.observerFailed
+						? " The settings observer also failed after the durable commit."
+						: ""),
+			};
 		},
 
 		removeTelegram: async () => {
@@ -667,17 +1058,27 @@ export function createNotificationsEditorOperations(
 						},
 					},
 				});
+				const postCommitFailures: string[] = [];
 				if (runtimePrepared && controller) {
-					await controller.clearBlockedRuntime(sessionContext());
-					await controller.reconcileCurrentSession(sessionContext());
+					try {
+						await controller.clearBlockedRuntime(sessionContext());
+						await controller.reconcileCurrentSession(sessionContext());
+					} catch {
+						postCommitFailures.push("current-session reconciliation failed");
+					}
 				}
-				await notifyAfterDurableCommit();
+				try {
+					await notifyAfterDurableCommit();
+				} catch {
+					postCommitFailures.push("settings observer failed");
+				}
 				return {
 					receipt: result.receipt,
+					outcome: postCommitFailures.length === 0 ? "success" : "degraded",
 					globallyDisabled: result.globallyDisabled,
-					message: result.globallyDisabled
-						? "Telegram configuration removed and global notifications disabled."
-						: "Telegram configuration removed; Discord or Slack configuration was preserved.",
+					message: `Telegram configuration removed without changing the global master.${
+						postCommitFailures.length === 0 ? "" : ` Post-commit ${postCommitFailures.join(" and ")}.`
+					}`,
 				};
 			} catch (error) {
 				if (runtimePrepared) {
@@ -706,7 +1107,10 @@ export function createNotificationsEditorOperations(
 			try {
 				const before = services.getNotificationConfig(ctx.settings);
 				const disablingToolActivity =
-					isTelegramConfigured(before) && before.toolActivity.enabled && !preferences.toolActivityEnabled;
+					isProviderEffectivelyEnabled(before, "telegram") &&
+					isTelegramComplete(before) &&
+					before.toolActivity.enabled &&
+					!preferences.toolActivityEnabled;
 				if (disablingToolActivity) {
 					const stopped = await services.stopTelegramDaemon(ctx.settings);
 					if (!stopped.ok)
@@ -716,12 +1120,13 @@ export function createNotificationsEditorOperations(
 					daemonWasRunningForDisable = stopped.before?.health === "running";
 				}
 
-				let receipt: Awaited<ReturnType<typeof ctx.settings.commitAtomicBatch>>;
+				let receipt: SettingsAtomicReceipt;
 				try {
 					receipt = await ctx.settings.commitAtomicBatch([
 						{ path: "notifications.redact", op: "set", value: preferences.redact },
 						{ path: "notifications.verbosity", op: "set", value: preferences.verbosity },
 						{ path: "notifications.sessionScope", op: "set", value: preferences.sessionScope },
+						{ path: "notifications.telegram.sound", op: "set", value: preferences.sound },
 						{ path: "notifications.telegram.rich.enabled", op: "set", value: preferences.richEnabled },
 						{ path: "notifications.telegram.richDraft.enabled", op: "set", value: preferences.richDraftEnabled },
 						{ path: "notifications.telegram.streaming.enabled", op: "set", value: preferences.streamingEnabled },
@@ -748,16 +1153,31 @@ export function createNotificationsEditorOperations(
 					throw error;
 				}
 
+				const postCommitFailures: string[] = [];
 				const config = services.getNotificationConfig(ctx.settings);
-				if (isTelegramConfigured(config)) {
-					const reload = daemonWasRunningForDisable
-						? await services.restartTelegramDaemon(ctx.settings)
-						: await services.reloadTelegramDaemon(ctx.settings);
-					if (!reload.ok)
-						throw new Error(`Notification preferences were saved, but daemon reload failed: ${reload.message}`);
+				if (isProviderEffectivelyEnabled(config, "telegram") && isTelegramComplete(config)) {
+					try {
+						const reload = daemonWasRunningForDisable
+							? await services.restartTelegramDaemon(ctx.settings)
+							: await services.reloadTelegramDaemon(ctx.settings);
+						if (!reload.ok) postCommitFailures.push(`daemon reload failed: ${reload.message}`);
+					} catch {
+						postCommitFailures.push("daemon reload failed");
+					}
 				}
-				await notifyAfterDurableCommit();
-				return { receipt, message: "Notification preferences saved atomically." };
+				try {
+					await notifyAfterDurableCommit();
+				} catch {
+					postCommitFailures.push("settings observer failed");
+				}
+				return {
+					receipt,
+					outcome: postCommitFailures.length === 0 ? "success" : "degraded",
+					message:
+						postCommitFailures.length === 0
+							? "Notification preferences saved atomically."
+							: `Notification preferences were saved, but post-commit ${postCommitFailures.join(" and ")}.`,
+				};
 			} catch (error) {
 				throw notificationOperationError(services, error, services.getNotificationConfig(ctx.settings).botToken);
 			}
@@ -816,7 +1236,9 @@ export class SelectorController {
 	 * @param create Factory that receives a `done` callback and returns the component and focus target
 	 */
 	showSelector(create: (done: () => void) => { component: Component; focus: Component }): void {
+		if (this.ctx.isStopped?.()) return;
 		const done = () => {
+			if (this.ctx.isStopped?.()) return;
 			// Prefer the pet-aware composer restore (InteractiveMode.restoreComposer); fall back
 			// to a plain editor swap for contexts that predate it (e.g. lightweight test doubles).
 			if (typeof this.ctx.restoreComposer === "function") {
@@ -1151,6 +1573,12 @@ export class SelectorController {
 		);
 		if (scope === undefined) return;
 		const persistDefault = scope.trim().toLowerCase() === "default";
+		if (persistDefault && !this.ctx.settings.canWriteDurableConfig()) {
+			this.ctx.showError(
+				"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+			);
+			return;
+		}
 
 		const imageProvider = normalized as
 			| "auto"
@@ -1224,13 +1652,18 @@ export class SelectorController {
 			const selector = new ThinkingSelectorComponent(
 				this.ctx.session.thinkingLevel,
 				availableLevels,
-				selection => {
-					done();
-
+				async selection => {
 					const { level, persistDefault } = selection;
 					const configuredDefault = this.ctx.settings.get("defaultThinkingLevel");
 					const levelToApply = level === ThinkingLevel.Inherit ? configuredDefault : level;
-					this.ctx.session.setThinkingLevel(levelToApply, persistDefault);
+					try {
+						await this.ctx.session.setThinkingLevelForControl(level, persistDefault);
+					} catch (error) {
+						this.ctx.showError(error instanceof Error ? error.message : String(error));
+						return;
+					}
+					done();
+
 					const effectiveLevel = this.ctx.session.thinkingLevel ?? ThinkingLevel.Off;
 					const requestedLabel =
 						level === ThinkingLevel.Inherit ? `${level} (configured default: ${configuredDefault})` : level;
@@ -1267,9 +1700,12 @@ export class SelectorController {
 						availableThemes,
 						availableModelProfiles: [...this.ctx.session.modelRegistry.getModelProfiles().keys()],
 						cwd: getProjectDir(),
+						gjcRuntimeSnapshot: this.ctx.session.gjcRuntimeSnapshot,
+						gjcActivationGeneration: this.ctx.session.gjcActivationGeneration,
 					},
 					{
 						onChange: (id, value) => this.handleSettingChange(id, value),
+						onError: message => this.ctx.showError(message),
 						onThemePreview: themeName => {
 							return previewTheme(themeName).then(result => {
 								if (!result.success && result.error && !isThemePreviewSuperseded(result)) {
@@ -1289,6 +1725,7 @@ export class SelectorController {
 						onPetPreview: mode => {
 							this.ctx.previewPetMode(mode as PetMode);
 						},
+						onPetCommit: mode => this.ctx.commitPetPreviewMode(mode as PetMode),
 						onStatusLinePreview: previewSettings => {
 							// Update status line with preview settings
 							this.ctx.statusLine.updateSettings({
@@ -1307,6 +1744,7 @@ export class SelectorController {
 						onPluginsChanged: () => {
 							this.ctx.ui.requestRender();
 						},
+						onRenderRequested: () => this.ctx.ui.requestRender(),
 						onCancel: () => {
 							done();
 							// Restore status line to saved settings
@@ -1332,24 +1770,40 @@ export class SelectorController {
 		getAvailableThemes().then(availableThemes => {
 			const initialTheme = getCurrentThemeName() ?? "red-claw";
 			this.showSelector(done => {
+				const restoreAndClose = () => {
+					void restoreThemePreview(initialTheme).then(result => {
+						if (!result.success && result.error) {
+							this.ctx.showError(`Failed to restore theme preview: ${result.error}`);
+						}
+						this.#refreshThemeUi();
+					});
+					done();
+				};
 				const selector = new ThemeSelectorComponent(
 					initialTheme,
 					availableThemes,
 					themeName => {
-						const settingPath = getDetectedThemeSettingsPath();
-						settings.set(settingPath, themeName);
+						if (!settings.canWriteDurableConfig()) {
+							this.ctx.showError(
+								"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+							);
+							restoreAndClose();
+							return;
+						}
+						try {
+							settings.set(getDetectedThemeSettingsPath(), themeName);
+						} catch (error) {
+							if (!settings.canWriteDurableConfig()) {
+								this.ctx.showError(error instanceof Error ? error.message : String(error));
+								restoreAndClose();
+								return;
+							}
+							throw error;
+						}
 						this.#refreshThemeUi();
 						done();
 					},
-					() => {
-						void restoreThemePreview(initialTheme).then(result => {
-							if (!result.success && result.error) {
-								this.ctx.showError(`Failed to restore theme preview: ${result.error}`);
-							}
-							this.#refreshThemeUi();
-						});
-						done();
-					},
+					restoreAndClose,
 					themeName => {
 						void previewTheme(themeName).then(result => {
 							if (!result.success && result.error) {
@@ -1373,8 +1827,9 @@ export class SelectorController {
 			const selector = new PetSelectorComponent(
 				initial,
 				mode => {
-					this.ctx.setPetMode(mode);
-					done();
+					if (this.ctx.setPetMode(mode)) {
+						done();
+					}
 				},
 				() => {
 					this.ctx.previewPetMode(initial);
@@ -1529,7 +1984,8 @@ export class SelectorController {
 				this.ctx.rebuildChatFromMessages("reconcile-same-transcript");
 				break;
 			case "theme": {
-				setTheme(value as string, true).then(result => {
+				setTheme(value as string, true, { shouldApply: () => !this.ctx.isStopped?.() }).then(result => {
+					if (this.ctx.isStopped?.()) return;
 					this.ctx.statusLine.invalidate();
 					this.ctx.updateEditorTopBorder();
 					this.ctx.ui.invalidate();
@@ -1589,13 +2045,16 @@ export class SelectorController {
 				this.ctx.session.agent.repetitionPenalty = repetitionPenalty >= 0 ? repetitionPenalty : undefined;
 				break;
 			}
+			case "statusLine.showActionHints": {
+				this.ctx.updateEditorChrome();
+				break;
+			}
 			case "statusLinePreset":
 			case "statusLine.preset":
 			case "statusLineSeparator":
 			case "statusLine.separator":
 			case "statusLineShowHooks":
 			case "statusLine.showHookStatus":
-			case "statusLine.showActionHints":
 			case "statusLine.sessionAccent":
 			case "statusLine.maxRows":
 			case "statusLine.leftSegments":
@@ -2101,12 +2560,14 @@ export class SelectorController {
 
 					// Set up escape handler and loader if summarizing
 					let summaryLoader: Loader | undefined;
+					let releaseActivityIndicator: (() => void) | undefined;
 					const originalOnEscape = this.ctx.editor.onEscape;
 
 					if (wantsSummary) {
 						this.ctx.editor.onEscape = () => {
 							this.ctx.session.abortBranchSummary();
 						};
+						releaseActivityIndicator = suspendInteractiveActivityIndicator(this.ctx);
 						this.ctx.chatContainer.addChild(new Spacer(1));
 						summaryLoader = new Loader(
 							this.ctx.ui,
@@ -2124,6 +2585,7 @@ export class SelectorController {
 							summarize: wantsSummary,
 							customInstructions,
 						});
+						if (this.ctx.isStopped?.()) return;
 
 						if (result.aborted) {
 							// Summarization aborted - re-show tree selector
@@ -2139,18 +2601,21 @@ export class SelectorController {
 						// Update UI — pass the context built by navigateTree to skip a second O(N) walk.
 						this.ctx.rebuildInitialMessages("reconcile-same-transcript", result.sessionContext);
 						await this.ctx.reloadTodos();
+						if (this.ctx.isStopped?.()) return;
 						if (result.editorText && !this.ctx.editor.getText().trim()) {
 							this.ctx.editor.setText(result.editorText);
 						}
 						this.ctx.showStatus("Navigated to selected point");
 					} catch (error) {
+						if (this.ctx.isStopped?.()) return;
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
 					} finally {
 						if (summaryLoader) {
 							summaryLoader.stop();
-							this.ctx.statusContainer.clear();
+							if (!this.ctx.isStopped?.()) this.ctx.statusContainer.clear();
 						}
-						this.ctx.editor.onEscape = originalOnEscape;
+						if (!this.ctx.isStopped?.()) this.ctx.editor.onEscape = originalOnEscape;
+						releaseActivityIndicator?.();
 					}
 				},
 				() => {
@@ -2169,12 +2634,19 @@ export class SelectorController {
 
 	async showSessionSelector(): Promise<void> {
 		const sessions = await this.ctx.sessionManager.listForResumePickerReadOnly();
+		if (this.ctx.isStopped?.()) return;
 		this.showSelector(done => {
 			const selector = new SessionSelectorComponent(
 				sessions,
-				async sessionPath => {
+				sessionPath => {
+					// `onSelect` is a void dispatch boundary: close the picker first, then
+					// observe resume failures so a managed-candidate race (or any other
+					// preparation/switch rejection) surfaces as UI error instead of an
+					// unhandled rejection that can kill the process. Do not auto-retry.
 					done();
-					await this.handleResumeSession(sessionPath);
+					void this.handleResumeSession(sessionPath).catch(error => {
+						this.ctx.showError(error instanceof Error ? error.message : String(error));
+					});
 				},
 				() => {
 					done();
@@ -2203,12 +2675,9 @@ export class SelectorController {
 		});
 	}
 
-	#clearTransientSessionUi(): void {
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.clear();
+	#clearTransientSessionUi(options?: { restoreBackground?: boolean; clearSpecializedLoaders?: boolean }): void {
+		if (options?.clearSpecializedLoaders) clearInteractiveActivityLoaders(this.ctx);
+		stopInteractiveActivityIndicator(this.ctx, { restoreBackground: options?.restoreBackground });
 		this.ctx.pendingMessagesContainer.clear();
 		this.ctx.compactionQueuedMessages = [];
 		this.ctx.streamingComponent = undefined;
@@ -2241,6 +2710,7 @@ export class SelectorController {
 		}
 
 		const detached = await this.ctx.session.newSession();
+		if (this.ctx.isStopped?.()) return false;
 		if (!detached) {
 			return false;
 		}
@@ -2248,42 +2718,173 @@ export class SelectorController {
 
 		this.#refreshSessionTerminalTitle();
 
-		this.#clearTransientSessionUi();
+		this.#clearTransientSessionUi({ clearSpecializedLoaders: true });
 		this.ctx.statusLine.invalidate();
 		this.ctx.statusLine.setSessionStartTime(Date.now());
 		this.ctx.updateEditorTopBorder();
 		this.ctx.updateEditorBorderColor();
 		this.ctx.rebuildInitialMessages("replace-identity");
 		await this.ctx.reloadTodos();
+		if (this.ctx.isStopped?.()) return false;
 		this.ctx.ui.requestRender();
 		return true;
 	}
 
-	async handleResumeSession(sessionPath: string): Promise<void> {
-		const previousSessionId = this.ctx.sessionManager.getSessionId();
-		this.#clearTransientSessionUi();
-		const migrationPolicy =
-			this.ctx.settings?.get("session.directoryMigration") === "disabled" ? "disabled" : "copy-retain";
-		let writableSessionPath = sessionPath;
-		if (this.ctx.sessionManager.isManagedDestination()) {
-			const inspection = await SessionManager.inspectSessionTailReadOnly(sessionPath);
-			if (inspection.kind === "error") throw new Error(`Could not inspect selected session: ${inspection.reason}`);
-			writableSessionPath = await this.ctx.sessionManager.prepareManagedCandidateForStrictAdoption(
-				sessionPath,
-				migrationPolicy,
-				inspection.identity,
-			);
-		}
-		// Switch session via AgentSession (emits hook and tool session events)
-		if (!(await this.ctx.session.switchSession(writableSessionPath))) return;
-		const switchingToDifferentSession = previousSessionId !== this.ctx.sessionManager.getSessionId();
-		if (switchingToDifferentSession) this.ctx.resetIrcSidebarSession();
-		this.#refreshSessionTerminalTitle();
-		this.ctx.updateEditorBorderColor();
+	/**
+	 * Guards `handleResumeSession` against overlapping resumes.
+	 *
+	 * `acquireResumeProgressLease` only owns the spinner, so it cannot serialize
+	 * two resumes, and the session picker dispatches resume through a
+	 * void-returning `onSelect` callback — a second selection would otherwise
+	 * start a concurrent transition whose rejection nobody awaits.
+	 */
+	#resumeInFlight = false;
 
-		this.ctx.rebuildInitialMessages(switchingToDifferentSession ? "replace-identity" : "reconcile-same-transcript");
-		await this.ctx.reloadTodos();
-		this.ctx.showStatus("Resumed session");
+	async handleResumeSession(sessionPath: string): Promise<void> {
+		if (this.#resumeInFlight) {
+			this.ctx.showStatus("Resume already in progress");
+			return;
+		}
+		this.#resumeInFlight = true;
+		const releaseActivityIndicator = suspendInteractiveActivityIndicator(this.ctx);
+		// Everything below runs inside the try so a synchronous failure (a throwing
+		// session-manager accessor, an unavailable status rail) can never strand the
+		// guard and silently disable every later resume.
+		let progressLease: ResumeProgressLease | undefined;
+		try {
+			const previousSessionId = this.ctx.sessionManager.getSessionId();
+			progressLease = acquireResumeProgressLease(this.ctx);
+			await progressLease.committed;
+			if (this.ctx.isStopped?.()) return;
+			const migrationPolicy =
+				this.ctx.settings?.get("session.directoryMigration") === "disabled" ? "disabled" : "copy-retain";
+			let writableSessionPath = sessionPath;
+			if (this.ctx.sessionManager.isManagedDestination()) {
+				const inspection = await SessionManager.inspectSessionTailReadOnly(sessionPath);
+				if (this.ctx.isStopped?.()) return;
+				if (inspection.kind === "error")
+					throw new Error(`Could not inspect selected session: ${inspection.reason}`);
+				writableSessionPath = await this.ctx.sessionManager.prepareManagedCandidateForStrictAdoption(
+					sessionPath,
+					migrationPolicy,
+					inspection.identity,
+				);
+				if (this.ctx.isStopped?.()) return;
+			}
+			// Switch session via AgentSession (emits hook and tool session events)
+			let switched: boolean;
+			let transitionMutationStarted = false;
+			try {
+				switched = await this.ctx.session.switchSession(writableSessionPath, {
+					transition: { origin: INTERACTIVE_SELECTOR_RESUME_ORIGIN },
+					onTransitionMutationStarted: () => {
+						transitionMutationStarted = true;
+					},
+				});
+				if (this.ctx.isStopped?.()) return;
+			} catch (error) {
+				if (this.ctx.isStopped?.()) return;
+				// `switchSession` opens with `#beginSessionTransition`, which throws
+				// `{ code: "busy" }` while another transition (compaction, handoff, fork,
+				// another switch, …) owns the session. Resume is a UI action dispatched
+				// through a void callback, so report that as status instead of rejecting a
+				// promise nobody awaits. Admission-busy never acquired the lease, so the
+				// owner's transient state — including the `compactionQueuedMessages` that
+				// hold input typed during compaction — must survive untouched.
+				const typed = error as { code?: unknown } | undefined;
+				if (typed?.code === "busy") {
+					this.ctx.showStatus("Another session operation is already in progress");
+					return;
+				}
+				// A rejection can occur either before the transition mutates the live session
+				// (for example, a rejecting `session_before_switch` hook) or after disconnect/
+				// abort has begun. Preserve the current session's transient UI in the former
+				// case; reconcile only state invalidated by a transition that actually mutated.
+				// Reconciliation stays best-effort so cleanup failure never replaces the
+				// original switch failure.
+				if (transitionMutationStarted) {
+					try {
+						progressLease.clear();
+						this.#clearTransientSessionUi({ restoreBackground: false, clearSpecializedLoaders: true });
+					} catch {
+						logger.warn("Resume transient-UI reconciliation failed after a session switch error", {
+							classification: "resume-cleanup-failed",
+						});
+					}
+				}
+				throw error;
+			}
+			// `#clearTransientSessionUi` drops `compactionQueuedMessages`, so it must stay
+			// untouched on the paths that never acquired the session-transition lease:
+			// admission-busy above and managed-candidate preparation before it.
+			//
+			// A pre-mutation hook cancellation preserves the current session and all of
+			// its foreground/retry UI. A rollback after disconnect/abort must clear it.
+			if (!switched) {
+				if (transitionMutationStarted) {
+					progressLease.clear();
+					this.#clearTransientSessionUi({ restoreBackground: false, clearSpecializedLoaders: true });
+				}
+				return;
+			}
+			progressLease.clear();
+			this.#clearTransientSessionUi({ restoreBackground: false, clearSpecializedLoaders: true });
+			const switchingToDifferentSession = previousSessionId !== this.ctx.sessionManager.getSessionId();
+			if (switchingToDifferentSession) this.ctx.resetIrcSidebarSession();
+			this.#refreshSessionTerminalTitle();
+			this.ctx.updateEditorBorderColor();
+
+			this.ctx.rebuildInitialMessages(
+				switchingToDifferentSession ? "replace-identity" : "reconcile-same-transcript",
+			);
+			await this.ctx.reloadTodos();
+			if (this.ctx.isStopped?.()) return;
+			this.ctx.showStatus("Resumed session");
+			this.#maybePromptResumeModelChoice();
+		} finally {
+			progressLease?.clear();
+			this.#resumeInFlight = false;
+			releaseActivityIndicator();
+		}
+	}
+
+	/**
+	 * When `session.resumeModelBehavior` is "ask", offer a one-shot choice after
+	 * resuming: keep the model the session was last using, or switch to whatever
+	 * `modelRoles.default` currently resolves to. No-op if the setting is unset,
+	 * the two models already match, or either model can't be resolved.
+	 */
+	#maybePromptResumeModelChoice(): void {
+		if (this.ctx.settings?.get("session.resumeModelBehavior") !== "ask") return;
+		const sessionModel = this.ctx.session.model;
+		const currentDefault = this.ctx.session.resolveConfiguredDefaultModel?.();
+		if (!sessionModel || !currentDefault) return;
+		if (sessionModel.provider === currentDefault.provider && sessionModel.id === currentDefault.id) return;
+
+		this.showSelector(done => {
+			const selector = new HookSelectorComponent(
+				`This session last used ${sessionModel.provider}/${sessionModel.id}.\n` +
+					`Current default model is ${currentDefault.provider}/${currentDefault.id}.`,
+				[`Keep ${sessionModel.id}`, `Use ${currentDefault.id}`],
+				async (option: string) => {
+					done();
+					if (option === `Use ${currentDefault.id}`) {
+						try {
+							await this.ctx.session.setModel(currentDefault);
+							this.ctx.showStatus(`Switched to ${currentDefault.provider}/${currentDefault.id}`);
+						} catch (err) {
+							this.ctx.showError(err instanceof Error ? err.message : String(err));
+						}
+					}
+					this.ctx.ui.requestRender();
+				},
+				() => {
+					done();
+					this.ctx.ui.requestRender();
+				},
+			);
+			return { component: selector, focus: selector };
+		});
 	}
 
 	async handleSessionDeleteCommand(): Promise<void> {
@@ -2355,63 +2956,85 @@ export class SelectorController {
 		});
 	}
 
-	async #handleOAuthLogin(providerId: string): Promise<void> {
+	async #handleOAuthLogin(providerId: string, options?: OAuthSelectorOptions): Promise<void> {
+		const manualCode = options?.manualCode === true;
+		if (manualCode && !MANUAL_CODE_PROVIDERS.has(providerId)) {
+			this.ctx.showError(
+				`${providerId} has no paste-a-code login. Supported: ${[...MANUAL_CODE_PROVIDERS].join(", ")}.`,
+			);
+			return;
+		}
 		this.ctx.showStatus(`Logging in to ${providerId}…`);
 		const manualInput = this.ctx.oauthManualInput;
 		const useManualInput = CALLBACK_SERVER_PROVIDERS.has(providerId as OAuthProvider);
+		if (providerId === "opencodex") {
+			this.ctx.showStatus("Checking the local OpenCodex proxy…");
+		}
 		try {
-			await this.ctx.session.modelRegistry.authStorage.login(providerId as OAuthProvider, {
-				onAuth: (info: { url: string; instructions?: string }) => {
-					this.ctx.chatContainer.addChild(new Spacer(1));
-					this.ctx.chatContainer.addChild(new Text(theme.fg("dim", info.url), 1, 0));
-					const hyperlink = `\x1b]8;;${info.url}\x07Click here to login\x1b]8;;\x07`;
-					this.ctx.chatContainer.addChild(new Text(theme.fg("accent", hyperlink), 1, 0));
-					if (info.instructions) {
+			await this.ctx.session.modelRegistry.authStorage.login(
+				providerId as OAuthProvider,
+				{
+					onAuth: (info: { url: string; instructions?: string }) => {
 						this.ctx.chatContainer.addChild(new Spacer(1));
-						this.ctx.chatContainer.addChild(new Text(theme.fg("warning", info.instructions), 1, 0));
-					}
-					if (useManualInput) {
+						this.ctx.chatContainer.addChild(new Text(theme.fg("dim", info.url), 1, 0));
+						const hyperlink = `\x1b]8;;${info.url}\x07Click here to login\x1b]8;;\x07`;
+						this.ctx.chatContainer.addChild(new Text(theme.fg("accent", hyperlink), 1, 0));
+						if (info.instructions) {
+							this.ctx.chatContainer.addChild(new Spacer(1));
+							this.ctx.chatContainer.addChild(new Text(theme.fg("warning", info.instructions), 1, 0));
+						}
+						if (useManualInput) {
+							this.ctx.chatContainer.addChild(new Spacer(1));
+							this.ctx.chatContainer.addChild(
+								new Text(theme.fg("dim", manualCode ? MANUAL_CODE_LOGIN_TIP : MANUAL_LOGIN_TIP), 1, 0),
+							);
+						}
+						this.ctx.ui.requestRender();
+						this.ctx.openInBrowser(info.url);
+					},
+					onPrompt: async (prompt: { message: string; placeholder?: string }) => {
 						this.ctx.chatContainer.addChild(new Spacer(1));
-						this.ctx.chatContainer.addChild(new Text(theme.fg("dim", MANUAL_LOGIN_TIP), 1, 0));
-					}
-					this.ctx.ui.requestRender();
-					this.ctx.openInBrowser(info.url);
-				},
-				onPrompt: async (prompt: { message: string; placeholder?: string }) => {
-					this.ctx.chatContainer.addChild(new Spacer(1));
-					this.ctx.chatContainer.addChild(new Text(theme.fg("warning", prompt.message), 1, 0));
-					if (prompt.placeholder) {
-						this.ctx.chatContainer.addChild(new Text(theme.fg("dim", prompt.placeholder), 1, 0));
-					}
-					this.ctx.ui.requestRender();
-					const { promise, resolve } = Promise.withResolvers<string>();
-					const codeInput = new Input();
-					codeInput.onSubmit = () => {
-						const code = codeInput.getValue();
+						this.ctx.chatContainer.addChild(new Text(theme.fg("warning", prompt.message), 1, 0));
+						if (prompt.placeholder) {
+							this.ctx.chatContainer.addChild(new Text(theme.fg("dim", prompt.placeholder), 1, 0));
+						}
+						this.ctx.ui.requestRender();
+						const { promise, resolve } = Promise.withResolvers<string>();
+						const codeInput = new Input();
+						codeInput.onSubmit = () => {
+							const code = codeInput.getValue();
+							this.ctx.editorContainer.clear();
+							this.ctx.editorContainer.addChild(this.ctx.editor);
+							this.ctx.ui.setFocus(this.ctx.editor);
+							resolve(code);
+						};
 						this.ctx.editorContainer.clear();
-						this.ctx.editorContainer.addChild(this.ctx.editor);
-						this.ctx.ui.setFocus(this.ctx.editor);
-						resolve(code);
-					};
-					this.ctx.editorContainer.clear();
-					this.ctx.editorContainer.addChild(codeInput);
-					this.ctx.ui.setFocus(codeInput);
-					this.ctx.ui.requestRender();
-					return promise;
+						this.ctx.editorContainer.addChild(codeInput);
+						this.ctx.ui.setFocus(codeInput);
+						this.ctx.ui.requestRender();
+						return promise;
+					},
+					onProgress: (message: string) => {
+						this.ctx.chatContainer.addChild(new Text(theme.fg("dim", message), 1, 0));
+						this.ctx.ui.requestRender();
+					},
+					onManualCodeInput: useManualInput ? () => manualInput.waitForInput(providerId) : undefined,
 				},
-				onProgress: (message: string) => {
-					this.ctx.chatContainer.addChild(new Text(theme.fg("dim", message), 1, 0));
-					this.ctx.ui.requestRender();
-				},
-				onManualCodeInput: useManualInput ? () => manualInput.waitForInput(providerId) : undefined,
-			});
+				{ manualCode },
+			);
 			await this.ctx.session.modelRegistry.refresh();
 			this.ctx.chatContainer.addChild(new Spacer(1));
-			this.ctx.chatContainer.addChild(
-				new Text(theme.fg("success", `${theme.status.success} Successfully logged in to ${providerId}`), 1, 0),
-			);
-			this.ctx.chatContainer.addChild(new Text(theme.fg("dim", `Credentials saved to ${getAgentDbPath()}`), 1, 0));
-			await this.#handlePostLoginModelProfileRecommendation(providerId);
+			const successMessage =
+				providerId === "opencodex"
+					? `${theme.status.success} OpenCodex proxy status checked`
+					: `${theme.status.success} Successfully logged in to ${providerId}`;
+			this.ctx.chatContainer.addChild(new Text(theme.fg("success", successMessage), 1, 0));
+			if (providerId !== "opencodex") {
+				this.ctx.chatContainer.addChild(
+					new Text(theme.fg("dim", `Credentials saved to ${getAgentDbPath()}`), 1, 0),
+				);
+				await this.#handlePostLoginModelProfileRecommendation(providerId);
+			}
 			this.ctx.ui.requestRender();
 		} catch (error: unknown) {
 			this.ctx.showError(`Login failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -2451,7 +3074,7 @@ export class SelectorController {
 				return;
 			}
 			if (mode === "login") {
-				await this.#handleOAuthLogin(providerId);
+				await this.#handleOAuthLogin(providerId, options);
 			} else {
 				await this.#handleOAuthLogout(providerId);
 			}

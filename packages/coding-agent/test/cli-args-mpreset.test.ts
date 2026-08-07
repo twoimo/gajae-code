@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test, vi } from "bun:test";
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import type { Model } from "@gajae-code/ai";
+import { type Model, THINKING_EFFORTS } from "@gajae-code/ai";
 import { CliParseError } from "@gajae-code/utils/cli";
 import { parseArgs } from "../src/cli/args";
 import type { ModelProfileDefinition } from "../src/config/model-profiles";
@@ -319,6 +319,108 @@ test("startup model profiles apply the default profile before --mpreset", async 
 	).toEqual(["profile-provider/default:medium", "cli-provider/explicit:high"]);
 });
 
+test("interactive continuation activates --mpreset from cached models without blocking on online refresh", async () => {
+	const session = fakeSession();
+	const registry = fakeRegistry([
+		{
+			name: "cached-profile",
+			requiredProviders: ["profile-provider"],
+			modelMapping: { default: "profile-provider/default:high" },
+			source: "user",
+		},
+	]);
+
+	await applyStartupModelProfilesForRoot({
+		session,
+		settings: Settings.isolated(),
+		modelRegistry: registry as never,
+		parsedArgs: { mpreset: "cached-profile" },
+		startupModel: undefined,
+		startupThinkingLevel: undefined,
+		isInteractive: true,
+		hasInteractiveTerminal: true,
+		initialMessage: undefined,
+		initialMessages: [],
+		resumeAction: "continue-tail",
+	});
+
+	expect(registry.refreshCalls).toEqual([]);
+	expect(registry.refreshInBackgroundCalls).toEqual(["online-if-uncached"]);
+	expect(session.model?.provider).toBe("profile-provider");
+	expect(session.model?.id).toBe("default");
+});
+test("interactive continuation applies cached default and --mpreset profiles before background refresh", async () => {
+	const session = fakeSession();
+	const registry = fakeRegistry([
+		{
+			name: "default-profile",
+			requiredProviders: ["profile-provider"],
+			modelMapping: { default: "profile-provider/default:medium" },
+			source: "user",
+		},
+		{
+			name: "cached-profile",
+			requiredProviders: ["profile-provider"],
+			modelMapping: { default: "profile-provider/default:high" },
+			source: "user",
+		},
+	]);
+
+	await applyStartupModelProfilesForRoot({
+		session,
+		settings: Settings.isolated({ "modelProfile.default": "default-profile" }),
+		modelRegistry: registry as never,
+		parsedArgs: { mpreset: "cached-profile" },
+		startupModel: undefined,
+		startupThinkingLevel: undefined,
+		isInteractive: true,
+		hasInteractiveTerminal: true,
+		initialMessage: undefined,
+		initialMessages: [],
+		resumeAction: "continue-tail",
+	});
+
+	expect(registry.refreshCalls).toEqual([]);
+	expect(registry.refreshInBackgroundCalls).toEqual(["online-if-uncached"]);
+	expect(
+		session.setModelTemporaryCalls.map(call => `${call.model.provider}/${call.model.id}:${call.thinkingLevel}`),
+	).toEqual(["profile-provider/default:medium", "profile-provider/default:high"]);
+});
+
+test("interactive continuation refreshes online only when cached --mpreset resolution fails", async () => {
+	const session = fakeSession();
+	const registry = fakeRegistry(
+		[
+			{
+				name: "refreshed-profile",
+				requiredProviders: ["refreshed-provider"],
+				modelMapping: { default: "refreshed-provider/new:high" },
+				source: "user",
+			},
+		],
+		{ modelsAfterRefresh: [model("refreshed-provider", "new")] },
+	);
+
+	await applyStartupModelProfilesForRoot({
+		session,
+		settings: Settings.isolated(),
+		modelRegistry: registry as never,
+		parsedArgs: { mpreset: "refreshed-profile" },
+		startupModel: undefined,
+		startupThinkingLevel: undefined,
+		isInteractive: true,
+		hasInteractiveTerminal: true,
+		initialMessage: undefined,
+		initialMessages: [],
+		resumeAction: "continue-tail",
+	});
+
+	expect(registry.refreshCalls).toEqual(["online-if-uncached"]);
+	expect(registry.refreshInBackgroundCalls).toEqual([]);
+	expect(session.model?.provider).toBe("refreshed-provider");
+	expect(session.model?.id).toBe("new");
+});
+
 test("persisted default thinking overrides startup default profile effort", async () => {
 	const settings = Settings.isolated({
 		"modelProfile.default": "default-profile",
@@ -626,4 +728,39 @@ test("thinking-only startup uses authoritative override semantics", async () => 
 			options: { cause: "startup-override" },
 		}),
 	]);
+});
+
+describe("CLI --thinking contract", () => {
+	test("accepts every Effort level advertised by help", () => {
+		for (const level of THINKING_EFFORTS) {
+			expect(parseArgs(["--thinking", level]).thinking).toBe(level);
+		}
+	});
+
+	test("rejects the retired ultra token instead of silently ignoring it", () => {
+		expect(() => parseArgs(["--thinking", "ultra"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking", "ultra"])).toThrow(
+			/Invalid --thinking level "ultra".*minimal, low, medium, high, xhigh, max/,
+		);
+	});
+
+	test("rejects unknown tokens fail-closed", () => {
+		expect(() => parseArgs(["--thinking", "ludicrous"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking", "off"])).toThrow(CliParseError);
+	});
+
+	test("rejects a bare --thinking with no value", () => {
+		expect(() => parseArgs(["--thinking"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking"])).toThrow(/--thinking requires <level>/);
+	});
+
+	test("rejects --thinking when the next token is another flag", () => {
+		// Pre-#3200 residual: `i + 1 < args.length` alone treated `-p` as the level.
+		expect(() => parseArgs(["--thinking", "-p", "hi"])).toThrow(CliParseError);
+		expect(() => parseArgs(["--thinking", "-p", "hi"])).toThrow(/--thinking requires <level>/);
+	});
+
+	test("rejects an empty --thinking= value", () => {
+		expect(() => parseArgs(["--thinking="])).toThrow(CliParseError);
+	});
 });

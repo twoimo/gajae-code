@@ -41,6 +41,22 @@ describe("thinking control modes", () => {
 });
 
 describe("model thinking metadata", () => {
+	it("exposes Alibaba DeepSeek V4 Flash's documented low/high/max efforts", () => {
+		const model = createModel({
+			id: "deepseek-v4-flash-0731",
+			api: "openai-completions",
+			provider: "alibaba-token-plan",
+		});
+
+		expect(model.thinking).toEqual({
+			mode: "effort",
+			minLevel: Effort.Low,
+			maxLevel: Effort.Max,
+			levels: [Effort.Low, Effort.High, Effort.Max],
+		});
+		expect(requireSupportedEffort(model, Effort.Max)).toBe(Effort.Max);
+	});
+
 	it("stores supported efforts for Codex mini in model metadata", () => {
 		const model = createModel({
 			id: "gpt-5.1-codex-mini",
@@ -187,6 +203,50 @@ describe("model thinking metadata", () => {
 });
 
 describe("generated model policies", () => {
+	it("corrects Alibaba DeepSeek V4 Flash discovery before thinking enrichment", () => {
+		const models: Model<Api>[] = [
+			createModel({
+				id: "deepseek-v4-flash-0731",
+				api: "openai-completions",
+				provider: "alibaba-token-plan",
+				reasoning: false,
+			}),
+		];
+
+		applyGeneratedModelPolicies(models);
+
+		expect(models[0]).toMatchObject({
+			name: "DeepSeek V4 Flash 0731",
+			reasoning: true,
+			contextWindow: 1_000_000,
+			maxTokens: 384_000,
+			thinking: {
+				mode: "effort",
+				minLevel: Effort.Low,
+				maxLevel: Effort.Max,
+				levels: [Effort.Low, Effort.High, Effort.Max],
+			},
+		});
+	});
+
+	it("maps only first-class MiniMax M3 routes to the official 1M context", () => {
+		const models = [
+			createModel({ id: "minimax-m3", api: "anthropic-messages", provider: "minimax" }),
+			createModel({ id: "minimax-m3", api: "anthropic-messages", provider: "minimax-cn" }),
+			createModel({ id: "minimax-m3", api: "openai-completions", provider: "minimax-code" }),
+			createModel({ id: "minimax-m3", api: "openai-completions", provider: "minimax-code-cn" }),
+			createModel({ id: "minimax-m3", api: "openai-completions", provider: "openai-codex" }),
+			createModel({ id: "minimax-m3", api: "openai-completions", provider: "opencode" }),
+		];
+
+		applyGeneratedModelPolicies(models);
+
+		expect(models.slice(0, 4).map(model => model.contextWindow)).toEqual([
+			1_000_000, 1_000_000, 1_000_000, 1_000_000,
+		]);
+		expect(models.slice(4).map(model => model.contextWindow)).toEqual([200_000, 200_000]);
+	});
+
 	it("refreshes thinking metadata and applies parsed catalog corrections", () => {
 		const models: Model<Api>[] = [
 			{

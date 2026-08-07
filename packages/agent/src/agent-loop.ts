@@ -16,11 +16,22 @@ import {
 	type ToolResultMessage,
 	type TSchema,
 	transportFailureFacts,
+	type UserMessage,
 	validateToolArguments,
 	zodToWireSchema,
 } from "@gajae-code/ai";
-import { isInvalidPromptError, neutralizeReservedControlTokens } from "@gajae-code/ai/utils";
+import {
+	COMPOSER_BASH_POLICY_RECOVERY_PROMPT,
+	isCurrentComposerBashPolicyBlockedError,
+} from "@gajae-code/ai/providers/composer-discipline";
+import {
+	isInvalidPromptError,
+	isReasoningContentReplayError,
+	neutralizeReservedControlTokens,
+	stripUnusableReasoningItems,
+} from "@gajae-code/ai/utils";
 import { sanitizeText } from "@gajae-code/utils";
+import type { AttemptScope } from "./attempt-scope";
 import {
 	createHarmonyAuditEvent,
 	detectHarmonyLeakInAssistantMessage,
@@ -32,6 +43,7 @@ import {
 	shouldMitigateHarmonyLeak,
 	signalListLabel,
 } from "./harmony-leak";
+import repeatedToolFailureRecoveryPrompt from "./prompts/repeated-tool-failure-recovery.md" with { type: "text" };
 import { type AgentRunCoverage, type AgentRunSummary, ToolCallBlockedError } from "./run-collector";
 import {
 	type AgentTelemetry,
@@ -55,8 +67,10 @@ import type {
 	AgentLoopConfig,
 	AgentMessage,
 	AgentTool,
+	AgentToolContext,
 	AgentToolResult,
 	ManagedAttemptOutcome,
+	StandaloneRunOwnership,
 	StreamFn,
 } from "./types";
 
@@ -100,6 +114,33 @@ class ManagedAttemptSnapshotError extends Error {
 const managedAttemptTextEncoder = new TextEncoder();
 
 const ABORTED: unique symbol = Symbol("agent-loop-aborted");
+interface StandaloneOwnershipState {
+	continuationAvailable: boolean;
+	continuationClaimed: boolean;
+	terminal: boolean;
+}
+
+const standaloneOwnershipStates = new WeakMap<StandaloneRunOwnership, StandaloneOwnershipState>();
+
+/**
+ * Terminal bound for argument-validation loops: how many CONSECUTIVE turns may
+ * consist entirely of malformed tool calls before the run stops.
+ *
+ * The one-shot tools-free recovery turn fires first; this is the deterministic
+ * backstop for a model that keeps emitting unusable calls after it. Counted per
+ * turn rather than per argument signature so a model rotating invalid shapes is
+ * bounded too.
+ */
+const MAX_CONSECUTIVE_MALFORMED_TURNS = 5;
+
+function isComposerBashPolicyBlockedToolResult(result: ToolResultMessage): boolean {
+	return (
+		result.isError &&
+		result.toolName === "bash" &&
+		result.content.some(content => content.type === "text" && isCurrentComposerBashPolicyBlockedError(content.text))
+	);
+}
+
 function managedContextOverflow(message: AssistantMessage, config: AgentLoopConfig): boolean {
 	const transportFailure = managedTransportFailure(message);
 	// Managed empty-stop responses may be repaired by the managed shell below; only
@@ -127,12 +168,11 @@ function managedRetryableFailure(failure: unknown): boolean {
 	const facts = managedTransportFailure(failure);
 	if (!facts) return false;
 	const trigger = classifyFallbackTrigger(facts);
-	return (
-		trigger.class === "rate_limit" ||
-		trigger.class === "quota" ||
-		trigger.class === "auth" ||
-		trigger.class === "server"
-	);
+	// A plain `forbidden` is terminal: retrying it just re-sends a request the
+	// caller is not authorized to make, and the credential-mutating consumers
+	// downstream would block healthy credentials on the way.
+	if (trigger.class === "auth") return trigger.authDisposition !== "forbidden";
+	return trigger.class === "rate_limit" || trigger.class === "quota" || trigger.class === "server";
 }
 
 /**
@@ -167,16 +207,42 @@ function repairInvalidPromptHistory(messages: AgentMessage[]): boolean {
 	}
 	return changed;
 }
+/**
+ * Strip Responses-API `reasoning` items whose `encrypted_content` a proxy
+ * emptied, in-place across the outgoing history's `providerPayload`. DeepSeek in
+ * thinking mode rejects replay of reasoning whose encrypted blob was stripped,
+ * so dropping those items lets the model re-reason instead of re-triggering a
+ * deterministic 400 ("reasoning_content ... must be passed back to the API").
+ * Only the opaque Responses history payload is mutated; durable message content
+ * and ordering are preserved. Returns whether any item was actually removed —
+ * the circuit breaker uses this to decide between a single repaired resend
+ * (removed) and immediate fail-fast (unchanged).
+ */
+function repairReasoningContentReplayHistory(messages: AgentMessage[]): boolean {
+	let removed = 0;
+	for (const message of messages) {
+		const payload = (message as { providerPayload?: { type?: string; items?: Array<Record<string, unknown>> } })
+			.providerPayload;
+		if (payload?.type !== "openaiResponsesHistory" || !Array.isArray(payload.items)) continue;
+		const { result, removed: count } = stripUnusableReasoningItems(payload.items);
+		if (count > 0) {
+			payload.items = result;
+			removed += count;
+		}
+	}
+	return removed > 0;
+}
 
-function managedFailureOutcome(message: AssistantMessage): ManagedAttemptOutcome {
+function managedFailureOutcome(message: AssistantMessage, scope?: AttemptScope): ManagedAttemptOutcome {
 	return {
 		type: "retryable_discarded",
 		failure: { message, transportFailure: managedTransportFailure(message) },
+		scope,
 	};
 }
 
-function managedContextOverflowOutcome(message: AssistantMessage): ManagedAttemptOutcome {
-	return { type: "context_overflow_discarded", message };
+function managedContextOverflowOutcome(message: AssistantMessage, scope?: AttemptScope): ManagedAttemptOutcome {
+	return { type: "context_overflow_discarded", message, scope };
 }
 
 function managedFailureMessage(error: unknown, config: AgentLoopConfig): AssistantMessage {
@@ -278,7 +344,8 @@ export function agentLoop(
 	config: AgentLoopConfig,
 	signal?: AbortSignal,
 	streamFn?: StreamFn,
-	emitManagedAgentStart = true,
+	emitAgentStart = true,
+	initialScope?: AttemptScope,
 ): EventStream<AgentEvent, AgentMessage[]> {
 	const stream = createAgentStream();
 
@@ -288,20 +355,24 @@ export function agentLoop(
 			...context,
 			messages: [...context.messages, ...prompts],
 		};
+		// Allocate before constructing the provisional transaction so every first turn
+		// has one stable scope for lifecycle events, transform hooks, and transport.
+		const scope = initialScope ?? config.initialScope ?? config.attemptMinter?.mint("main");
 		const transaction = config.fallbackManaged
-			? new ManagedAttemptTransaction(stream, config.onAssistantMessageEvent, config.model)
+			? new ManagedAttemptTransaction(stream, config.onAssistantMessageEvent, config.model, scope)
 			: undefined;
 		const attemptStream = transaction ?? stream;
-		if (!config.fallbackManaged || emitManagedAgentStart) stream.push({ type: "agent_start" });
-		attemptStream.push({ type: "turn_start" });
-		for (const prompt of prompts) {
-			stream.push({ type: "message_start", message: prompt });
-			stream.push({ type: "message_end", message: prompt });
-		}
-
 		try {
-			await runLoop(currentContext, newMessages, config, signal, stream, streamFn, transaction);
+			prepareResourceOwnership(config, false);
+			if (emitAgentStart) stream.push({ type: "agent_start", ...(scope ? { scope } : {}) });
+			attemptStream.push({ type: "turn_start", ...(scope ? { scope } : {}) });
+			for (const prompt of prompts) {
+				stream.push({ type: "message_start", message: prompt, scope });
+				stream.push({ type: "message_end", message: prompt, scope });
+			}
+			await runLoop(currentContext, newMessages, config, signal, stream, streamFn, transaction, scope);
 		} catch (err) {
+			sealStandaloneOnError(config);
 			stream.fail(err);
 		}
 	})();
@@ -322,7 +393,8 @@ export function agentLoopContinue(
 	config: AgentLoopConfig,
 	signal?: AbortSignal,
 	streamFn?: StreamFn,
-	emitManagedAgentStart = true,
+	emitAgentStart = true,
+	initialScope?: AttemptScope,
 ): EventStream<AgentEvent, AgentMessage[]> {
 	if (context.messages.length === 0) {
 		throw new Error("Cannot continue: no messages in context");
@@ -337,16 +409,20 @@ export function agentLoopContinue(
 	(async () => {
 		const newMessages: AgentMessage[] = [];
 		const currentContext: AgentContext = { ...context };
+		// Allocate before constructing the provisional transaction so every first turn
+		// has one stable scope for lifecycle events, transform hooks, and transport.
+		const scope = initialScope ?? config.initialScope ?? config.attemptMinter?.mint("main");
 		const transaction = config.fallbackManaged
-			? new ManagedAttemptTransaction(stream, config.onAssistantMessageEvent, config.model)
+			? new ManagedAttemptTransaction(stream, config.onAssistantMessageEvent, config.model, scope)
 			: undefined;
 		const attemptStream = transaction ?? stream;
-		if (!config.fallbackManaged || emitManagedAgentStart) stream.push({ type: "agent_start" });
-		attemptStream.push({ type: "turn_start" });
-
 		try {
-			await runLoop(currentContext, newMessages, config, signal, stream, streamFn, transaction);
+			prepareResourceOwnership(config, true);
+			if (emitAgentStart) stream.push({ type: "agent_start", ...(scope ? { scope } : {}) });
+			attemptStream.push({ type: "turn_start", ...(scope ? { scope } : {}) });
+			await runLoop(currentContext, newMessages, config, signal, stream, streamFn, transaction, scope);
 		} catch (err) {
+			sealStandaloneOnError(config);
 			stream.fail(err);
 		}
 	})();
@@ -359,6 +435,125 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 		(event: AgentEvent) => event.type === "agent_end",
 		(event: AgentEvent) => (event.type === "agent_end" ? event.messages : []),
 	);
+}
+
+function prepareResourceOwnership(config: AgentLoopConfig, continuation: boolean): void {
+	if (!config.resourceLedger || !config.resourceRunId) return;
+	if (config.resourceSealOwner === "caller") {
+		const existing = config.resourceLedger.lookupDomain(config.resourceRunId);
+		if (config.resourceCancellationDomain && existing && config.resourceCancellationDomain !== existing) {
+			config.resourceLedger.quarantine(config.resourceRunId);
+			throw new Error("Prompt resource cancellation domain is unavailable");
+		}
+		const domain = config.resourceCancellationDomain ?? existing ?? config.resourceLedger.open(config.resourceRunId);
+		if (!domain) throw new Error("Prompt resource cancellation domain is unavailable");
+		config.resourceCancellationDomain = domain;
+		return;
+	}
+
+	const existing = config.resourceLedger.lookupDomain(config.resourceRunId);
+	const supplied = config.standaloneRunOwnership;
+	if (supplied) {
+		if (!continuation && existing) {
+			config.resourceLedger.quarantine(config.resourceRunId);
+			throw new Error("Standalone prompt continuation ownership is unavailable");
+		}
+		const state = standaloneOwnershipStates.get(supplied);
+		if (
+			!state ||
+			supplied.resourceRunId !== config.resourceRunId ||
+			supplied.domain !== existing ||
+			(config.resourceCancellationDomain !== undefined && config.resourceCancellationDomain !== existing)
+		) {
+			if (existing) config.resourceLedger.quarantine(config.resourceRunId);
+			throw new Error("Standalone prompt ownership is unavailable");
+		}
+		if (continuation && (!state.continuationClaimed || state.terminal)) {
+			config.resourceLedger.quarantine(config.resourceRunId);
+			throw new Error("Standalone prompt continuation ownership is unavailable");
+		}
+		if (continuation) {
+			state.continuationClaimed = false;
+			state.continuationAvailable = false;
+		}
+		config.resourceCancellationDomain = existing;
+		return;
+	}
+	if (existing) {
+		config.resourceLedger.quarantine(config.resourceRunId);
+		throw new Error("Standalone prompt continuation ownership is unavailable");
+	}
+
+	const domain = config.resourceLedger.open(config.resourceRunId);
+	if (!domain) throw new Error("Prompt resource cancellation domain is unavailable");
+	config.resourceCancellationDomain = domain;
+	const state: StandaloneOwnershipState = {
+		continuationAvailable: false,
+		continuationClaimed: false,
+		terminal: false,
+	};
+	const ownership: StandaloneRunOwnership = {
+		resourceRunId: config.resourceRunId,
+		domain,
+		claimContinuation: () => {
+			if (domain.signal.aborted) {
+				state.terminal = true;
+				return { ok: false, reason: "quarantined" };
+			}
+			if (state.terminal) return { ok: false, reason: "terminal" };
+			if (!state.continuationAvailable || state.continuationClaimed) return { ok: false, reason: "already_claimed" };
+			state.continuationClaimed = true;
+			return { ok: true, ownership };
+		},
+		abandon: reason => {
+			if (state.terminal) return;
+			state.terminal = true;
+			config.resourceLedger?.quarantine(config.resourceRunId!);
+			void reason;
+		},
+	};
+	standaloneOwnershipStates.set(ownership, state);
+	config.standaloneRunOwnership = ownership;
+}
+
+function sealStandaloneOnError(config: AgentLoopConfig): void {
+	const standalone = config.standaloneRunOwnership
+		? standaloneOwnershipStates.get(config.standaloneRunOwnership)
+		: undefined;
+	if (standalone) standalone.terminal = true;
+	if (config.resourceSealOwner !== "caller" && config.resourceLedger && config.resourceRunId) {
+		config.resourceLedger.seal(config.resourceRunId);
+	}
+}
+
+function publishAgentEnd(
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	config: AgentLoopConfig,
+	event: Extract<AgentEvent, { type: "agent_end" }>,
+	scope?: AttemptScope,
+): void {
+	// Aborted maintenance yields no continuation, so it is terminal for standalone
+	// ownership and resource sealing. The event itself keeps its `maintenance`
+	// stopReason so AgentSession can still report the aborted maintenance
+	// settlement to its consumers.
+	const publishedEvent = scope ? { ...event, scope } : event;
+	const maintenanceContinues =
+		publishedEvent.stopReason === "maintenance" && publishedEvent.maintenanceOutcome !== "aborted";
+	stream.push(publishedEvent);
+	const standalone = config.standaloneRunOwnership
+		? standaloneOwnershipStates.get(config.standaloneRunOwnership)
+		: undefined;
+	if (maintenanceContinues) {
+		if (standalone) {
+			standalone.continuationAvailable = true;
+			standalone.continuationClaimed = false;
+		}
+		return;
+	}
+	if (standalone) standalone.terminal = true;
+	if (config.resourceSealOwner !== "caller" && config.resourceLedger && config.resourceRunId) {
+		config.resourceLedger.seal(config.resourceRunId);
+	}
 }
 
 /**
@@ -709,6 +904,7 @@ class ManagedAttemptTransaction {
 			| ((message: AssistantMessage, event: AssistantMessageEvent) => void)
 			| undefined,
 		private readonly model: AgentLoopConfig["model"],
+		readonly scope?: AttemptScope,
 	) {}
 
 	push(event: AgentEvent): void {
@@ -851,8 +1047,9 @@ function buildAgentEndEvent(
 	telemetry: AgentTelemetry | undefined,
 	stepCount: number,
 	stopReason: "completed" | "paused" = "completed",
+	scope?: AttemptScope,
 ): Extract<AgentEvent, { type: "agent_end" }> {
-	const base = { type: "agent_end" as const, messages, stopReason };
+	const base = { type: "agent_end" as const, messages, stopReason, ...(scope ? { scope } : {}) };
 	if (!telemetry) return base;
 	const snapshot = telemetry.collector.snapshot({ stepCount });
 	if (telemetry.collector.markRunEnded()) {
@@ -1183,6 +1380,7 @@ async function runLoop(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	streamFn?: StreamFn,
 	initialTransaction?: ManagedAttemptTransaction,
+	initialScope?: AttemptScope,
 ): Promise<void> {
 	const loopSignal = signal ?? new AbortController().signal;
 
@@ -1204,6 +1402,7 @@ async function runLoop(
 				stepCounter,
 				streamFn,
 				initialTransaction,
+				initialScope,
 			),
 		);
 	} catch (err) {
@@ -1233,8 +1432,10 @@ async function runLoopBody(
 	stepCounter: StepCounter,
 	streamFn?: StreamFn,
 	initialTransaction?: ManagedAttemptTransaction,
+	initialScope?: AttemptScope,
 ): Promise<void> {
 	let firstTurn = true;
+	let lastAttemptScope: AttemptScope | undefined;
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 	let harmonyRetryAttempt = 0;
@@ -1247,6 +1448,28 @@ async function runLoopBody(
 	// Fires at most one repaired resend per run for the poisoned-history
 	// `invalid_prompt` circuit breaker below.
 	let invalidPromptRepairAttempted = false;
+	// Fires at most one repaired resend per run for the reasoning-content replay
+	// breaker below (DeepSeek "reasoning_content ... must be passed back").
+	let reasoningContentRepairAttempted = false;
+	let previousMalformedToolSignatures = new Set<string>();
+	type SyntheticRecoveryKind = "malformed-tool-call" | "composer-bash-policy" | "provider";
+	let pendingRecovery:
+		| {
+				kind: SyntheticRecoveryKind;
+				inserted: boolean;
+				syntheticMessage?: UserMessage;
+		  }
+		| undefined;
+	let malformedToolRecoveryAttempted = false;
+	let composerBashPolicyRecoveryAttempted = false;
+	// Deterministic terminal circuit breaker for argument-validation loops.
+	//
+	// Counts CONSECUTIVE turns whose tool calls were all malformed, regardless of
+	// whether the arguments repeat. Signature-based "repeated" detection alone is
+	// not a bound: a model that rotates invalid argument shapes never trips it, so
+	// the loop could run forever. Any turn that produces a non-malformed batch
+	// resets the counter, so healthy runs are unaffected.
+	let consecutiveMalformedTurns = 0;
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
@@ -1254,15 +1477,20 @@ async function runLoopBody(
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
+			const scope =
+				initialScope ?? (firstTurn ? config.initialScope : undefined) ?? config.attemptMinter?.mint("main");
+			initialScope = undefined;
 			const transaction =
 				initialTransaction ??
 				(config.fallbackManaged
-					? new ManagedAttemptTransaction(stream, config.onAssistantMessageEvent, config.model)
+					? new ManagedAttemptTransaction(stream, config.onAssistantMessageEvent, config.model, scope)
 					: undefined);
 			initialTransaction = undefined;
+			const attemptScope = transaction?.scope ?? scope;
+			lastAttemptScope = attemptScope;
 			const attemptStream = transaction ?? stream;
 			if (!firstTurn) {
-				attemptStream.push({ type: "turn_start" });
+				attemptStream.push({ type: "turn_start", ...(attemptScope ? { scope: attemptScope } : {}) });
 			} else {
 				firstTurn = false;
 			}
@@ -1271,8 +1499,8 @@ async function runLoopBody(
 			// discarded managed attempt cannot lose it before its retry continuation.
 			if (pendingMessages.length > 0) {
 				for (const message of pendingMessages) {
-					stream.push({ type: "message_start", message });
-					stream.push({ type: "message_end", message });
+					stream.push({ type: "message_start", message, scope: attemptScope });
+					stream.push({ type: "message_end", message, scope: attemptScope });
 					currentContext.messages.push(message);
 					newMessages.push(message);
 				}
@@ -1300,12 +1528,17 @@ async function runLoopBody(
 				const outcome = loopSignal.aborted ? "aborted" : maintenanceOutcome;
 
 				if (outcome !== "not-needed") {
-					stream.push({
-						type: "agent_end",
-						messages: newMessages,
-						stopReason: "maintenance",
-						maintenanceOutcome: outcome,
-					});
+					publishAgentEnd(
+						stream,
+						config,
+						{
+							type: "agent_end",
+							messages: newMessages,
+							stopReason: "maintenance",
+							maintenanceOutcome: outcome,
+						},
+						attemptScope,
+					);
 					stream.end(newMessages);
 					return;
 				}
@@ -1323,6 +1556,8 @@ async function runLoopBody(
 			let recovered: HarmonyRecoveredToolCall | undefined;
 			let message: AssistantMessage;
 			const attemptTransaction = transaction;
+			const recoveryAttempt = pendingRecovery;
+			const wasMalformedToolRecoveryAttempt = recoveryAttempt?.kind === "malformed-tool-call";
 			try {
 				const attemptConfig = attemptTransaction
 					? {
@@ -1331,6 +1566,23 @@ async function runLoopBody(
 								attemptTransaction.stageAssistantMessageEvent(partial, event),
 						}
 					: config;
+				if (recoveryAttempt && !recoveryAttempt.inserted) {
+					const recoveryContent =
+						recoveryAttempt.kind === "composer-bash-policy"
+							? COMPOSER_BASH_POLICY_RECOVERY_PROMPT
+							: recoveryAttempt.kind === "malformed-tool-call"
+								? repeatedToolFailureRecoveryPrompt
+								: undefined;
+					if (recoveryContent) {
+						recoveryAttempt.syntheticMessage = {
+							role: "user",
+							content: recoveryContent,
+							synthetic: true,
+							timestamp: Date.now(),
+						};
+					}
+					recoveryAttempt.inserted = true;
+				}
 				message = await streamAssistantResponse(
 					currentContext,
 					attemptConfig,
@@ -1339,8 +1591,16 @@ async function runLoopBody(
 					telemetry,
 					invokeAgentSpan,
 					stepCounter,
+					attemptScope,
 					streamFn,
 					harmonyRetryAttempt,
+					recoveryAttempt?.syntheticMessage
+						? {
+								syntheticMessage: recoveryAttempt.syntheticMessage,
+								disableTools: wasMalformedToolRecoveryAttempt,
+								forceAutoToolChoice: !wasMalformedToolRecoveryAttempt,
+							}
+						: undefined,
 				);
 				const detection = detectHarmonyLeakInAssistantMessage(message);
 				if (detection && shouldMitigateHarmonyLeak(config.model, detection)) {
@@ -1357,7 +1617,9 @@ async function runLoopBody(
 						transaction.discard();
 						currentContext.messages.splice(contextMessageCount);
 						newMessages.splice(newMessageCount);
-						await config.onManagedAttemptOutcome?.(managedContextOverflowOutcome(failureMessage));
+						await config.onManagedAttemptOutcome?.(
+							managedContextOverflowOutcome(failureMessage, transaction.scope),
+						);
 						stream.end(newMessages);
 						return;
 					}
@@ -1365,7 +1627,7 @@ async function runLoopBody(
 						transaction.discard();
 						currentContext.messages.splice(contextMessageCount);
 						newMessages.splice(newMessageCount);
-						await config.onManagedAttemptOutcome?.(managedFailureOutcome(failureMessage));
+						await config.onManagedAttemptOutcome?.(managedFailureOutcome(failureMessage, transaction.scope));
 						stream.end(newMessages);
 						return;
 					}
@@ -1435,7 +1697,53 @@ async function runLoopBody(
 				isInvalidPromptError(message)
 			) {
 				invalidPromptRepairAttempted = true;
-				if (repairInvalidPromptHistory(currentContext.messages)) {
+				// The rejected turn was already committed to the context by the
+				// streaming path. Repair (and resend) only the history that
+				// preceded it: replaying an errored assistant turn re-poisons the
+				// request and leaves a second assistant tail behind, which no
+				// continuation can resume from.
+				const rejectedIndex = currentContext.messages.length - 1;
+				const rejectedCommitted =
+					rejectedIndex >= 0 && currentContext.messages[rejectedIndex]?.role === "assistant";
+				const retained = rejectedCommitted
+					? currentContext.messages.slice(0, rejectedIndex)
+					: currentContext.messages;
+				if (repairInvalidPromptHistory(retained)) {
+					if (rejectedCommitted) currentContext.messages.splice(rejectedIndex, 1);
+					continue;
+				}
+			}
+			// Session-level reasoning-content replay circuit breaker (bounded,
+			// strip-only). DeepSeek V4 (and reasoning-capable siblings on any
+			// OpenAI-compatible proxy) reject every follow-up turn with
+			// "reasoning_content ... must be passed back to the API" once a prior
+			// assistant turn carried reasoning the proxy stripped to an empty
+			// `encrypted_content`. Resending the identical history re-triggers the
+			// deterministic 400, so naive auto-retry would loop. On the first such
+			// rejection of this run, strip the unusable `reasoning` items from the
+			// Responses history payload IN PLACE (never dropping text, tool-call, or
+			// tool-output items). If that removed anything, resend exactly once so
+			// the model re-reasons; if nothing could be stripped, fall through to
+			// terminal handling and fail fast. Budget = one repaired resend.
+			if (
+				!config.fallbackManaged &&
+				message.stopReason === "error" &&
+				!reasoningContentRepairAttempted &&
+				isReasoningContentReplayError(message)
+			) {
+				reasoningContentRepairAttempted = true;
+				// The rejected turn was already committed to the context by the
+				// streaming path. Repair (and resend) only the history that
+				// preceded it: replaying an errored assistant turn re-triggers the
+				// rejection and leaves a second assistant tail behind.
+				const rejectedIndex = currentContext.messages.length - 1;
+				const rejectedCommitted =
+					rejectedIndex >= 0 && currentContext.messages[rejectedIndex]?.role === "assistant";
+				const retained = rejectedCommitted
+					? currentContext.messages.slice(0, rejectedIndex)
+					: currentContext.messages;
+				if (repairReasoningContentReplayHistory(retained)) {
+					if (rejectedCommitted) currentContext.messages.splice(rejectedIndex, 1);
 					continue;
 				}
 			}
@@ -1445,7 +1753,7 @@ async function runLoopBody(
 				transaction?.discard();
 				currentContext.messages.splice(contextMessageCount);
 				newMessages.splice(newMessageCount);
-				await config.onManagedAttemptOutcome?.(managedContextOverflowOutcome(message));
+				await config.onManagedAttemptOutcome?.(managedContextOverflowOutcome(message, transaction?.scope));
 				stream.end(newMessages);
 				return;
 			}
@@ -1466,7 +1774,7 @@ async function runLoopBody(
 				transaction?.discard();
 				currentContext.messages.splice(contextMessageCount);
 				newMessages.splice(newMessageCount);
-				await config.onManagedAttemptOutcome?.(managedFailureOutcome(message));
+				await config.onManagedAttemptOutcome?.(managedFailureOutcome(message, transaction?.scope));
 				stream.end(newMessages);
 				return;
 			}
@@ -1475,7 +1783,11 @@ async function runLoopBody(
 				transaction?.discard();
 				currentContext.messages.splice(contextMessageCount);
 				newMessages.splice(newMessageCount);
-				await config.onManagedAttemptOutcome?.({ type: "run_terminal", reason: "cancelled" });
+				await config.onManagedAttemptOutcome?.({
+					type: "run_terminal",
+					reason: "cancelled",
+					scope: transaction?.scope,
+				});
 				stream.end(newMessages);
 				return;
 			}
@@ -1493,7 +1805,6 @@ async function runLoopBody(
 			if (config.fallbackManaged && message.stopReason !== "error" && message.stopReason !== "aborted") {
 				await config.onManagedAttemptAccepted?.();
 			}
-
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
 				// Create placeholder tool results for any tool calls in the aborted message
 				// This maintains the tool_use/tool_result pairing that the API requires
@@ -1516,8 +1827,13 @@ async function runLoopBody(
 						status: message.stopReason === "aborted" ? "aborted" : "error",
 					});
 				}
-				stream.push({ type: "turn_end", message, toolResults });
-				stream.push(buildAgentEndEvent(newMessages, telemetry, stepCounter.count));
+				stream.push({ type: "turn_end", message, toolResults, scope: attemptScope });
+				publishAgentEnd(
+					stream,
+					config,
+					buildAgentEndEvent(newMessages, telemetry, stepCounter.count, "completed", attemptScope),
+					attemptScope,
+				);
 				stream.end(newMessages);
 				return;
 			}
@@ -1527,27 +1843,69 @@ async function runLoopBody(
 			hasMoreToolCalls = toolCalls.length > 0;
 
 			const toolResults: ToolResultMessage[] = [];
+			let repeatedMalformedToolCall = false;
+			let sawComposerBashPolicyBlock = false;
 			if (hasMoreToolCalls) {
-				const executionResult = await executeToolCalls(
-					currentContext,
-					message,
-					loopSignal,
-					stream,
-					config,
-					telemetry,
-					invokeAgentSpan,
-				);
+				if (wasMalformedToolRecoveryAttempt) {
+					for (const toolCall of toolCalls) {
+						const result = createAbortedToolResult(
+							toolCall,
+							stream,
+							"error",
+							"Tool calls are disabled during repeated malformed tool-call recovery.",
+						);
+						currentContext.messages.push(result);
+						newMessages.push(result);
+						toolResults.push(result);
+						recordSkippedTool(telemetry, {
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							status: "skipped",
+						});
+					}
+				} else {
+					const executionResult = await executeToolCalls(
+						currentContext,
+						message,
+						loopSignal,
+						stream,
+						config,
+						telemetry,
+						invokeAgentSpan,
+						attemptScope,
+					);
 
-				toolResults.push(...executionResult.toolResults);
-				steeringMessagesFromExecution = executionResult.steeringMessages;
+					toolResults.push(...executionResult.toolResults);
+					steeringMessagesFromExecution = executionResult.steeringMessages;
+					sawComposerBashPolicyBlock = executionResult.toolResults.some(isComposerBashPolicyBlockedToolResult);
 
-				for (const result of toolResults) {
-					currentContext.messages.push(result);
-					newMessages.push(result);
+					const malformedSignatures = executionResult.malformedToolCallSignatures;
+					const allToolCallsMalformed =
+						toolResults.length > 0 && malformedSignatures.length === toolResults.length;
+					if (allToolCallsMalformed) {
+						consecutiveMalformedTurns += 1;
+						const uniqueMalformedSignatures = new Set(malformedSignatures);
+						repeatedMalformedToolCall =
+							uniqueMalformedSignatures.size < malformedSignatures.length ||
+							[...uniqueMalformedSignatures].some(signature => previousMalformedToolSignatures.has(signature));
+						previousMalformedToolSignatures = uniqueMalformedSignatures;
+					} else {
+						consecutiveMalformedTurns = 0;
+						previousMalformedToolSignatures = new Set();
+					}
+
+					for (const result of toolResults) {
+						currentContext.messages.push(result);
+						newMessages.push(result);
+					}
 				}
 			}
 
-			stream.push({ type: "turn_end", message, toolResults });
+			if (recoveryAttempt) {
+				pendingRecovery = undefined;
+			}
+
+			stream.push({ type: "turn_end", message, toolResults, scope: attemptScope });
 
 			if (steeringMessagesFromExecution && steeringMessagesFromExecution.length > 0) {
 				pendingMessages = steeringMessagesFromExecution;
@@ -1556,7 +1914,54 @@ async function runLoopBody(
 			pendingMessages = (await config.getSteeringMessages?.()) || [];
 			if (pendingMessages.length > 0) continue;
 			if (config.shouldPause?.()) {
-				stream.push(buildAgentEndEvent(newMessages, telemetry, stepCounter.count, "paused"));
+				publishAgentEnd(
+					stream,
+					config,
+					buildAgentEndEvent(newMessages, telemetry, stepCounter.count, "paused", attemptScope),
+					attemptScope,
+				);
+				stream.end(newMessages);
+				return;
+			}
+			if (sawComposerBashPolicyBlock && !composerBashPolicyRecoveryAttempted) {
+				pendingRecovery = { kind: "composer-bash-policy", inserted: false };
+				composerBashPolicyRecoveryAttempted = true;
+			} else if (sawComposerBashPolicyBlock) {
+				message.stopReason = "error";
+				const recoveryLimitMessage =
+					"Composer bash policy blocked repository file I/O again after its one automatic recovery turn. Continue with dedicated repository tools.";
+				message.errorMessage = message.errorMessage
+					? `${message.errorMessage} | ${recoveryLimitMessage}`
+					: recoveryLimitMessage;
+				publishAgentEnd(
+					stream,
+					config,
+					buildAgentEndEvent(newMessages, telemetry, stepCounter.count, "completed", attemptScope),
+					attemptScope,
+				);
+				stream.end(newMessages);
+				return;
+			} else if (repeatedMalformedToolCall && !malformedToolRecoveryAttempted) {
+				pendingRecovery = { kind: "malformed-tool-call", inserted: false };
+				malformedToolRecoveryAttempted = true;
+			} else if (consecutiveMalformedTurns >= MAX_CONSECUTIVE_MALFORMED_TURNS) {
+				// Deterministic terminal circuit breaker. The one-shot recovery turn
+				// above already had its chance; if the model is still emitting only
+				// malformed tool calls after it, the run cannot make progress and must
+				// stop rather than burn the provider budget. Terminates on consecutive
+				// count, not argument signatures, so rotating invalid shapes are bounded
+				// too.
+				message.stopReason = "error";
+				const breakerMessage = `Stopping after ${consecutiveMalformedTurns} consecutive turns of malformed tool calls; the model did not produce a usable tool call or answer.`;
+				message.errorMessage = message.errorMessage
+					? `${message.errorMessage} | ${breakerMessage}`
+					: breakerMessage;
+				publishAgentEnd(
+					stream,
+					config,
+					buildAgentEndEvent(newMessages, telemetry, stepCounter.count, "completed", attemptScope),
+					attemptScope,
+				);
 				stream.end(newMessages);
 				return;
 			}
@@ -1565,14 +1970,30 @@ async function runLoopBody(
 		// Agent would stop here. Check for follow-up messages.
 		await config.onBeforeYield?.();
 		if (config.shouldPause?.()) {
-			stream.push(buildAgentEndEvent(newMessages, telemetry, stepCounter.count, "paused"));
+			publishAgentEnd(
+				stream,
+				config,
+				buildAgentEndEvent(newMessages, telemetry, stepCounter.count, "paused", lastAttemptScope),
+				lastAttemptScope,
+			);
 			stream.end(newMessages);
 			return;
 		}
+		// Poll the consume-on-read recovery candidate before follow-ups so a real
+		// user message can supersede it without letting the stale recovery resurface
+		// after that follow-up turn.
+		const syntheticRecoveryMessage = await config.getSyntheticRecoveryMessage?.();
 		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
 			pendingMessages = followUpMessages;
+			continue;
+		}
+		if (syntheticRecoveryMessage) {
+			// Provider-side tool protocols (such as Cursor) can finish their remote
+			// turn after a local policy rejection. Continue once without committing
+			// the recovery instruction to durable history.
+			pendingRecovery = { kind: "provider", inserted: true, syntheticMessage: syntheticRecoveryMessage };
 			continue;
 		}
 
@@ -1580,7 +2001,12 @@ async function runLoopBody(
 		break;
 	}
 
-	stream.push(buildAgentEndEvent(newMessages, telemetry, stepCounter.count));
+	publishAgentEnd(
+		stream,
+		config,
+		buildAgentEndEvent(newMessages, telemetry, stepCounter.count, "completed", lastAttemptScope),
+		lastAttemptScope,
+	);
 	stream.end(newMessages);
 }
 
@@ -1613,13 +2039,19 @@ async function streamAssistantResponse(
 	telemetry: AgentTelemetry | undefined,
 	invokeAgentSpan: Span | undefined,
 	stepCounter: StepCounter,
+	scope?: AttemptScope,
 	streamFn?: StreamFn,
 	harmonyRetryAttempt = 0,
+	recoveryMode?: {
+		syntheticMessage: UserMessage;
+		disableTools?: boolean;
+		forceAutoToolChoice?: boolean;
+	},
 ): Promise<AssistantMessage> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
 	if (config.transformContext) {
-		messages = await config.transformContext(messages, signal);
+		messages = await config.transformContext(messages, signal, scope);
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[]) and normalize at the LLM boundary.
@@ -1639,7 +2071,28 @@ async function streamAssistantResponse(
 			tools: normalizeTools(context.tools, !!config.intentTracing),
 		};
 	}
-
+	if (recoveryMode) {
+		if (config.appendOnlyContext) {
+			const syntheticMessages = normalizeMessagesForProvider(
+				await config.convertToLlm([recoveryMode.syntheticMessage]),
+				config.model,
+			);
+			llmContext = {
+				...llmContext,
+				messages: [...llmContext.messages, ...syntheticMessages],
+				tools: recoveryMode.disableTools ? [] : llmContext.tools,
+			};
+		} else {
+			llmContext = {
+				...llmContext,
+				messages: normalizeMessagesForProvider(
+					await config.convertToLlm([...messages, recoveryMode.syntheticMessage]),
+					config.model,
+				),
+				tools: recoveryMode.disableTools ? [] : llmContext.tools,
+			};
+		}
+	}
 	const streamFunction = streamFn || streamSimple;
 
 	// Resolve API key (important for expiring tokens) — do this before resolving
@@ -1654,18 +2107,30 @@ async function streamAssistantResponse(
 
 	const resolvedMetadata = config.metadataResolver ? config.metadataResolver(config.model.provider) : config.metadata;
 
-	const dynamicToolChoice = config.getToolChoice?.();
+	// Synthetic recovery requests choose their tool mode explicitly below and
+	// must never consume a queued dynamic choice intended for an ordinary turn.
+	const dynamicToolChoice = recoveryMode ? undefined : config.getToolChoice?.();
 	const dynamicReasoning = config.getReasoning?.();
 	const harmonyMitigationEnabled = isHarmonyLeakMitigationTarget(config.model);
 	const harmonyAbortController = harmonyMitigationEnabled ? new AbortController() : undefined;
-	const requestSignal = harmonyAbortController
-		? signal
-			? AbortSignal.any([signal, harmonyAbortController.signal])
-			: harmonyAbortController.signal
-		: signal;
+	const requestSignals = [
+		...(signal ? [signal] : []),
+		...(config.resourceCancellationDomain ? [config.resourceCancellationDomain.signal] : []),
+		...(harmonyAbortController ? [harmonyAbortController.signal] : []),
+	];
+	const requestSignal =
+		requestSignals.length === 0
+			? undefined
+			: requestSignals.length === 1
+				? requestSignals[0]
+				: AbortSignal.any(requestSignals);
 	const effectiveTemperature =
 		harmonyRetryAttempt > 0 && config.temperature !== undefined ? config.temperature + 0.05 : config.temperature;
-	const effectiveToolChoice = dynamicToolChoice ?? config.toolChoice;
+	const effectiveToolChoice = recoveryMode?.disableTools
+		? "none"
+		: recoveryMode?.forceAutoToolChoice
+			? "auto"
+			: (dynamicToolChoice ?? config.toolChoice);
 	const effectiveReasoning = dynamicReasoning ?? config.reasoning;
 
 	const chatStepNumber = stepCounter.count;
@@ -1693,9 +2158,9 @@ async function streamAssistantResponse(
 	// stealing them from the configured hook.
 	let capturedHeaders: Readonly<Record<string, string>> | undefined;
 	const userOnResponse = config.onResponse;
-	const captureOnResponse: AgentLoopConfig["onResponse"] = (response, modelInfo) => {
+	const captureOnResponse: AgentLoopConfig["onResponse"] = (response, modelInfo, scope) => {
 		capturedHeaders = response.headers;
-		return userOnResponse?.(response, modelInfo);
+		return userOnResponse?.(response, modelInfo, scope);
 	};
 
 	const finishChat = async (message: AssistantMessage): Promise<void> => {
@@ -1710,24 +2175,127 @@ async function streamAssistantResponse(
 	try {
 		return await runInActiveSpan(chatSpan, async () => {
 			const fallbackAttempt = config.fallbackManaged ? config.nextFallbackAttempt?.(config.model) : undefined;
-			const response = await streamFunction(config.model, llmContext, {
-				...config,
-				fallbackAttempt,
-				apiKey: resolvedApiKey,
-				authCredentialType,
-				metadata: resolvedMetadata,
-				sessionId: config.providerSessionId ?? config.sessionId,
-				toolChoice: effectiveToolChoice,
-				reasoning: effectiveReasoning,
-				temperature: effectiveTemperature,
-				signal: requestSignal,
-				onResponse: captureOnResponse,
+			const providerReservation =
+				config.resourceLedger && config.resourceRunId
+					? config.resourceLedger.reserveProducer(
+							config.resourceRunId,
+							config.resourceCancellationDomain,
+							"provider_factory",
+							`${config.model.provider}/${config.model.id}`,
+						)
+					: undefined;
+			if (providerReservation && !providerReservation.ok)
+				throw new Error("Prompt resource ownership is unavailable");
+			if (requestSignal?.aborted) {
+				providerReservation?.ok && providerReservation.lease.closeDiscovery();
+				const aborted = emitAbortedAssistantMessage(null, false, context, config, stream, scope);
+				await finishChat(aborted);
+				return aborted;
+			}
+			let responsePromise: Promise<Awaited<ReturnType<StreamFn>>>;
+			try {
+				responsePromise = Promise.resolve(
+					streamFunction(config.model, llmContext, {
+						...config,
+						attemptScope: scope,
+						fallbackAttempt,
+						apiKey: resolvedApiKey,
+						authCredentialType,
+						metadata: resolvedMetadata,
+						sessionId: config.providerSessionId ?? config.sessionId,
+						toolChoice: effectiveToolChoice,
+						reasoning: effectiveReasoning,
+						temperature: effectiveTemperature,
+						signal: requestSignal,
+						onResponse: captureOnResponse,
+					}),
+				);
+			} catch (error) {
+				providerReservation?.ok && providerReservation.lease.closeDiscovery();
+				throw error;
+			}
+			const { promise: iteratorSettled, resolve: settleIterator } = Promise.withResolvers<void>();
+			let responseResultPromise: Promise<AssistantMessage> | undefined;
+			let responseForResult: { result(): Promise<AssistantMessage> } | undefined;
+			const getResponseResult = (): Promise<AssistantMessage> =>
+				(responseResultPromise ??= Promise.resolve().then(() => responseForResult!.result()));
+			const providerLifecycle = responsePromise.then(async response => {
+				responseForResult = response;
+				await iteratorSettled;
+				await Promise.allSettled([getResponseResult()]);
 			});
+			const closeLateFactoryResponse = (): void => {
+				void responsePromise.then(
+					response => {
+						responseForResult = response;
+						try {
+							const iterator = response[Symbol.asyncIterator]();
+							try {
+								const returned = iterator.return?.();
+								void Promise.resolve(returned).then(
+									() => settleIterator(),
+									() => settleIterator(),
+								);
+							} catch {
+								settleIterator();
+							}
+						} catch {
+							settleIterator();
+						}
+					},
+					() => settleIterator(),
+				);
+			};
+			if (providerReservation?.ok) {
+				providerReservation.lease.track("provider_iterator", "provider-lifecycle", providerLifecycle);
+				void providerLifecycle.then(
+					() => providerReservation.lease.closeDiscovery(),
+					() => providerReservation.lease.closeDiscovery(),
+				);
+			}
+			let response: Awaited<typeof responsePromise>;
+			if (requestSignal) {
+				const { promise: factoryAbort, resolve: resolveFactoryAbort } = Promise.withResolvers<typeof ABORTED>();
+				const onFactoryAbort = () => resolveFactoryAbort(ABORTED);
+				requestSignal.addEventListener("abort", onFactoryAbort, { once: true });
+				try {
+					const responseOrAbort = await Promise.race([responsePromise, factoryAbort]);
+					if (responseOrAbort === ABORTED) {
+						const aborted = emitAbortedAssistantMessage(null, false, context, config, stream, scope);
+						await finishChat(aborted);
+						closeLateFactoryResponse();
+						return aborted;
+					}
+					response = responseOrAbort;
+				} finally {
+					requestSignal.removeEventListener("abort", onFactoryAbort);
+				}
+			} else {
+				response = await responsePromise;
+			}
+			responseForResult = response;
 
 			let partialMessage: AssistantMessage | null = null;
 			let addedPartial = false;
 
 			const responseIterator = response[Symbol.asyncIterator]();
+			let iteratorClosed = false;
+			const closeIterator = (): void => {
+				if (iteratorClosed) return;
+				iteratorClosed = true;
+
+				void Promise.resolve()
+					.then(() => responseIterator.return?.())
+					.then(
+						() => settleIterator(),
+						() => settleIterator(),
+					);
+			};
+			const finishResponse = async (): Promise<AssistantMessage> => {
+				closeIterator();
+				await iteratorSettled;
+				return getResponseResult();
+			};
 
 			// Set up a single abort race: register the abort listener once for the whole
 			// stream and reuse the same race promise for every iterator.next() instead of
@@ -1736,7 +2304,15 @@ async function streamAssistantResponse(
 			let detachAbortListener: (() => void) | undefined;
 			if (requestSignal) {
 				if (requestSignal.aborted) {
-					const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
+					closeIterator();
+					const aborted = emitAbortedAssistantMessage(
+						partialMessage,
+						addedPartial,
+						context,
+						config,
+						stream,
+						scope,
+					);
 					await finishChat(aborted);
 					return aborted;
 				}
@@ -1753,8 +2329,15 @@ async function streamAssistantResponse(
 					if (abortRacePromise) {
 						const result = await Promise.race([responseIterator.next(), abortRacePromise]);
 						if (result === ABORTED) {
-							responseIterator.return?.()?.catch(() => {});
-							const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
+							closeIterator();
+							const aborted = emitAbortedAssistantMessage(
+								partialMessage,
+								addedPartial,
+								context,
+								config,
+								stream,
+								scope,
+							);
 							await finishChat(aborted);
 							return aborted;
 						}
@@ -1763,11 +2346,22 @@ async function streamAssistantResponse(
 						next = await responseIterator.next();
 					}
 					if (requestSignal?.aborted) {
-						const aborted = emitAbortedAssistantMessage(partialMessage, addedPartial, context, config, stream);
+						const aborted = emitAbortedAssistantMessage(
+							partialMessage,
+							addedPartial,
+							context,
+							config,
+							stream,
+							scope,
+						);
 						await finishChat(aborted);
 						return aborted;
 					}
-					if (next.done) break;
+					if (next.done) {
+						iteratorClosed = true;
+						settleIterator();
+						break;
+					}
 
 					const event = next.value;
 
@@ -1778,7 +2372,7 @@ async function streamAssistantResponse(
 								: event.partial;
 							context.messages.push(partialMessage);
 							addedPartial = true;
-							stream.push({ type: "message_start", message: { ...partialMessage } });
+							stream.push({ type: "message_start", message: { ...partialMessage }, scope });
 							break;
 
 						case "toolChoiceIncapability":
@@ -1809,6 +2403,7 @@ async function streamAssistantResponse(
 									type: "message_update",
 									assistantMessageEvent: partialEvent,
 									message: { ...partialMessage },
+									scope,
 								});
 							}
 							break;
@@ -1816,17 +2411,17 @@ async function streamAssistantResponse(
 						case "done":
 						case "error": {
 							const finalMessage = config.fallbackManaged
-								? managedAssistantShell(await response.result(), config.model)
-								: await response.result();
+								? managedAssistantShell(await finishResponse(), config.model)
+								: await finishResponse();
 							if (addedPartial) {
 								context.messages[context.messages.length - 1] = finalMessage;
 							} else {
 								context.messages.push(finalMessage);
 							}
 							if (!addedPartial) {
-								stream.push({ type: "message_start", message: { ...finalMessage } });
+								stream.push({ type: "message_start", message: { ...finalMessage }, scope });
 							}
-							stream.push({ type: "message_end", message: finalMessage });
+							stream.push({ type: "message_end", message: finalMessage, scope });
 							await finishChat(finalMessage);
 							return finalMessage;
 						}
@@ -1834,11 +2429,12 @@ async function streamAssistantResponse(
 				}
 			} finally {
 				detachAbortListener?.();
+				closeIterator();
 			}
 
 			const trailing = config.fallbackManaged
-				? managedAssistantShell(await response.result(), config.model)
-				: await response.result();
+				? managedAssistantShell(await finishResponse(), config.model)
+				: await finishResponse();
 			await finishChat(trailing);
 			return trailing;
 		});
@@ -1858,6 +2454,7 @@ function emitAbortedAssistantMessage(
 	context: AgentContext,
 	config: AgentLoopConfig,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
+	scope?: AttemptScope,
 ): AssistantMessage {
 	const errorMessage = "Request was aborted";
 	const now = Date.now();
@@ -1882,9 +2479,9 @@ function emitAbortedAssistantMessage(
 	if (addedPartial) {
 		context.messages.pop();
 	} else {
-		stream.push({ type: "message_start", message: { ...abortedMessage } });
+		stream.push({ type: "message_start", message: { ...abortedMessage }, scope });
 	}
-	stream.push({ type: "message_end", message: abortedMessage });
+	stream.push({ type: "message_end", message: abortedMessage, scope });
 	return abortedMessage;
 }
 
@@ -1910,7 +2507,12 @@ async function executeToolCalls(
 	config: AgentLoopConfig,
 	telemetry: AgentTelemetry | undefined,
 	invokeAgentSpan: Span | undefined,
-): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
+	scope?: AttemptScope,
+): Promise<{
+	toolResults: ToolResultMessage[];
+	steeringMessages?: AgentMessage[];
+	malformedToolCallSignatures: string[];
+}> {
 	const tools = currentContext.tools;
 	const {
 		getSteeringMessages,
@@ -1928,9 +2530,12 @@ async function executeToolCalls(
 	const batchId = `${assistantMessage.timestamp ?? Date.now()}_${toolCalls[0]?.id ?? "batch"}`;
 	const shouldInterruptImmediately = interruptMode !== "wait";
 	const steeringAbortController = new AbortController();
-	const toolSignal = signal
-		? AbortSignal.any([signal, steeringAbortController.signal])
-		: steeringAbortController.signal;
+	const toolSignals = [
+		...(signal ? [signal] : []),
+		...(config.resourceCancellationDomain ? [config.resourceCancellationDomain.signal] : []),
+		steeringAbortController.signal,
+	];
+	const toolSignal = toolSignals.length === 1 ? toolSignals[0] : AbortSignal.any(toolSignals);
 	const interruptState = { triggered: false };
 	let steeringMessages: AgentMessage[] | undefined;
 	let steeringCheck: Promise<void> | null = null;
@@ -1951,6 +2556,7 @@ async function executeToolCalls(
 		skipped: false,
 		toolResultMessage: undefined as ToolResultMessage | undefined,
 		resultEmitted: false,
+		argumentValidationFailed: false,
 	}));
 
 	const checkSteering = async (): Promise<void> => {
@@ -1984,6 +2590,7 @@ async function executeToolCalls(
 				toolName: toolCall.name,
 				args: record.args,
 				intent: toolCall.intent,
+				scope,
 			});
 		}
 		stream.push({
@@ -1992,6 +2599,7 @@ async function executeToolCalls(
 			toolName: toolCall.name,
 			result,
 			isError,
+			scope,
 		});
 
 		const toolResultMessage: ToolResultMessage = {
@@ -2009,17 +2617,15 @@ async function executeToolCalls(
 		record.resultEmitted = true;
 		emittedToolResults.push(toolResultMessage);
 
-		stream.push({ type: "message_start", message: toolResultMessage });
-		stream.push({ type: "message_end", message: toolResultMessage });
+		stream.push({ type: "message_start", message: toolResultMessage, scope });
+		stream.push({ type: "message_end", message: toolResultMessage, scope });
 	};
 
 	const runTool = async (record: (typeof records)[number], index: number): Promise<void> => {
 		if (interruptState.triggered) {
 			// Skip both span emission and the collector orphan record here. The
-			// tail sweep below (after `Promise.allSettled`) is the single path
-			// that handles "no result message was produced" — it calls
-			// `recordSkippedTool` and `emitToolResult` once per record, so any
-			// work we did here would double-count.
+			// scheduler-task finalizer emits the skipped result and collector record;
+			// the tail sweep below remains a defensive fallback for unexpected throws.
 			record.skipped = true;
 			return;
 		}
@@ -2050,6 +2656,7 @@ async function executeToolCalls(
 			toolName: toolCall.name,
 			args: argsForExecution,
 			intent: toolCall.intent,
+			scope,
 		});
 
 		const toolSpan = startExecuteToolSpan(telemetry, {
@@ -2070,6 +2677,7 @@ async function executeToolCalls(
 		await runInActiveSpan(toolSpan, async () => {
 			try {
 				if (toolCall.incompleteArguments) {
+					record.argumentValidationFailed = true;
 					// The provider flagged this call's argument JSON as truncated
 					// (the model hit its output-token limit mid-call). Executing the
 					// best-effort partial parse would run the tool on wrong input, so
@@ -2104,6 +2712,7 @@ async function executeToolCalls(
 					if (tool.lenientArgValidation) {
 						effectiveArgs = argsForExecution;
 					} else {
+						record.argumentValidationFailed = true;
 						throw validationError;
 					}
 				}
@@ -2125,7 +2734,7 @@ async function executeToolCalls(
 				// Reflect post-hook args so emitted tool results / afterToolCall see what actually executed.
 				record.args = effectiveArgs;
 
-				const toolContext = getToolContext
+				const baseToolContext = getToolContext
 					? getToolContext({
 							batchId,
 							index,
@@ -2133,7 +2742,10 @@ async function executeToolCalls(
 							toolCalls: toolCallInfos,
 						})
 					: undefined;
-				const rawResult = await tool.execute(
+				const toolContext = scope
+					? (Object.assign(baseToolContext ?? {}, { attemptScope: scope }) as AgentToolContext)
+					: baseToolContext;
+				const execution = tool.execute(
 					toolCall.id,
 					transformToolCallArguments ? transformToolCallArguments(effectiveArgs, toolCall.name) : effectiveArgs,
 					tool.nonAbortable ? undefined : toolSignal,
@@ -2144,10 +2756,12 @@ async function executeToolCalls(
 							toolName: toolCall.name,
 							args: effectiveArgs,
 							partialResult: coerceToolResult(partialResult).result,
+							scope,
 						});
 					},
 					toolContext,
 				);
+				const rawResult = await execution;
 				const coerced = coerceToolResult(rawResult);
 				result = coerced.result;
 				if (coerced.malformed || result.isError) isError = true;
@@ -2155,7 +2769,9 @@ async function executeToolCalls(
 				caughtError = e;
 				result = {
 					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
-					details: {},
+					details: {
+						failureKind: record.argumentValidationFailed ? "argument_validation" : "execution",
+					},
 				};
 				isError = true;
 			}
@@ -2231,7 +2847,45 @@ async function executeToolCalls(
 		const record = records[index];
 		const concurrency = record.tool?.concurrency ?? "shared";
 		const start = concurrency === "exclusive" ? Promise.all([lastExclusive, ...sharedTasks]) : lastExclusive;
-		const task = start.then(() => runTool(record, index));
+		const reservation =
+			config.resourceLedger && config.resourceRunId
+				? config.resourceLedger.reserveProducer(
+						config.resourceRunId,
+						config.resourceCancellationDomain,
+						"tool",
+						`${record.toolCall.name}:${record.toolCall.id}`,
+					)
+				: undefined;
+		if (reservation && !reservation.ok) {
+			record.skipped = true;
+			recordSkippedTool(telemetry, {
+				toolCallId: record.toolCall.id,
+				toolName: record.toolCall.name,
+				status: "skipped",
+			});
+			emitToolResult(record, createSkippedToolResult(), true);
+			continue;
+		}
+		const task = start
+			.then(() => runTool(record, index))
+			.finally(() => {
+				if (!record.toolResultMessage) {
+					record.skipped = true;
+					recordSkippedTool(telemetry, {
+						toolCallId: record.toolCall.id,
+						toolName: record.toolCall.name,
+						status: "skipped",
+					});
+					emitToolResult(record, createSkippedToolResult(), true);
+				}
+			});
+		if (reservation?.ok) {
+			reservation.lease.track("tool", `${record.toolCall.name}:${record.toolCall.id}`, task);
+			void task.then(
+				() => reservation.lease.closeDiscovery(),
+				() => reservation.lease.closeDiscovery(),
+			);
+		}
 		tasks.push(task);
 		if (concurrency === "exclusive") {
 			lastExclusive = task;
@@ -2255,7 +2909,12 @@ async function executeToolCalls(
 		}
 	}
 
-	return { toolResults: emittedToolResults, steeringMessages };
+	const malformedToolCallSignatures = records.flatMap(record =>
+		record.argumentValidationFailed && record.toolResultMessage?.isError
+			? [`${record.toolCall.name}:${JSON.stringify(record.toolCall.arguments)}`]
+			: [],
+	);
+	return { toolResults: emittedToolResults, steeringMessages, malformedToolCallSignatures };
 }
 
 /**

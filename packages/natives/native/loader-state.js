@@ -401,7 +401,7 @@ function maybeStageNodeModulesAddon(ctx, errors) {
 	return stagedPath;
 }
 
-function validateLoadedBindings(ctx, bindings, candidate) {
+export function validateLoadedBindings(ctx, bindings, candidate) {
 	if (typeof bindings[ctx.versionSentinelExport] !== "function") {
 		throw new Error(
 			`Loaded ${candidate} but it does not expose the @gajae-code/natives@${ctx.packageVersion} ` +
@@ -417,6 +417,9 @@ function validateLoadedBindings(ctx, bindings, candidate) {
 	}
 	if (typeof bindings.renameNoReplacePath !== "function") {
 		throw new Error(`Loaded ${candidate} but it lacks required atomic publish capability \`renameNoReplacePath\`.`);
+	}
+	if (typeof bindings.probeWindowsJobMemory !== "function") {
+		throw new Error(`Loaded ${candidate} but it lacks required memory probe capability \`probeWindowsJobMemory\`.`);
 	}
 }
 

@@ -2,6 +2,59 @@
 
 ## [Unreleased]
 
+## [0.12.12] - 2026-08-05
+
+## [0.12.11] - 2026-08-03
+
+### Fixed
+
+- Native shared filesystem scans now enforce strict per-scan entry and successful-snapshot retained-capacity budgets, precharge logical ownership before allocation requests, reject allocator-granted excess with whole-scan errors instead of partial prefixes, share immutable snapshots without full-vector clones, and prevent stale in-flight scans from repopulating invalidated or TTL-expired cache entries. The byte budget does not claim a hard allocator or transient RSS ceiling. Cache retention remains compatible with #3774's 128 MiB default and zero-byte cache bypass, is bounded by both key count and aggregate bytes, and includes symlink-following behavior in cache identity (#3769, #3780).
+- Side-effecting macOS computer input now restores the global cursor after releasing held input on success, cancellation, action failure, and panic paths. Batches that include input run in one native capture-to-restore transaction; screenshot/wait-only batches stay cursor-neutral, and capture/restore failures are reported without masking the primary action error (#3642, #3781).
+
+## [0.12.10] - 2026-08-03
+
+### Fixed
+
+- Linux retained publish receipts now report the actual `linkat` or `mkdirat` fallback primitive, and a staging `unlinkat` failure after `linkat` publication is reported as committed-but-unproven with bounded errno evidence instead of as a retry-safe pre-mutation failure (#3746).
+- The native `fs_cache` scan cache is now bounded by an approximate byte budget in addition to its entry count. A single scan result larger than the budget is not cached at all, and storing a result evicts the oldest entries until the retained set fits; `FS_SCAN_CACHE_MAX_BYTES` (default `134217728`, 128 MiB) tunes it and `0` disables caching entirely. Previously 16 cached entries could each hold an arbitrarily large directory listing, so scanning a few huge trees pinned unbounded native memory for the process lifetime (#3774).
+- Managed *replacement* now works on filesystems that implement no `renameat2` rename flags. `replace_managed` reached `renameat2(RENAME_EXCHANGE)` directly and had no fallback, so on such a mount every managed replacement failed with `io_error` — and unlike the publish paths fixed in #3735, this one is reached during ordinary use: the session transcript rewrite (`#persistPatch` / `#rewriteFile` → `replaceSync`) goes through it, not just migration. A directory exchange has no window-free emulation, but this one does: `linkat(2)` gives the displaced object a second name, a plain `renameat(2)` then replaces the destination in a single atomic step that never unoccupies the name, and a final rename parks the displaced object under the candidate name where the exchange would have left it. Both objects end single-linked exactly as `RENAME_EXCHANGE` leaves them, so every identity proof the caller re-runs is unchanged. The rollback link is made durable in its own parent *before* anything is displaced, which is what makes the sequence crash-equivalent rather than only terminal-state-equivalent: the single-step primitive can never let the displaced object lose its last name, while a three-step emulation could if the replacing rename reached the disk and the rollback link did not. That sync is fail-closed — an unprovable rollback link is removed and nothing is published — and once the replacement commits, any later sync or proof failure is reported as committed-but-unproven rather than as a retryable pre-mutation failure. The destination descriptor is released between the rollback link and the replacing rename, because NFS silly-renames a still-open name that a rename displaces, which would otherwise leave the displaced object double-linked and fail its `st_nlink == 1` proof.
+
+## [0.12.8] - 2026-08-02
+### Fixed
+
+- POSIX exact directory-tree cleanup now operates only on the caller-authorized retained root, revalidates the root and each direct child against their descriptors before mutation, rejects initial and late hard-link aliases, and scrubs regular-file payloads through verified descriptors. Canonical root detachment remains the separate exact-unlink phase; replayable retained namespaces are never renamed again, and substituted successors are never renamed, unlinked, or truncated.
+
+## [0.12.7] - 2026-07-31
+
+## [0.12.6] - 2026-07-31
+
+### Fixed
+
+- Added `linkNoReplacePath`, the `linkat(2)` stand-in for `renameNoReplacePath` on filesystems that implement no `renameat2` rename flag at all (NFS answers `EINVAL`, kernels older than 3.15 `ENOSYS`). `linkat` fails with `EEXIST` on an occupied destination, so the no-overwrite guarantee is identical on every POSIX filesystem. Unlike a rename it leaves the source name in place, which is what lets a caller hold a descriptor on the staged object across publication and unlink the staging name only after releasing it. Directory sources are rejected before the syscall, since `linkat` cannot hard-link a directory.
+- Managed *tree* rename and removal no longer fail outright on those filesystems. `linkat` cannot stand in for a directory, so the no-replace tree rename and `remove_managed_tree`'s quarantine step now claim the destination name with `mkdirat(2)` — which fails `EEXIST` exactly where `RENAME_NOREPLACE` would — and then move the tree onto that freshly owned empty directory with a plain `renameat(2)`, which POSIX refuses to apply to a non-empty destination. A rename that fails after the claim removes the placeholder again, so a rejected publish never leaves an empty directory squatting the destination.
+- Retained managed publication and detachment now release their staging descriptor between the `linkat(2)` fallback's publishing link and its staging unlink, so the fallback added in 0.12.0 actually works on the filesystems it was written for. NFS silly-renames a still-open name on `unlinkat` instead of removing it, so the staging link survived as `.nfsXXXX`, the object kept a second link, and the terminal proof rejected it (`st_nlink != 1` → `hard_link`). Two launch failures followed on an NFS home directory: the first publish into a scope reported a correctly committed write as `rollback_unavailable`, and every later launch failed in `remove_managed` while reconciling the staged file after a publish that legitimately lost the no-replace race — that detach error replaced the benign `destination_conflict`, surfacing as `Could not prepare managed session scope (binding_invalid: prepare:binding_publish)`. Descriptor authority is still held across publication itself, and `remove_managed` re-proves the detached object from its quarantined name, so neither path is weaker than the `renameat2` primitive it stands in for.
+
+## [0.12.5] - 2026-07-30
+
+## [0.12.4] - 2026-07-30
+
+## [0.12.3] - 2026-07-30
+
+## [0.12.2] - 2026-07-30
+
+## [0.12.1] - 2026-07-29
+
+## [0.12.0] - 2026-07-28
+### Fixed
+
+- Native addon builds now prepend the active `rustup` toolchain's Cargo directory before invoking `napi`, so non-interactive shells without `~/.cargo/bin` on `PATH` no longer fail with opaque `cargo metadata failed to run` errors.
+- Retained managed session publication no longer fails closed on filesystems that do not implement `renameat2` rename flags (NFS and some FUSE/overlay mounts reject them with `EINVAL`; kernels older than 3.15 answer `ENOSYS`), which crashed every launch with a session store on an NFS home directory (`Could not prepare managed session scope: … durability_failed`). The no-replace **file** publish paths (binding, receipt/install, and tombstone) now fall back to an atomic `linkat(2)` create — which fails with `EEXIST` when the destination already exists — so the no-overwrite guarantee is preserved rather than weakened, and the staging link is unlinked so the published file stays single-linked. Directory/tree no-replace still requires kernel `renameat2` flag support.
+
+## [0.11.11] - 2026-07-26
+### Added
+
+- Added the `probeWindowsJobMemory` native API for advisory Windows Job Object memory-limit and usage snapshots.
+
 ## [0.11.8] - 2026-07-23
 ### Fixed
 

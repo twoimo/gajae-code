@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { JSON_SCHEMA_OUTPUTS, stableJson } from "./generate-json-schemas";
+import { SETTINGS_SCHEMA } from "../packages/coding-agent/src/config/settings-schema";
 
 function acceptsJsonSchemaFixture(schema: unknown, value: unknown): boolean {
 	if (schema === true) return true;
@@ -37,18 +38,33 @@ describe("generated JSON Schemas", () => {
 		}
 	});
 
+	it("registers the ralplan per-lane review budget without loosening the object", () => {
+		const setting = SETTINGS_SCHEMA["gjc.ralplan.maxReviewPassesPerLane"];
+		expect(setting.default).toBe(1);
+		expect(setting.validate?.(0)).toBe(false);
+		expect(setting.validate?.(11)).toBe(false);
+		expect(setting.validate?.(1.5)).toBe(false);
+
+		const schema = configSchema() as any;
+		const ralplan = schema.properties.gjc.properties.ralplan;
+		expect(ralplan.properties.maxReviewPassesPerLane).toMatchObject({ type: "number", default: 1 });
+		expect(ralplan.additionalProperties).toBe(false);
+	});
+
 	it("accepts documented Discord and Slack config while rejecting unknown chat properties", () => {
 		const schema = configSchema();
 		const completeConfig = {
 			notifications: {
 				enabled: true,
 				discord: {
+					enabled: true,
 					botToken: "discord-bot-token",
 					applicationId: "discord-application-id",
 					guildId: "discord-guild-id",
 					parentChannelId: "discord-parent-channel-id",
 				},
 				slack: {
+					enabled: false,
 					botToken: "slack-bot-token",
 					appToken: "slack-app-token",
 					workspaceId: "slack-workspace-id",
@@ -58,6 +74,13 @@ describe("generated JSON Schemas", () => {
 		};
 
 		expect(acceptsJsonSchemaFixture(schema, completeConfig)).toBe(true);
+		const typedSchema = schema as {
+			properties: { notifications: { properties: Record<string, { properties?: Record<string, unknown> }> } };
+		};
+		const notifications = typedSchema.properties.notifications.properties;
+		expect(notifications.telegram?.properties?.enabled).toEqual({ type: "boolean" });
+		expect(notifications.discord?.properties?.enabled).toEqual({ type: "boolean" });
+		expect(notifications.slack?.properties?.enabled).toEqual({ type: "boolean" });
 		expect(acceptsJsonSchemaFixture(schema, {
 			...completeConfig,
 			notifications: { ...completeConfig.notifications, discord: { ...completeConfig.notifications.discord, unknown: "value" } },

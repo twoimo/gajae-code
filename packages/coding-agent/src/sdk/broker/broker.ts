@@ -12,6 +12,7 @@ import {
 import {
 	BROKER_HEARTBEAT_TTL_MS,
 	type BrokerDiscovery,
+	type BrokerPublicationObservation,
 	brokerDiscoveryPath,
 	brokerProcessIncarnation,
 	heartbeatBrokerDiscoveryRetained,
@@ -24,7 +25,7 @@ import {
 	redactBrokerDiscovery,
 } from "./discovery";
 import { deriveIdempotencyIdentity } from "./identity";
-import { executeLifecycle, isCanonicalSessionId } from "./lifecycle";
+import { canonicalDeleteLocatorPath, executeLifecycle, isCanonicalSessionId } from "./lifecycle";
 
 import {
 	type LifecycleDurableEffectsReceipt,
@@ -71,6 +72,7 @@ export type BrokerErrorCode =
 export type BrokerCleanupIdentity = {
 	dev: string;
 	ino: string;
+	nlink?: string;
 	size: number;
 	mtimeNs: string;
 	sha256: string;
@@ -102,6 +104,7 @@ export type BrokerArtifactTree = {
 
 export type BrokerCleanupEvidence = {
 	phase: "artifacts" | "transcript" | "metadata" | "lifecycle";
+	cleanupReceiptVersion?: 1;
 	/** Ledger-bound deletion target; never reconstructed from a retry request. */
 	sessionsRoot?: string;
 	transcriptPath?: string;
@@ -110,6 +113,7 @@ export type BrokerCleanupEvidence = {
 	sessionId?: string;
 	artifactsIdentity?: BrokerCleanupIdentity;
 	transcriptIdentity?: BrokerCleanupIdentity;
+	transcriptParentIdentity?: { dev: string; ino: string };
 	/** Identity-bound lifecycle metadata marker retained when exact cleanup is deferred. */
 	metadataIdentity?: BrokerCleanupIdentity;
 	metadataPath?: string;
@@ -122,9 +126,17 @@ export type BrokerCleanupEvidence = {
 	/** Append-only terminal proof for lifecycle metadata cleanup. */
 	metadataCompleted?: true;
 	detachedArtifactsPath?: string;
+	retainedArtifactsSuccessorPath?: string;
+	retainedArtifactsPlaceholderPath?: string;
+	retainedArtifactsUnknownPath?: string;
+	retainedArtifactsSideAuthority?: "none" | "retained";
 	detachedTranscriptPath?: string;
+	retainedTranscriptSuccessorPath?: string;
+	retainedTranscriptPlaceholderPath?: string;
+	retainedTranscriptUnknownPath?: string;
 	/** Durable proof that artifact cleanup completed before transcript mutation. */
 	artifactsRemoved?: boolean;
+	artifactsAbsentAtAuthorization?: true;
 	/** Preauthorized no-replace artifact quarantine path persisted before detach. */
 	plannedArtifactsPath?: string;
 	/** Identity-bound artifact tree authority persisted before broker detach and replayed exactly. */
@@ -133,6 +145,7 @@ export type BrokerCleanupEvidence = {
 	plannedTranscriptPath?: string;
 	/** Fully identity-bound startup-failure cleanup plan, persisted before any detach. */
 	lifecycleFiles?: BrokerLifecycleCleanupFile[];
+	lifecycleParentIdentity?: { dev: string; ino: string };
 	/** Delete metadata receipts authorize only the canonical marker/ready sibling pair. */
 	lifecycleDeleteMetadata?: true;
 };
@@ -157,6 +170,14 @@ function isCleanupPending(response: BrokerResponse): boolean {
 	return !response.ok && response.error.code === "cleanup_pending" && response.error.cleanup !== undefined;
 }
 
+function cleanupFromResponse(response: unknown): BrokerCleanupEvidence | undefined {
+	return isBrokerResponse(response) && !response.ok ? response.error.cleanup : undefined;
+}
+function pendingCleanupSessionId(response: BrokerResponse): string | undefined {
+	if (response.ok || response.error.code !== "cleanup_pending") return undefined;
+	return typeof response.error.cleanup?.sessionId === "string" ? response.error.cleanup.sessionId : undefined;
+}
+
 function lifecycleResponseState(response: BrokerResponse): LifecycleState {
 	if (response.ok) return "terminal_ok";
 	if (isCleanupPending(response)) return "effect_started";
@@ -165,8 +186,8 @@ function lifecycleResponseState(response: BrokerResponse): LifecycleState {
 
 type InputNormalization = { input: Record<string, unknown> } | BrokerResponse;
 
-function isBrokerResponse(value: InputNormalization): value is BrokerResponse {
-	return "ok" in value;
+function isBrokerResponse(value: unknown): value is BrokerResponse {
+	return typeof value === "object" && value !== null && "ok" in value && typeof value.ok === "boolean";
 }
 
 function normalizeAliasedString(
@@ -224,11 +245,12 @@ function normalizeBrokerInput(operation: string, input: Record<string, unknown>)
 		typeof input.target === "object" && input.target !== null && !Array.isArray(input.target)
 			? (input.target as Record<string, unknown>)
 			: undefined;
+	const normalizeLifecycleDirectory = operation === "session.delete" ? canonicalDeleteLocatorPath : path.resolve;
 	const cwd = normalizeAliasedString(
 		{ cwd: input.cwd, path: input.path, targetPath: target?.path },
 		"cwd",
 		["path", "targetPath"],
-		value => path.resolve(value),
+		normalizeLifecycleDirectory,
 	);
 	if (cwd.error) return error("invalid_input", cwd.error);
 	if (cwd.value !== undefined) {
@@ -239,7 +261,7 @@ function normalizeBrokerInput(operation: string, input: Record<string, unknown>)
 		{ stateRoot: input.stateRoot, targetStateRoot: target?.stateRoot },
 		"stateRoot",
 		["targetStateRoot"],
-		value => path.resolve(value),
+		normalizeLifecycleDirectory,
 	);
 	if (stateRoot.error) return error("invalid_input", stateRoot.error);
 	if (stateRoot.value !== undefined && (!cwd.value || stateRoot.value !== path.join(cwd.value, ".gjc", "state")))
@@ -253,6 +275,11 @@ function normalizeBrokerInput(operation: string, input: Record<string, unknown>)
 		delete normalizedTarget.stateRoot;
 		if (Object.keys(normalizedTarget).length > 0) normalized.target = normalizedTarget;
 		else delete normalized.target;
+	}
+	if (operation === "session.delete") {
+		const sessionPath = normalizeAliasedString(input, "sessionPath", [], canonicalDeleteLocatorPath);
+		if (sessionPath.error) return error("invalid_input", sessionPath.error);
+		if (sessionPath.value !== undefined) normalized.sessionPath = sessionPath.value;
 	}
 	return { input: normalized };
 }
@@ -370,6 +397,14 @@ type BrokerLockSnapshot = {
 
 const BROKER_PUBLICATION_CADENCE_MS = 5_000;
 const BROKER_PUBLICATION_GRACE_MS = 15_000;
+// A broker that cannot observe its own publication is not provably the root, but
+// ambiguity is also not proof of replacement, so it must not be treated as a
+// `lost-root` immediately. It must still be bounded: an indefinitely ambiguous
+// broker stops heartbeating, so peers discover it as stale and spawn replacements
+// while it keeps its port and memory forever. Ambiguity therefore accrues against
+// its own deadline, generous enough to absorb transient filesystem faults and far
+// longer than the loss grace.
+const BROKER_AMBIGUITY_GRACE_MS = 120_000;
 const BROKER_SETTLEMENT_MS = 2_000;
 type BrokerPublicationState =
 	| "healthy-owned"
@@ -380,6 +415,8 @@ type BrokerPublicationState =
 type BrokerStopMode = "owned-root" | "lost-root";
 
 const terminalPersistenceHooksForTest = new WeakMap<Broker, () => void>();
+const ambiguityGraceOverridesForTest = new WeakMap<Broker, number>();
+const publicationObservationOverridesForTest = new WeakMap<Broker, BrokerPublicationObservation>();
 
 export class Broker {
 	readonly settings: ResolvedBrokerSettings;
@@ -393,6 +430,7 @@ export class Broker {
 	#publication: RetainedBrokerDiscovery | null = null;
 	#publicationState: BrokerPublicationState = "healthy-owned";
 	#lossAt: bigint | null = null;
+	#ambiguousAt: bigint | null = null;
 	#stopping = false;
 	#transport: BrokerTransport | null = null;
 	#heartbeatTimer: NodeJS.Timeout | null = null;
@@ -539,6 +577,7 @@ export class Broker {
 		this.#stopping = false;
 		this.#publicationState = "healthy-owned";
 		this.#lossAt = null;
+		this.#ambiguousAt = null;
 		await Promise.all([this.ledger.assertSupportedStateVersions(), readBrokerDiscovery(this.settings.agentDir)]);
 		await fs.mkdir(path.dirname(this.#lock), { recursive: true, mode: 0o700 });
 		for (;;) {
@@ -622,16 +661,35 @@ export class Broker {
 	#fence(kind: "suspect-unpublished" | "observation-ambiguous" | "heartbeat-ambiguous"): void {
 		if (this.#publicationState === "stopping") return;
 		this.#publicationState = kind;
-		if (kind === "suspect-unpublished") this.#lossAt ??= process.hrtime.bigint();
-		else this.#lossAt = null;
+		if (kind === "suspect-unpublished") {
+			this.#lossAt ??= process.hrtime.bigint();
+			this.#ambiguousAt = null;
+		} else {
+			this.#lossAt = null;
+			this.#ambiguousAt ??= process.hrtime.bigint();
+		}
+	}
+	/**
+	 * Whether this broker has been unable to confirm it is the published root for
+	 * longer than the deadline for its current fence. Replacement is proven quickly
+	 * and ambiguity slowly, but neither may persist indefinitely: a permanently
+	 * fenced broker never heartbeats, so it is unreachable through discovery while
+	 * still holding its port and memory.
+	 */
+	#fencedBeyondDeadline(): boolean {
+		const now = process.hrtime.bigint();
+		if (this.#lossAt !== null && now - this.#lossAt >= BigInt(BROKER_PUBLICATION_GRACE_MS) * 1_000_000n) return true;
+		const ambiguityGraceMs = ambiguityGraceOverridesForTest.get(this) ?? BROKER_AMBIGUITY_GRACE_MS;
+		return this.#ambiguousAt !== null && now - this.#ambiguousAt >= BigInt(ambiguityGraceMs) * 1_000_000n;
 	}
 	async #watchPublication(writeHeartbeat = true): Promise<void> {
 		if (!this.#publication || this.#publicationState === "stopping") return;
 		let observation: ReturnType<RetainedBrokerDiscovery["observe"]>;
 		try {
-			observation = this.#publication.observe();
+			observation = publicationObservationOverridesForTest.get(this) ?? this.#publication.observe();
 		} catch {
 			this.#fence("observation-ambiguous");
+			if (this.#fencedBeyondDeadline()) void this.#complete("lost-root");
 			return;
 		}
 		if (observation === "owned") {
@@ -641,15 +699,12 @@ export class Broker {
 			}
 			this.#publicationState = "healthy-owned";
 			this.#lossAt = null;
+			this.#ambiguousAt = null;
 			if (writeHeartbeat) await this.#writeHeartbeat();
 			return;
 		}
 		this.#fence(observation === "ambiguous" ? "observation-ambiguous" : "suspect-unpublished");
-		if (
-			this.#lossAt !== null &&
-			process.hrtime.bigint() - this.#lossAt >= BigInt(BROKER_PUBLICATION_GRACE_MS) * 1_000_000n
-		)
-			void this.#complete("lost-root");
+		if (this.#fencedBeyondDeadline()) void this.#complete("lost-root");
 	}
 	async #writeHeartbeat(): Promise<void> {
 		if (!this.discovery || !this.#publication || this.#publicationState === "stopping") return;
@@ -665,6 +720,7 @@ export class Broker {
 		}
 		this.#publicationState = "healthy-owned";
 		this.#lossAt = null;
+		this.#ambiguousAt = null;
 		this.discovery = { ...this.discovery, heartbeatAt };
 	}
 	async heartbeat(): Promise<void> {
@@ -798,7 +854,61 @@ export class Broker {
 			.update(canonicalJson(lifecycleTarget(operation, input)))
 			.digest("hex");
 		const identity = await deriveIdempotencyIdentity(this.settings.agentDir, operation, idempotencyKey, target);
-		const requestHash = createHash("sha256").update(canonicalJson({ operation, input })).digest("hex");
+		let reconstructedDeleteCleanup: BrokerCleanupEvidence | undefined;
+		if (operation === "session.delete" && input.cwd === undefined && input.sessionPath === undefined) {
+			const entry = this.ledger.get(identity);
+			const cleanup = cleanupFromResponse(entry?.response) ?? cleanupFromResponse(entry?.unresolvedCleanupResponse);
+			reconstructedDeleteCleanup = cleanup;
+			const requestedSessionId = typeof input.sessionId === "string" ? input.sessionId : undefined;
+			if (!cleanup) {
+				if (requestedSessionId && this.ledger.hasUncertainCleanupForSession(requestedSessionId, identity))
+					return error(
+						"terminal_uncertain",
+						"Session cleanup authority is uncertain and cannot be deleted safely",
+					);
+				const pending = requestedSessionId
+					? this.ledger.findCleanupPendingBySessionId(requestedSessionId, identity)
+					: undefined;
+				if (pending) {
+					const pendingResponse = cleanupFromResponse(pending.response)
+						? pending.response
+						: pending.unresolvedCleanupResponse;
+					if (isBrokerResponse(pendingResponse)) return pendingResponse;
+					return error(
+						"terminal_uncertain",
+						"Session cleanup authority is pending under another lifecycle identity",
+					);
+				}
+				if (entry) {
+					if (isBrokerResponse(entry.response)) return entry.response;
+					return error("terminal_uncertain", "Existing session.delete ledger evidence lacks replayable authority");
+				}
+				if (requestedSessionId) {
+					await this.index.refresh();
+					if (this.index.listSessions().sessions.some(session => session.sessionId === requestedSessionId))
+						return error(
+							"terminal_uncertain",
+							"Indexed session requires durable locator authority before deletion",
+						);
+				}
+				return { ok: true, result: requestedSessionId ? { sessionId: requestedSessionId } : undefined };
+			}
+			if (
+				cleanup &&
+				cleanup.sessionId === requestedSessionId &&
+				typeof cleanup.cwd === "string" &&
+				typeof cleanup.transcriptPath === "string"
+			)
+				input = {
+					sessionId: cleanup.sessionId,
+					cwd: cleanup.cwd,
+					stateRoot: path.join(cleanup.cwd, ".gjc", "state"),
+					sessionPath: cleanup.transcriptPath,
+				};
+		}
+		const storedRequestHash = reconstructedDeleteCleanup ? this.ledger.get(identity)?.requestHash : undefined;
+		const requestHash =
+			storedRequestHash ?? createHash("sha256").update(canonicalJson({ operation, input })).digest("hex");
 		const prev = this.#chains.get(target) ?? Promise.resolve();
 		let release!: () => void;
 		const current = new Promise<void>(resolve => (release = resolve));
@@ -812,8 +922,8 @@ export class Broker {
 			const begun = await this.ledger.begin(identity, requestHash);
 			if (begun.kind === "replay") {
 				const replay = begun.entry.response as BrokerResponse;
-				if (!(!replay.ok && replay.error.cleanup)) return replay;
-				const cleanup = replay.error.cleanup;
+				const cleanup = cleanupFromResponse(replay) ?? reconstructedDeleteCleanup;
+				if (!cleanup) return replay;
 				const outcome = await executeLifecycle(this, operation, input, identity, cleanup);
 				const response = outcome.response;
 				await this.ledger.transition(identity, lifecycleResponseState(response), {
@@ -828,11 +938,13 @@ export class Broker {
 				return error("idempotency_conflict", "idempotency key was used with a different request");
 			if (begun.kind === "terminal_uncertain") {
 				const replay = (begun.entry.response ?? beforeBegin?.response) as BrokerResponse | undefined;
-				if (!replay || replay.ok || !replay.error.cleanup)
+				const cleanup = (replay ? cleanupFromResponse(replay) : undefined) ?? reconstructedDeleteCleanup;
+				if (!cleanup)
 					return replay ?? error("terminal_uncertain", "prior lifecycle operation outcome is uncertain");
-				const outcome = await executeLifecycle(this, operation, input, identity, replay.error.cleanup);
+				const outcome = await executeLifecycle(this, operation, input, identity, cleanup);
 				const response = outcome.response;
 				await this.ledger.transition(identity, lifecycleResponseState(response), {
+					...(pendingCleanupSessionId(response) ? { intendedSessionId: pendingCleanupSessionId(response) } : {}),
 					response,
 					responseDigest: createHash("sha256").update(canonicalJson(response)).digest("hex"),
 					...(outcome.durableEffects ? { durableEffects: outcome.durableEffects } : {}),
@@ -844,6 +956,7 @@ export class Broker {
 			const outcome = await executeLifecycle(this, operation, input, identity);
 			const response = outcome.response;
 			await this.ledger.transition(identity, lifecycleResponseState(response), {
+				...(pendingCleanupSessionId(response) ? { intendedSessionId: pendingCleanupSessionId(response) } : {}),
 				resultSessionId:
 					response.ok && typeof (response.result as { sessionId?: unknown } | undefined)?.sessionId === "string"
 						? (response.result as { sessionId: string }).sessionId
@@ -855,9 +968,8 @@ export class Broker {
 			});
 			if (isCleanupPending(response)) return response;
 			const persisted = await this.ledger.readTerminal(identity, requestHash);
-			const expectedResponseDigest = createHash("sha256").update(canonicalJson(response)).digest("hex");
 			const persistenceVerified =
-				persisted?.responseDigest === expectedResponseDigest &&
+				persisted !== undefined &&
 				canonicalJson(persisted.response) === canonicalJson(response) &&
 				canonicalJson(persisted.durableEffects) === canonicalJson(outcome.durableEffects) &&
 				canonicalJson(persisted.startupFailure) === canonicalJson(outcome.startupFailure);
@@ -888,4 +1000,19 @@ export class Broker {
 export function setTerminalPersistenceHookForTest(broker: Broker, hook: (() => void) | undefined): void {
 	if (hook) terminalPersistenceHooksForTest.set(broker, hook);
 	else terminalPersistenceHooksForTest.delete(broker);
+}
+
+/** Test-only hook for shortening the bounded ambiguity deadline. */
+export function setAmbiguityGraceForTest(broker: Broker, graceMs: number | undefined): void {
+	if (graceMs === undefined) ambiguityGraceOverridesForTest.delete(broker);
+	else ambiguityGraceOverridesForTest.set(broker, graceMs);
+}
+
+/** Test-only hook for forcing the observation the publication watchdog sees. */
+export function setPublicationObservationForTest(
+	broker: Broker,
+	observation: BrokerPublicationObservation | undefined,
+): void {
+	if (observation === undefined) publicationObservationOverridesForTest.delete(broker);
+	else publicationObservationOverridesForTest.set(broker, observation);
 }

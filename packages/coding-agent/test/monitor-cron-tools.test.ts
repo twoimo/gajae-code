@@ -207,6 +207,24 @@ describe("MonitorTool", () => {
 		expect(slice?.text.match(/same\n/g)).toHaveLength(20);
 	});
 
+	it("coalesces persistent lines arriving on separate event-loop ticks", async () => {
+		const steered: Array<{ customType: string; content: string; details?: unknown }> = [];
+		const session = createSession(settings, { steered });
+		const tool = MonitorTool.createIf(session)!;
+		await tool.execute("call", {
+			command: "printf 'first\\n'; sleep 0.05; printf 'second\\n'; sleep 0.05; printf 'third\\n'",
+			kind: "log",
+			description: "tick test",
+			persistent: true,
+		});
+		await manager.waitForAll();
+		await new Promise(resolve => setTimeout(resolve, 300));
+
+		expect(steered.length).toBe(1);
+		expect(steered[0]?.content).toContain("third");
+		expect(steered[0]?.content).toContain("(+2 earlier lines)");
+	});
+
 	it("persistent monitor preserves latest state when cap is full", async () => {
 		const steered: Array<{ customType: string; content: string; details?: unknown }> = [];
 		const session = createSession(settings, { steered });

@@ -5,7 +5,16 @@
  * Non-composer models must stay byte-identical to previous behavior.
  */
 import { describe, expect, it } from "bun:test";
-import { COMPOSER_EDIT_DISCIPLINE_PROMPT, isComposerHarnessModel } from "@gajae-code/ai/providers/composer-discipline";
+import {
+	COMPOSER_BASH_POLICY_ERROR_CODE,
+	COMPOSER_BASH_POLICY_ERROR_PREFIX,
+	COMPOSER_EDIT_DISCIPLINE_PROMPT,
+	CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT,
+	formatComposerBashPolicyError,
+	isComposerBashPolicyBlockedError,
+	isComposerHarnessModel,
+	isCurrentComposerBashPolicyBlockedError,
+} from "@gajae-code/ai/providers/composer-discipline";
 import { buildCursorSystemPromptJsons } from "@gajae-code/ai/providers/cursor";
 import { convertMessages } from "@gajae-code/ai/providers/openai-completions";
 import { streamOpenAIResponses } from "@gajae-code/ai/providers/openai-responses";
@@ -109,6 +118,32 @@ describe("isComposerHarnessModel", () => {
 	});
 });
 
+describe("isComposerBashPolicyBlockedError", () => {
+	it("recognizes current structured policy errors", () => {
+		const error = formatComposerBashPolicyError("generic");
+		expect(error).toContain(COMPOSER_BASH_POLICY_ERROR_CODE);
+		expect(isComposerBashPolicyBlockedError(error)).toBe(true);
+		expect(isCurrentComposerBashPolicyBlockedError(error)).toBe(true);
+	});
+
+	it("recognizes prefix-only errors from sessions created before the structured marker", () => {
+		const legacyError = `${COMPOSER_BASH_POLICY_ERROR_PREFIX} Use find, search, read, and edit tools.`;
+		expect(legacyError).not.toContain(COMPOSER_BASH_POLICY_ERROR_CODE);
+		expect(isComposerBashPolicyBlockedError(legacyError)).toBe(true);
+		expect(isCurrentComposerBashPolicyBlockedError(legacyError)).toBe(false);
+	});
+
+	it("rejects unrelated shell errors", () => {
+		expect(isComposerBashPolicyBlockedError("Command failed with exit code 1")).toBe(false);
+	});
+
+	it("does not treat failed command output that quotes a structured policy error as the policy gate", () => {
+		const quotedError = `Test failure output:\n${formatComposerBashPolicyError("generic")}\nCommand exited with code 1`;
+		expect(isComposerBashPolicyBlockedError(quotedError)).toBe(true);
+		expect(isCurrentComposerBashPolicyBlockedError(quotedError)).toBe(false);
+	});
+});
+
 describe("COMPOSER_EDIT_DISCIPLINE_PROMPT", () => {
 	it("covers the observed adversarial tool-calling failure classes", () => {
 		expect(COMPOSER_EDIT_DISCIPLINE_PROMPT).toContain("find tool");
@@ -121,6 +156,17 @@ describe("COMPOSER_EDIT_DISCIPLINE_PROMPT", () => {
 		expect(COMPOSER_EDIT_DISCIPLINE_PROMPT).toContain("NEVER mutate files through shell redirection");
 		expect(COMPOSER_EDIT_DISCIPLINE_PROMPT).toContain("Tool-call arguments must be the exact JSON/schema object");
 		expect(COMPOSER_EDIT_DISCIPLINE_PROMPT).toContain("A shell command string must contain only the command itself");
+	});
+});
+
+describe("CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT", () => {
+	it("uses only Cursor's native repository-tool vocabulary", () => {
+		expect(CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT).toContain("Cursor-native read and grep");
+		expect(CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT).toContain("write");
+		expect(CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT).toContain("delete");
+		expect(CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT).not.toContain("find tool");
+		expect(CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT).not.toContain("search tool");
+		expect(CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT).not.toContain("edit tool");
 	});
 });
 
@@ -192,7 +238,7 @@ describe("cursor composer discipline injection", () => {
 	it("pins the discipline block ahead of the host prompt for composer model ids", () => {
 		const jsons = buildCursorSystemPromptJsons(["Host system prompt."], "composer-1");
 		const contents = jsons.map(json => (JSON.parse(json) as { content: string }).content);
-		expect(contents[0]).toBe(COMPOSER_EDIT_DISCIPLINE_PROMPT);
+		expect(contents[0]).toBe(CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT);
 		expect(contents[1]).toBe("Host system prompt.");
 	});
 
@@ -211,6 +257,6 @@ describe("cursor composer discipline injection", () => {
 	it("pins discipline ahead of the default prompt when no host system prompt exists", () => {
 		const jsons = buildCursorSystemPromptJsons(undefined, "composer-1");
 		const contents = jsons.map(json => (JSON.parse(json) as { content: string }).content);
-		expect(contents).toEqual([COMPOSER_EDIT_DISCIPLINE_PROMPT, "You are a helpful assistant."]);
+		expect(contents).toEqual([CURSOR_COMPOSER_EDIT_DISCIPLINE_PROMPT, "You are a helpful assistant."]);
 	});
 });

@@ -136,14 +136,14 @@ afterEach(() => {
 	// No shared globals to restore; keep hook so the suite stays explicit.
 });
 
-describe("anthropic first-event timeout retries", () => {
-	it("retries when the provider never sends the first stream event", async () => {
+describe("anthropic first-event timeouts", () => {
+	it("surfaces the canonical first-event timeout without an internal provider replay", async () => {
 		let attempt = 0;
 		const create = ((_body: unknown, requestOptions?: { signal?: AbortSignal }) => {
 			attempt += 1;
 			return createAnthropicMockStream({
 				signal: requestOptions?.signal,
-				events: attempt === 1 ? undefined : createSuccessfulAnthropicEvents("retry recovered"),
+				events: attempt === 1 ? undefined : createSuccessfulAnthropicEvents("must not replay"),
 			}) as never;
 		}) as unknown as Anthropic["messages"]["create"];
 		const client = { messages: { create } } as Anthropic;
@@ -155,11 +155,11 @@ describe("anthropic first-event timeout retries", () => {
 			providerRetryWait,
 		}).result();
 
-		expect(attempt).toBe(2);
-		expect(providerRetryWait).toHaveBeenCalledWith(2000, undefined);
-		expect(result.stopReason).toBe("stop");
-		expect(result.content).toEqual([{ type: "text", text: "retry recovered" }]);
-		expect(result.responseId).toBe("msg_retry_success");
+		expect(attempt).toBe(1);
+		expect(providerRetryWait).not.toHaveBeenCalled();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("Anthropic stream timed out while waiting for the first event");
+		expect(result.transportFailure?.providerCode).toBe("stream_first_event_timeout");
 	});
 
 	it("surfaces large retry-after Anthropic 429s instead of first-event timeouts", async () => {
@@ -299,5 +299,56 @@ describe("anthropic first-event timeout retries", () => {
 				arguments: {},
 			},
 		]);
+	});
+
+	it("does not let Anthropic ping events keep a stalled response alive", async () => {
+		const create = ((_body: unknown, requestOptions?: { signal?: AbortSignal }) => {
+			const response = new Response(null, { status: 200, headers: { "request-id": "req_ping_stall" } });
+			const data: MockAnthropicStream = {
+				async *[Symbol.asyncIterator]() {
+					yield {
+						type: "message_start",
+						message: {
+							id: "msg_ping_stall",
+							usage: {
+								input_tokens: 12,
+								output_tokens: 0,
+								cache_read_input_tokens: 0,
+								cache_creation_input_tokens: 0,
+							},
+						},
+					};
+					yield {
+						type: "content_block_start",
+						index: 0,
+						content_block: { type: "text", text: "" },
+					};
+					yield {
+						type: "content_block_delta",
+						index: 0,
+						delta: { type: "text_delta", text: "checking" },
+					};
+					while (!requestOptions?.signal?.aborted) {
+						await Bun.sleep(1);
+						yield { type: "ping" };
+					}
+				},
+			};
+			return {
+				async withResponse() {
+					return { data, response, request_id: "req_ping_stall" };
+				},
+			} as never;
+		}) as unknown as Anthropic["messages"]["create"];
+		const client = { messages: { create } } as Anthropic;
+
+		const result = await streamAnthropic(model, context, {
+			client,
+			streamFirstEventTimeoutMs: 5000,
+			streamIdleTimeoutMs: 5,
+		}).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("Anthropic stream stalled while waiting for the next event");
 	});
 });

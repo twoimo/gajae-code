@@ -1,5 +1,8 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { inflateSync } from "node:zlib";
+import { isCompiledBinary } from "@gajae-code/utils/env";
 import {
 	evidenceKindMatches,
 	hasExistingNonEmptyArtifact,
@@ -401,7 +404,6 @@ function isDeterministicConsoleLogReplay(code: string): boolean {
 	}
 	return matched;
 }
-
 function hasShellRedirectionToken(value: string): boolean {
 	return /^(?:[<>]|\d?[<>]|\d?>&\d|\|\|?|&&|;)$/.test(value) || /(?:^|[^\w])-?>/.test(value);
 }
@@ -434,9 +436,6 @@ export function isAllowedGitReplayCommand(args: readonly string[]): boolean {
 }
 
 function isBareExecutableName(value: string): boolean {
-	// The allowlist is keyed on the basename, but the raw command[0] is what gets spawned.
-	// Reject path-qualified or case-spoofed executables (e.g. ./git, /tmp/npm, scripts/node, GIT)
-	// so an attacker-controlled binary cannot impersonate a trusted tool.
 	return (
 		value.length > 0 &&
 		!value.includes("/") &&
@@ -452,20 +451,12 @@ function isAllowedCliReplayCommand(command: readonly string[]): boolean {
 		command.some(arg => arg.trim() !== arg || arg.length === 0 || hasShellRedirectionToken(arg))
 	)
 		return false;
-	if (!isBareExecutableName(command[0]!)) return false;
-	const executable = basenameCommand(command[0]!);
+	if (!isBareExecutableName(command[0]!) || command[0] !== "bun") return false;
 	const args = command.slice(1);
-	if (executable === "bun" || executable === "node") {
-		if (args.length === 1 && args[0] === "--version") return true;
-		return args.length === 2 && args[0] === "-e" && isDeterministicConsoleLogReplay(args[1]!);
-	}
-	if (executable === "npm" || executable === "pnpm" || executable === "yarn") {
-		return (args.length === 1 && args[0] === "--version") || (args.length === 1 && args[0] === "list");
-	}
-	if (executable === "git") return isAllowedGitReplayCommand(args);
-	if (executable === "gjc") return args.length === 1 && ["read", "status"].includes(args[0] ?? "");
-	return false;
+	if (args.length === 1 && args[0] === "--version") return true;
+	return args.length === 2 && args[0] === "-e" && isDeterministicConsoleLogReplay(args[1]!);
 }
+
 function summarizeBlockedCliReplayCommand(command: readonly string[]): string {
 	const executable = command[0] ? basenameCommand(command[0]) : "<missing>";
 	const argCount = Math.max(0, command.length - 1);
@@ -473,27 +464,44 @@ function summarizeBlockedCliReplayCommand(command: readonly string[]): string {
 }
 
 function cliReplayAllowlistDescription(): string {
-	return [
-		'`bun --version`, `node --version`, or deterministic `bun/node -e "console.log(...)"`',
-		"`npm|pnpm|yarn --version` or `npm|pnpm|yarn list`",
-		"read-only `git status|rev-parse|merge-base|diff|show|log` with safe args",
-		"`gjc read` or `gjc status`",
-	].join("; ");
+	return '`bun --version` or deterministic `bun -e "console.log(...)"`; focused bun test execution is blocked and replayExempt still requires an existing screenshot, automation, or PTY structural fallback';
 }
 
-function resolveCliReplayCommand(command: string[]): string[] {
-	if (basenameCommand(command[0]!) === "bun") return [process.execPath, ...command.slice(1)];
-	return command;
+export function resolveCliReplayCommand(command: string[], options?: { compiled?: boolean }): string[] {
+	if (options?.compiled ?? isCompiledBinary()) {
+		throw new Error(
+			"CLI replay execution is unavailable in the compiled GJC runtime because process.execPath is the GJC application, not a Bun CLI executable",
+		);
+	}
+	return [process.execPath, ...command.slice(1)];
 }
 
-function resolveUnderCwd(cwd: string, replayCwd: unknown, fieldName: string): string {
+async function resolveUnderCwd(cwd: string, replayCwd: unknown, fieldName: string): Promise<string> {
 	const relative = replayCwd === undefined ? "." : nonEmptyString(replayCwd);
 	if (!relative) throw new Error(`qualityGate ${fieldName}.cwd must be a non-empty string when provided`);
-	const root = path.resolve(cwd);
-	const resolved = path.resolve(root, relative);
+	const lexicalRoot = path.resolve(cwd);
+	const lexical = path.resolve(lexicalRoot, relative);
+	const relativeToLexicalRoot = path.relative(lexicalRoot, lexical);
+	if (
+		relativeToLexicalRoot === ".." ||
+		relativeToLexicalRoot.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relativeToLexicalRoot)
+	) {
+		throw new Error(`qualityGate ${fieldName}.cwd must resolve under the repository cwd`);
+	}
+	let root: string;
+	let resolved: string;
+	try {
+		[root, resolved] = await Promise.all([fs.realpath(lexicalRoot), fs.realpath(lexical)]);
+	} catch {
+		throw new Error(`qualityGate ${fieldName}.cwd must reference an existing directory under the repository cwd`);
+	}
 	const relativeToRoot = path.relative(root, resolved);
 	if (relativeToRoot === ".." || relativeToRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToRoot)) {
-		throw new Error(`qualityGate ${fieldName}.cwd must resolve under the repository cwd`);
+		throw new Error(`qualityGate ${fieldName}.cwd must resolve under the repository cwd without symlink escape`);
+	}
+	if (!(await fs.stat(resolved)).isDirectory()) {
+		throw new Error(`qualityGate ${fieldName}.cwd must reference a directory`);
 	}
 	return resolved;
 }
@@ -535,11 +543,40 @@ function normalizeCliReplayOutput(value: string, cwd: string): string {
 }
 
 export async function readCliReplayRecord(cwd: string, row: JsonObject, fieldName: string): Promise<JsonObject | null> {
-	const inline = qualityGateObject(row.replay) ?? (row.kind === "cli-replay" ? row : null);
-	if (inline) return inline;
+	const nestedReplay = row.replay === undefined ? null : qualityGateObject(row.replay);
+	if (row.replay !== undefined && !nestedReplay) {
+		throw new Error(`qualityGate ${fieldName}.replay must be an object when provided`);
+	}
+	const inlineFieldNames = [
+		"schemaVersion",
+		"replaySafe",
+		"command",
+		"cwd",
+		"env",
+		"timeoutMs",
+		"expectedExitCode",
+		"recordedStdout",
+		"recordedStderr",
+		"normalization",
+		"invariants",
+		"replayExempt",
+	];
+	const hasTopLevelInlineFields = inlineFieldNames.some(name => row[name] !== undefined);
+	const hasPath = row.path !== undefined;
+	if (nestedReplay && (hasPath || hasTopLevelInlineFields)) {
+		throw new Error(`qualityGate ${fieldName} must not mix nested replay, artifact path, or top-level replay fields`);
+	}
+	if (hasTopLevelInlineFields && hasPath) {
+		throw new Error(`qualityGate ${fieldName} must not mix inline replay fields with an artifact path`);
+	}
+	if (nestedReplay) return nestedReplay;
+	if (row.kind === "cli-replay" && hasTopLevelInlineFields) return row;
 	if (!evidenceKindMatches(normalizedEvidenceKind(row), ["cli-replay", "command-replay"])) return null;
+	if (!hasPath) {
+		throw new Error(`qualityGate ${fieldName} CLI replay artifact must provide either replay fields or path`);
+	}
 	const bytes = await readArtifactBytes(cwd, row, fieldName);
-	if (!bytes) return null;
+	if (!bytes) throw new Error(`qualityGate ${fieldName} CLI replay artifact path must reference a readable file`);
 	try {
 		return requireQualityGateObject(JSON.parse(bytes.toString("utf8")), `${fieldName}.replay`);
 	} catch (error) {
@@ -557,6 +594,7 @@ function parseCliReplayRecord(
 	timeoutMs: number;
 	expectedExitCode: number;
 	recordedStdout: string;
+	recordedStderr: string;
 	invariants: JsonObject[];
 } {
 	if (record.schemaVersion !== 1) throw new Error(`qualityGate ${fieldName}.schemaVersion must be 1`);
@@ -570,7 +608,7 @@ function parseCliReplayRecord(
 		throw new Error(`qualityGate ${fieldName}.replaySafe must be true before CLI replay executes`);
 	if (!isAllowedCliReplayCommand(command)) {
 		throw new Error(
-			`qualityGate ${fieldName}.command is not in the conservative CLI replay allowlist; command ${summarizeBlockedCliReplayCommand(command)} is blocked. Allowed replay commands: ${cliReplayAllowlistDescription()}. For other commands, provide audited replayExempt metadata with reasonCode, reason, approvedBy, and fallbackArtifactRefs that point to a structurally valid fallback artifact.`,
+			`qualityGate ${fieldName}.command is not in the deterministic CLI replay allowlist; command ${summarizeBlockedCliReplayCommand(command)} is blocked. Allowed replay commands: ${cliReplayAllowlistDescription()}. For other commands, provide audited replayExempt metadata with reasonCode, reason, approvedBy, and fallbackArtifactRefs that point to a structurally valid fallback artifact.`,
 		);
 	}
 	if (record.normalization !== undefined && record.normalization !== "default") {
@@ -594,6 +632,7 @@ function parseCliReplayRecord(
 		timeoutMs: clampCliReplayTimeout(record.timeoutMs),
 		expectedExitCode,
 		recordedStdout: record.recordedStdout,
+		recordedStderr: typeof record.recordedStderr === "string" ? record.recordedStderr : "",
 		invariants,
 	};
 }
@@ -665,11 +704,24 @@ async function collectCliReplayOutput(
 
 export interface ReplayProcessHandle {
 	readonly exited: Promise<number>;
+	readonly pid?: number;
 	kill(signal?: number | NodeJS.Signals): void;
 }
 
+function signalReplayProcessTree(handle: ReplayProcessHandle, signal: NodeJS.Signals): void {
+	if (process.platform !== "win32" && Number.isInteger(handle.pid) && (handle.pid ?? 0) > 0) {
+		try {
+			process.kill(-handle.pid!, signal);
+			return;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+		}
+	}
+	handle.kill(signal);
+}
+
 export async function waitForReplayProcessWithTimeout(
-	process: ReplayProcessHandle,
+	handle: ReplayProcessHandle,
 	timeoutMs: number,
 	graceMs = 2000,
 ): Promise<number> {
@@ -679,21 +731,21 @@ export async function waitForReplayProcessWithTimeout(
 	const timeout = new Promise<typeof timedOut>(resolve => {
 		timeoutTimer = setTimeout(() => resolve(timedOut), timeoutMs);
 	});
-	const first = await Promise.race([process.exited, timeout]);
+	const first = await Promise.race([handle.exited, timeout]);
 	if (first !== timedOut) {
 		if (timeoutTimer) clearTimeout(timeoutTimer);
 		return first;
 	}
-	process.kill("SIGTERM");
+	signalReplayProcessTree(handle, "SIGTERM");
 	const killed = Symbol("killed");
 	const grace = new Promise<typeof killed>(resolve => {
 		graceTimer = setTimeout(() => {
-			process.kill("SIGKILL");
+			signalReplayProcessTree(handle, "SIGKILL");
 			resolve(killed);
 		}, graceMs);
 	});
-	await Promise.race([process.exited, grace]);
-	await process.exited.catch(() => undefined);
+	await Promise.race([handle.exited, grace]);
+	await handle.exited.catch(() => undefined);
 	if (timeoutTimer) clearTimeout(timeoutTimer);
 	if (graceTimer) clearTimeout(graceTimer);
 	throw new Error("timeout");
@@ -752,18 +804,20 @@ export async function validateCliReplay(
 	}
 	void options.live;
 	const replay = parseCliReplayRecord(record, fieldName);
-	const replayCwd = resolveUnderCwd(cwd, replay.replayCwd, fieldName);
-	const process = Bun.spawn(resolveCliReplayCommand(replay.command), {
-		cwd: replayCwd,
-		env: replay.env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	await resolveUnderCwd(cwd, replay.replayCwd, fieldName);
+	const executionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-cli-replay-"));
 	try {
+		const subprocess = Bun.spawn(resolveCliReplayCommand(replay.command), {
+			cwd: executionCwd,
+			env: { ...replay.env, HOME: executionCwd, TMPDIR: executionCwd },
+			stdout: "pipe",
+			stderr: "pipe",
+			detached: process.platform !== "win32",
+		});
 		const [stdout, stderr, exitCode] = await Promise.all([
-			collectCliReplayOutput(process.stdout),
-			collectCliReplayOutput(process.stderr),
-			waitForReplayProcessWithTimeout(process, replay.timeoutMs),
+			collectCliReplayOutput(subprocess.stdout),
+			collectCliReplayOutput(subprocess.stderr),
+			waitForReplayProcessWithTimeout(subprocess, replay.timeoutMs),
 		]);
 		if (stdout.truncated || stderr.truncated)
 			throw new Error(`qualityGate ${fieldName} CLI replay output exceeded 1 MiB buffer cap`);
@@ -774,6 +828,11 @@ export async function validateCliReplay(
 		}
 		const actualStdout = normalizeCliReplayOutput(stdout.text, cwd);
 		const recordedStdout = normalizeCliReplayOutput(replay.recordedStdout, cwd);
+		const actualStderr = normalizeCliReplayOutput(stderr.text, cwd);
+		const recordedStderr = normalizeCliReplayOutput(replay.recordedStderr, cwd);
+		if (actualStderr !== recordedStderr) {
+			throw new Error(`qualityGate ${fieldName} CLI replay stderr did not match recordedStderr after normalization`);
+		}
 		if (!replay.invariants.length || !validateCliReplayInvariants(replay.invariants, actualStdout, fieldName)) {
 			if (actualStdout !== recordedStdout) {
 				throw new Error(
@@ -787,6 +846,8 @@ export async function validateCliReplay(
 			throw new Error(`qualityGate ${fieldName} CLI replay timed out after ${replay.timeoutMs}ms`);
 		}
 		throw error;
+	} finally {
+		await fs.rm(executionCwd, { recursive: true, force: true }).catch(() => undefined);
 	}
 }
 

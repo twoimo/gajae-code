@@ -69,6 +69,9 @@ type SdkControlServerOptions = {
 	controlResult?: (control: SdkControl) => unknown;
 	promptAckTimeoutMs?: number;
 	controlOptions?: Array<{ idempotencyKey?: string; timeoutMs?: number }>;
+	/** Every raw session frame the server sent, in order (activation frames included). */
+	sessionFrames?: Array<Record<string, unknown>>;
+	sessionFrameResult?: (frame: Record<string, unknown>) => unknown;
 };
 function lifecycleControls(controls: SdkControl[]): SdkControl[] {
 	return controls.filter(
@@ -76,7 +79,11 @@ function lifecycleControls(controls: SdkControl[]): SdkControl[] {
 	);
 }
 
-function sharedAskGate(gateId: string, runtimeTurnId: string): WorkflowGate & { id: string; tag: "pending" } {
+function sharedAskGate(
+	gateId: string,
+	runtimeTurnId: string,
+	stage: WorkflowGate["stage"] = "deep-interview",
+): WorkflowGate & { id: string; tag: "pending" } {
 	const labels = ["Continue", "Stop"];
 	const schema = buildAskGateAnswerSchema({ multi: false, allowEmpty: false }, labels);
 	return {
@@ -85,7 +92,7 @@ function sharedAskGate(gateId: string, runtimeTurnId: string): WorkflowGate & { 
 		type: "workflow_gate",
 		gate_id: gateId,
 		runtime_turn_id: runtimeTurnId,
-		stage: "deep-interview",
+		stage,
 		kind: "question",
 		schema,
 		schema_hash: schemaHash(schema),
@@ -301,6 +308,19 @@ async function createSdkControlServer(
 					query: async (query: string, _input: Record<string, unknown>, cursor?: string) => {
 						queries.push(query);
 						return queryResult(query, cursor);
+					},
+					request: async (frame: Record<string, unknown>) => {
+						serverOptions.sessionFrames?.push(frame);
+						return (
+							serverOptions.sessionFrameResult?.(frame) ?? {
+								type: "session_activate_result",
+								id: "activate-1",
+								ok: true,
+								status: "activated",
+								sessionId: frame.sessionId,
+								generation: frame.endpointGeneration,
+							}
+						);
 					},
 					close: async () => {},
 				}) as unknown as SdkClient,
@@ -1360,7 +1380,11 @@ describe("Coordinator MCP canonical SDK controls", () => {
 				return cursor
 					? {
 							ok: true,
-							page: { items: [sharedAskGate("gate-q12", runtimeTurnId)], complete: true, revision: "q12-r1" },
+							page: {
+								items: [sharedAskGate("gate-q12", runtimeTurnId, "ralplan")],
+								complete: true,
+								revision: "q12-r1",
+							},
 						}
 					: {
 							ok: true,
@@ -1378,7 +1402,12 @@ describe("Coordinator MCP canonical SDK controls", () => {
 			undefined,
 			{
 				controlResult: control =>
-					control.operation === "workflow.gate_answer" ? { status: "accepted" } : undefined,
+					control.operation === "workflow.gate_answer"
+						? {
+								ok: true,
+								result: { status: "accepted", resolved_at: "2026-07-17T00:01:00.000Z" },
+							}
+						: undefined,
 			},
 		);
 		await registerSdkSession(server, root);
@@ -1398,6 +1427,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		expect(question).toMatchObject({
 			question_id: "gate-q12",
 			status: "pending",
+			stage: "ralplan",
 		});
 		expect(JSON.stringify(question)).not.toContain("codec");
 		if (typeof question.answer_binding !== "string") throw new Error("missing answer binding");
@@ -1446,7 +1476,7 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		).toMatchObject({ ok: false, error: { code: "idempotency_conflict" } });
 	});
 
-	it("rejects malformed complete Q12 snapshots without mutating question authority", async () => {
+	it("diagnoses malformed gate rows without misclassifying legal Q12 pagination", async () => {
 		const root = await tempRoot();
 		const controls: SdkControl[] = [];
 		let runtimeTurnId = "unbound";
@@ -1473,10 +1503,13 @@ describe("Coordinator MCP canonical SDK controls", () => {
 		const second = await server.callTool("gjc_coordinator_list_questions", { session_id: "visible-session" });
 		expect(first).toMatchObject({
 			questions: [],
-			diagnostics: expect.arrayContaining([expect.objectContaining({ reason: "pagination_malformed" })]),
-			reconciliation: { complete: false, reason: "pagination_malformed" },
+			diagnostics: expect.arrayContaining([
+				expect.objectContaining({ reason: "missing_runtime_turn", gate_id: "bad-runtime" }),
+				expect.objectContaining({ reason: "unsupported_gate", gate_id: "unsupported" }),
+			]),
+			reconciliation: { complete: true, reason: null },
 		});
-		expect(second).toMatchObject({ questions: [], reconciliation: { complete: false } });
+		expect(second).toMatchObject({ questions: [], reconciliation: { complete: true, reason: null } });
 	});
 
 	it("does not fabricate stale questions from incomplete or paginated Q12 observations", async () => {
@@ -2191,4 +2224,249 @@ it("repairs one terminal session without deleting another session's projections"
 		`${String(second.turn_id)}.json`,
 	);
 	await expect(fs.readFile(secondTurnPath, "utf8")).resolves.toContain("other-session");
+});
+
+function coordinatorSessionStateFile(root: string): string {
+	return path.join(root, ".gjc", "coordinator-state", "local", "repo", "session-states", "visible-session.json");
+}
+
+async function writeCoordinatorSessionState(root: string, state: string): Promise<void> {
+	await Bun.write(
+		coordinatorSessionStateFile(root),
+		JSON.stringify({
+			schema_version: 1,
+			session_id: "visible-session",
+			state,
+			ready_for_input: state === "ready_for_input",
+			current_turn_id: null,
+			last_turn_id: null,
+			updated_at: "2026-08-04T00:00:00.000Z",
+			source: "coordinator",
+			live: state === "ready_for_input" ? true : null,
+			reason: null,
+		}),
+	);
+}
+
+async function readCoordinatorSessionState(root: string): Promise<Record<string, unknown>> {
+	return JSON.parse(await fs.readFile(coordinatorSessionStateFile(root), "utf8")) as Record<string, unknown>;
+}
+
+async function createActivationHarness(sessionFrameResult?: (frame: Record<string, unknown>) => unknown) {
+	const root = await tempRoot();
+	const controls: SdkControl[] = [];
+	const frames: Array<Record<string, unknown>> = [];
+	const brokerSessions: Array<Record<string, unknown>> = [
+		{
+			sessionId: "visible-session",
+			locator: { repo: root },
+			live: true,
+			endpointGeneration: 1,
+			pid: 101,
+			endpointMtimeMs: 1,
+		},
+	];
+	const server = await createSdkControlServer(root, controls, [], undefined, brokerSessions, undefined, undefined, {
+		sessionFrames: frames,
+		...(sessionFrameResult ? { sessionFrameResult } : {}),
+	});
+	await expect(registerSdkSession(server, root)).resolves.toMatchObject({
+		ok: true,
+		session_state: { state: "ready_for_input" },
+	});
+	controls.length = 0;
+	return { server, root, controls, frames, brokerSessions };
+}
+
+async function callActivate(
+	server: { callTool: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>> },
+	idempotencyKey: string,
+): Promise<Record<string, unknown>> {
+	return await server.callTool("gjc_coordinator_activate_session", {
+		session_id: "visible-session",
+		idempotency_key: idempotencyKey,
+		allow_mutation: true,
+	});
+}
+
+describe("Coordinator MCP prepared session activation", () => {
+	it("activates a prepared session against its exact endpoint generation", async () => {
+		const { server, root, controls, frames } = await createActivationHarness();
+		await writeCoordinatorSessionState(root, "prepared");
+
+		const response = await callActivate(server, "activate-prepared-1");
+
+		expect(response).toMatchObject({
+			ok: true,
+			session_id: "visible-session",
+			status: "activated",
+			state: "ready_for_input",
+			endpoint_generation: 1,
+		});
+		expect(frames).toEqual([{ type: "session_activate", sessionId: "visible-session", endpointGeneration: 1 }]);
+		expect(controls).toContainEqual({
+			operation: "session.get_endpoint",
+			input: {
+				sessionId: "visible-session",
+				endpointGeneration: 1,
+				endpointIncarnation: brokerEndpointIncarnation("visible-session", 1, 101, 1),
+			},
+			idempotencyKey: "activate-prepared-1",
+		});
+		await expect(readCoordinatorSessionState(root)).resolves.toMatchObject({
+			state: "ready_for_input",
+			live: true,
+		});
+	});
+
+	it("refuses a prepared session whose durable state went stale and sends no activation frame", async () => {
+		const { server, root, frames } = await createActivationHarness();
+		await writeCoordinatorSessionState(root, "prepared");
+		await writeCoordinatorSessionState(root, "stale");
+
+		const response = await callActivate(server, "activate-stale-1");
+
+		expect(response).toMatchObject({
+			ok: false,
+			session_id: "visible-session",
+			state: "stale",
+			error: { code: "session_not_activatable" },
+			session_state: { state: "stale" },
+		});
+		expect(response.status).toBeUndefined();
+		expect(frames).toEqual([]);
+		await expect(readCoordinatorSessionState(root)).resolves.toMatchObject({ state: "stale" });
+	});
+
+	for (const state of ["booting", "running", "needs_user_input", "completed", "errored", "unknown"]) {
+		it(`never reports durable state ${state} as already activated`, async () => {
+			const { server, root, frames } = await createActivationHarness();
+			await writeCoordinatorSessionState(root, state);
+
+			const response = await callActivate(server, `activate-${state}-1`);
+
+			expect(response).toMatchObject({
+				ok: false,
+				session_id: "visible-session",
+				state,
+				error: { code: "session_not_activatable" },
+			});
+			expect(response.status).toBeUndefined();
+			expect(frames).toEqual([]);
+			await expect(readCoordinatorSessionState(root)).resolves.toMatchObject({ state });
+		});
+	}
+
+	it("refuses activation when the session has no durable state at all", async () => {
+		const { server, root, frames } = await createActivationHarness();
+		await fs.rm(coordinatorSessionStateFile(root), { force: true });
+
+		const response = await callActivate(server, "activate-absent-1");
+
+		expect(response).toMatchObject({
+			ok: false,
+			session_id: "visible-session",
+			state: "unknown",
+			session_state: null,
+			error: { code: "session_not_activatable" },
+		});
+		expect(response.status).toBeUndefined();
+		expect(frames).toEqual([]);
+	});
+
+	it("answers already for a ready session only from a corroborated host response", async () => {
+		const { server, root, controls, frames } = await createActivationHarness(frame => ({
+			type: "session_activate_result",
+			id: "activate-ready",
+			ok: true,
+			status: "already",
+			sessionId: frame.sessionId,
+			generation: frame.endpointGeneration,
+		}));
+		const before = await readCoordinatorSessionState(root);
+
+		const response = await callActivate(server, "activate-ready-1");
+
+		expect(response).toMatchObject({
+			ok: true,
+			session_id: "visible-session",
+			status: "already",
+			state: "ready_for_input",
+			endpoint_generation: 1,
+		});
+		expect(frames).toEqual([{ type: "session_activate", sessionId: "visible-session", endpointGeneration: 1 }]);
+		expect(controls).toContainEqual({
+			operation: "session.get_endpoint",
+			input: {
+				sessionId: "visible-session",
+				endpointGeneration: 1,
+				endpointIncarnation: brokerEndpointIncarnation("visible-session", 1, 101, 1),
+			},
+			idempotencyKey: "activate-ready-1",
+		});
+		// A corroborated `already` transitions nothing, so durable state is untouched.
+		await expect(readCoordinatorSessionState(root)).resolves.toEqual(before);
+	});
+
+	it("fails a ready session whose broker authority is stale instead of answering already", async () => {
+		const { server, brokerSessions, frames } = await createActivationHarness();
+		brokerSessions[0]!.endpointGeneration = 2;
+
+		const response = await callActivate(server, "activate-rolled-1");
+
+		expect(response).toMatchObject({ ok: false, error: { code: "endpoint_stale" } });
+		expect(response.status).toBeUndefined();
+		expect(frames).toEqual([]);
+	});
+
+	it("keeps an unobserved activation retryable under the same key", async () => {
+		let answer: (frame: Record<string, unknown>) => unknown = () => {
+			throw new SdkClientError("unavailable", "SDK request failed");
+		};
+		const { server, root, frames } = await createActivationHarness(frame => answer(frame));
+		await writeCoordinatorSessionState(root, "prepared");
+
+		const unobserved = await callActivate(server, "activate-retry-1");
+		expect(unobserved).toMatchObject({ ok: false, error: { code: "activation_outcome_unknown" } });
+		await expect(readCoordinatorSessionState(root)).resolves.toMatchObject({ state: "prepared" });
+
+		answer = frame => ({
+			type: "session_activate_result",
+			id: "activate-retry",
+			ok: true,
+			status: "already",
+			sessionId: frame.sessionId,
+			generation: frame.endpointGeneration,
+		});
+		const settled = await callActivate(server, "activate-retry-1");
+
+		expect(settled).toMatchObject({ ok: true, status: "already", state: "ready_for_input" });
+		expect(frames).toHaveLength(2);
+		await expect(readCoordinatorSessionState(root)).resolves.toMatchObject({ state: "ready_for_input" });
+	});
+
+	it("leaves a session prepared when its own activation gate refuses", async () => {
+		const { server, root, frames } = await createActivationHarness(() => {
+			throw new SdkClientError("not_authorized", "The session has no binding at this generation.");
+		});
+		await writeCoordinatorSessionState(root, "prepared");
+
+		const response = await callActivate(server, "activate-refused-1");
+
+		expect(response).toMatchObject({ ok: false, state: "prepared", error: { code: "not_bound" } });
+		expect(frames).toHaveLength(1);
+		await expect(readCoordinatorSessionState(root)).resolves.toMatchObject({ state: "prepared" });
+	});
+
+	it("replays an exact activation key without a second activation frame", async () => {
+		const { server, root, frames } = await createActivationHarness();
+		await writeCoordinatorSessionState(root, "prepared");
+
+		const first = await callActivate(server, "activate-replay-1");
+		const replay = await callActivate(server, "activate-replay-1");
+
+		expect(first).toMatchObject({ ok: true, status: "activated", state: "ready_for_input" });
+		expect(JSON.stringify(replay)).toBe(JSON.stringify(first));
+		expect(frames).toHaveLength(1);
+	});
 });

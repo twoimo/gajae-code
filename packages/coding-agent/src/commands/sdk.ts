@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Args, CliParseError, Command, Flags, renderCommandHelp } from "@gajae-code/utils/cli";
 import type { Args as ParsedArgs } from "../cli/args";
 import { Settings } from "../config/settings";
 import { applyStartupModelProfiles, createSessionManager } from "../main";
 import { initializeExtensions } from "../modes/runtime-init";
+import { ACP_MCP_REQUEST_TIMEOUT_MS, ACP_MCP_STARTUP_HEADROOM_MS } from "../sdk/acp/mcp";
 import { Broker } from "../sdk/broker/broker";
+import { readBrokerDiscovery } from "../sdk/broker/discovery";
 import { completeBrokerProcess } from "../sdk/broker/internal";
 import {
 	type LifecycleTranscriptEvidence,
@@ -54,6 +57,54 @@ export async function lifecycleArgs(
 				}
 			: {}),
 	};
+}
+
+/**
+ * How long a session host tolerates the complete absence of a live broker
+ * publication before treating itself as orphaned. Hosts intentionally survive
+ * broker restarts (a replacement broker republishes discovery within seconds),
+ * so this must comfortably exceed a restart window while still bounding the
+ * lifetime of hosts whose broker is gone for good — otherwise every crashed or
+ * torn-down broker leaks a detached multi-hundred-megabyte host forever.
+ */
+export const SESSION_HOST_BROKER_ABSENCE_GRACE_MS = 10 * 60_000;
+const SESSION_HOST_BROKER_POLL_MS = 15_000;
+
+/**
+ * Resolves only once no live broker publication has been observable in
+ * `agentDir` for the full grace window. A reappearing broker (including a
+ * replacement with a different pid) resets the window; an unreadable
+ * publication is not proof of orphanhood but accrues against the same bound.
+ */
+export async function watchSessionHostBrokerLiveness(deps: {
+	agentDir: string;
+	now?: () => number;
+	sleep?: (ms: number) => Promise<void>;
+	readDiscovery?: (agentDir: string) => Promise<unknown>;
+	graceMs?: number;
+	pollMs?: number;
+}): Promise<void> {
+	const now = deps.now ?? Date.now;
+	const sleep = deps.sleep ?? (async ms => await Bun.sleep(ms));
+	const readDiscovery = deps.readDiscovery ?? readBrokerDiscovery;
+	const graceMs = deps.graceMs ?? SESSION_HOST_BROKER_ABSENCE_GRACE_MS;
+	const pollMs = deps.pollMs ?? SESSION_HOST_BROKER_POLL_MS;
+	let absentSince: number | null = null;
+	for (;;) {
+		let live: unknown = null;
+		try {
+			live = await readDiscovery(deps.agentDir);
+		} catch {
+			// Transient read failures are ambiguity, not proof of orphanhood.
+		}
+		if (live) {
+			absentSince = null;
+		} else {
+			absentSince ??= now();
+			if (now() - absentSince >= graceMs) return;
+		}
+		await sleep(pollMs);
+	}
 }
 
 type LifecycleTranscriptSource = {
@@ -285,17 +336,100 @@ export async function runSessionHost(
 		throw new Error("SDK startup did not complete before readiness cutoff.");
 	}
 
-	let opened: { parsed: ParsedArgs; sessionManager: SessionManager | undefined };
-	let created: CreateLifecycleAgentSessionResult;
-	try {
-		opened = await openLifecycleSessionManager(request, cwd, agentDir);
-		created = await createLifecycleAgentSession({ cwd, agentDir, sessionManager: opened.sessionManager });
-	} catch (error) {
+	// Inlined rather than extracted to a helper: TypeScript's definite-assignment
+	// analysis does not see a `Promise<never>` helper as terminating, so hoisting
+	// this would make `opened`/`created` "used before assigned" below.
+	const registrationFailure = async (error: unknown): Promise<SdkStartupFailure> => {
 		const rollback = new SdkStartupRollbackTracker();
 		rollback.recordAbsent();
 		const failure = normalizeSdkStartupFailure("registration", "failed", error);
 		await writeFailure(failure, rollback.result);
-		throw failure;
+		return failure;
+	};
+
+	let opened: { parsed: ParsedArgs; sessionManager: SessionManager | undefined };
+	let created: CreateLifecycleAgentSessionResult;
+	let mcpConfigDirectory: string | undefined;
+	try {
+		let mcpConfigPath: string | undefined;
+		try {
+			opened = await openLifecycleSessionManager(request, cwd, agentDir);
+			if (request.mcpServers && request.mcpServers.length > 0) {
+				mcpConfigDirectory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "gjc-acp-mcp-")));
+				mcpConfigPath = path.join(mcpConfigDirectory, "mcp.json");
+				await Bun.write(
+					mcpConfigPath,
+					JSON.stringify({
+						mcpServers: Object.fromEntries(
+							request.mcpServers.map(server => [
+								server.name,
+								"url" in server
+									? {
+											type: server.type,
+											url: server.url,
+											...(server.headers ? { headers: server.headers } : {}),
+											timeout: ACP_MCP_REQUEST_TIMEOUT_MS,
+										}
+									: {
+											type: "stdio",
+											command: server.command,
+											args: server.args,
+											...(server.env ? { env: server.env } : {}),
+											noInheritEnv: true,
+											timeout: ACP_MCP_REQUEST_TIMEOUT_MS,
+										},
+							]),
+						),
+					}),
+				);
+			}
+		} catch (error) {
+			throw await registrationFailure(error);
+		}
+
+		// The longer MCP startup ceiling is scoped to ACP lifecycle launches only:
+		// it applies when this request actually carried `mcpServers`. Ordinary
+		// CLI/SDK `mcpConfigPath` consumers keep the manager's short default.
+		//
+		// This recheck deliberately sits OUTSIDE the registration catch above.
+		// Inside it, the throw would be caught, reclassified as
+		// `registration`/`failed`, and written a second time, losing the
+		// `startup`/`pending` outcome the readiness cutoff is supposed to report.
+		// Session-manager open and MCP config write already consumed part of the
+		// budget, so re-read the clock here rather than reusing the earlier check.
+		let mcpStartupTimeoutMs: number | undefined;
+		if (mcpConfigPath !== undefined) {
+			const remaining = request.semanticReadyDeadlineAt - now() - ACP_MCP_STARTUP_HEADROOM_MS;
+			if (remaining <= 0) {
+				const absent = new SdkStartupRollbackTracker();
+				absent.recordAbsent();
+				await writeFailure(
+					{
+						phase: "startup",
+						reason: "pending",
+						message: "SDK startup did not complete before readiness cutoff.",
+					},
+					absent.result,
+				);
+				throw new Error("SDK startup did not complete before readiness cutoff.");
+			}
+			mcpStartupTimeoutMs = remaining;
+		}
+
+		try {
+			created = await createLifecycleAgentSession({
+				cwd,
+				agentDir,
+				sessionManager: opened.sessionManager,
+				...(mcpConfigPath ? { mcpConfigPath } : {}),
+				...(mcpStartupTimeoutMs !== undefined ? { mcpStartupTimeoutMs } : {}),
+				...(request.readiness ? { readiness: request.readiness } : {}),
+			});
+		} catch (error) {
+			throw await registrationFailure(error);
+		}
+	} finally {
+		if (mcpConfigDirectory) await fs.rm(mcpConfigDirectory, { recursive: true, force: true });
 	}
 	const { parsed } = opened;
 	if ("failure" in created) {
@@ -421,6 +555,11 @@ export async function runSessionHost(
 	}
 	process.once("SIGTERM", stop);
 	process.once("SIGINT", stop);
+	// A detached host whose broker is gone for good would otherwise live (and
+	// hold its session's memory) forever; reap it through the same graceful
+	// teardown a SIGTERM would take once the bounded absence grace elapses.
+	await watchSessionHostBrokerLiveness({ agentDir });
+	stop();
 	await new Promise<void>(() => {});
 }
 

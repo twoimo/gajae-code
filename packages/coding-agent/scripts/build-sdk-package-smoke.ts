@@ -9,6 +9,7 @@ const packageName = "@gajae-code/coding-agent";
 const aiPackageDir = path.resolve(packageDir, "../ai");
 const bridgeClientPackageDir = path.resolve(packageDir, "../bridge-client");
 const tuiPackageDir = path.resolve(packageDir, "../tui");
+const agentPackageDir = path.resolve(packageDir, "../agent");
 const nativesPackageDir = path.resolve(packageDir, "../natives");
 const linuxX64PackageDir = path.resolve(packageDir, "../natives-linux-x64");
 const manifestsDir = path.join(packageDir, "test/manifests");
@@ -41,6 +42,7 @@ async function runSmoke(): Promise<Surface> {
 				await fs.copyFile(path.join(nativesPackageDir, "native", entry), path.join(stagedNativeDir, entry));
 			}
 		}
+		const agentTarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], agentPackageDir);
 		const aiTarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], aiPackageDir);
 		const bridgeClientTarball = run(
 			["bun", "pm", "pack", "--destination", tempDir, "--quiet"],
@@ -49,6 +51,7 @@ async function runSmoke(): Promise<Surface> {
 		const tuiTarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], tuiPackageDir);
 		const nativesTarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], nativesPackageDir);
 		const linuxX64Tarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], stagedLinuxX64Dir);
+		const agentTarballPath = path.isAbsolute(agentTarball) ? agentTarball : path.join(agentPackageDir, agentTarball);
 		const codingAgentTarball = run(["bun", "pm", "pack", "--destination", tempDir, "--quiet"], packageDir);
 		const aiTarballPath = path.isAbsolute(aiTarball) ? aiTarball : path.join(aiPackageDir, aiTarball);
 		const bridgeClientTarballPath = path.isAbsolute(bridgeClientTarball)
@@ -71,6 +74,7 @@ async function runSmoke(): Promise<Surface> {
 					name: "sdk-smoke",
 					private: true,
 					dependencies: {
+						"@gajae-code/agent-core": `file:${agentTarballPath}`,
 						"@gajae-code/ai": `file:${aiTarballPath}`,
 						"@gajae-code/bridge-client": `file:${bridgeClientTarballPath}`,
 						[packageName]: `file:${codingAgentTarballPath}`,
@@ -79,6 +83,7 @@ async function runSmoke(): Promise<Surface> {
 						"@gajae-code/natives-linux-x64": `file:${linuxX64TarballPath}`,
 					},
 					overrides: {
+						"@gajae-code/agent-core": `file:${agentTarballPath}`,
 						"@gajae-code/ai": `file:${aiTarballPath}`,
 						"@gajae-code/bridge-client": `file:${bridgeClientTarballPath}`,
 						"@gajae-code/tui": `file:${tuiTarballPath}`,
@@ -96,6 +101,52 @@ async function runSmoke(): Promise<Surface> {
 		const installedPackage = JSON.parse(
 			await fs.readFile(path.join(tempDir, "node_modules", packageName, "package.json"), "utf8"),
 		) as { exports?: Record<string, unknown> };
+		const installedAgentPackagePath = path.join(tempDir, "node_modules", "@gajae-code", "agent-core");
+		const installedAgentPackageJsonPath = path.join(installedAgentPackagePath, "package.json");
+		const installedAgentPackage = JSON.parse(await fs.readFile(installedAgentPackageJsonPath, "utf8")) as {
+			name?: string;
+			version?: string;
+		};
+		const expectedAgentPackage = JSON.parse(
+			await fs.readFile(path.join(agentPackageDir, "package.json"), "utf8"),
+		) as {
+			name?: string;
+			version?: string;
+		};
+		const installedAgentRealpath = await fs.realpath(installedAgentPackagePath);
+		const tempRealpath = await fs.realpath(tempDir);
+		const sourceAgentRealpath = await fs.realpath(agentPackageDir);
+		if (
+			!installedAgentRealpath.startsWith(`${tempRealpath}${path.sep}`) ||
+			installedAgentRealpath.startsWith(`${sourceAgentRealpath}${path.sep}`)
+		) {
+			throw new Error("packed smoke resolved agent-core outside the temporary packed installation");
+		}
+		const packedAgentInspectDir = path.join(tempDir, "packed-agent-inspect");
+		await fs.mkdir(packedAgentInspectDir);
+		const extract = Bun.spawnSync(["tar", "xzf", agentTarballPath, "-C", packedAgentInspectDir], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (extract.exitCode !== 0)
+			throw new Error(`could not inspect packed agent-core tarball: ${extract.stderr.toString()}`);
+		const packedAgentPackageJson = await fs.readFile(
+			path.join(packedAgentInspectDir, "package", "package.json"),
+			"utf8",
+		);
+		const installedAgentPackageJson = await fs.readFile(installedAgentPackageJsonPath, "utf8");
+		if (installedAgentPackageJson !== packedAgentPackageJson) {
+			throw new Error("packed smoke installed agent-core content different from the packed tarball");
+		}
+		if (
+			installedAgentPackage.name !== expectedAgentPackage.name ||
+			installedAgentPackage.version !== expectedAgentPackage.version
+		) {
+			throw new Error("packed smoke installed a mismatched agent-core package");
+		}
+		if (installedAgentPackage.name !== "@gajae-code/agent-core") {
+			throw new Error("packed smoke agent-core package identity is invalid");
+		}
 		if (installedPackage.exports?.["./session/internal/*"] !== null) {
 			throw new Error("packed package must explicitly block ./session/internal/*");
 		}

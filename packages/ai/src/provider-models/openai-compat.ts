@@ -1,4 +1,4 @@
-import { $env, $inheritedEnv } from "@gajae-code/utils";
+import { $credentialEnv } from "@gajae-code/utils";
 import type { ModelManagerOptions } from "../model-manager";
 import { Effort } from "../model-thinking";
 import { getBundledModels } from "../models";
@@ -553,13 +553,19 @@ export interface OpenAIModelManagerConfig {
 	baseUrl?: string;
 }
 
+/** Base URL for the OpenAI model manager, from trusted env only (`$env` merges the caller's `cwd/.env`). */
+function resolveOpenAIModelManagerBaseUrl(config?: OpenAIModelManagerConfig): string {
+	return config?.baseUrl?.trim() || $credentialEnv("OPENAI_BASE_URL") || OPENAI_DEFAULT_BASE_URL;
+}
+
+/** Test seam: the model-manager base URL as resolved from trusted env. */
+export function resolveOpenAIModelManagerBaseUrlForTest(config?: OpenAIModelManagerConfig): string {
+	return resolveOpenAIModelManagerBaseUrl(config);
+}
+
 export function openaiModelManagerOptions(config?: OpenAIModelManagerConfig): ModelManagerOptions<"openai-responses"> {
 	const apiKey = config?.apiKey;
-	const baseUrl =
-		config?.baseUrl?.trim() ||
-		$inheritedEnv("OPENAI_BASE_URL") ||
-		$env.OPENAI_BASE_URL?.trim() ||
-		OPENAI_DEFAULT_BASE_URL;
+	const baseUrl = resolveOpenAIModelManagerBaseUrl(config);
 	const references = createBundledReferenceMap<"openai-responses">("openai");
 	return {
 		providerId: "openai",
@@ -1119,6 +1125,77 @@ export function opengatewayModelManagerOptions(
 	return createSimpleOpenAICompletionsOptions("opengateway", "https://apis.opengateway.ai/v1", config);
 }
 
+// ---------------------------------------------------------------------------
+// 10.5.2 BizRouter
+// ---------------------------------------------------------------------------
+
+const BIZROUTER_BASE_URL = "https://api.bizrouter.ai/v1";
+
+function toBizRouterPrice(value: unknown, fallback: number): number {
+	const parsed = toNumber(value);
+	return parsed === undefined || parsed < 0 ? fallback : parsed;
+}
+
+export interface BizRouterModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+}
+
+export function bizrouterModelManagerOptions(
+	config?: BizRouterModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	const apiKey = config?.apiKey;
+	const baseUrl = config?.baseUrl ?? BIZROUTER_BASE_URL;
+	const references = createBundledReferenceMap<"openai-completions">("bizrouter");
+	return {
+		providerId: "bizrouter",
+		...(apiKey && {
+			fetchDynamicModels: () =>
+				fetchOpenAICompatibleModels({
+					api: "openai-completions",
+					provider: "bizrouter",
+					baseUrl,
+					apiKey,
+					mapModel: (entry, defaults) => {
+						const mapped = mapWithBundledReference(entry, defaults, references.get(defaults.id));
+						return {
+							...mapped,
+							name: toModelName(entry.display_name, mapped.name),
+							contextWindow: toPositiveNumber(entry.context_length, mapped.contextWindow),
+							maxTokens: toPositiveNumber(entry.max_output_tokens, mapped.maxTokens),
+							input: toInputCapabilities(entry.input_modalities),
+							cost: {
+								input: toBizRouterPrice(entry.input_price_per_1m_usd, mapped.cost.input),
+								output: toBizRouterPrice(entry.output_price_per_1m_usd, mapped.cost.output),
+								cacheRead: mapped.cost.cacheRead,
+								cacheWrite: mapped.cost.cacheWrite,
+							},
+							api: "openai-completions",
+							provider: "bizrouter",
+							baseUrl,
+						};
+					},
+				}),
+		}),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// 10.5.3 Mara Cloud
+// ---------------------------------------------------------------------------
+
+export interface MaraModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+}
+
+/**
+ * Mara Cloud — an OpenAI-compatible enterprise AI inference platform. Models
+ * are discovered from the OpenAI-compatible `/v1/models` endpoint.
+ */
+export function maraModelManagerOptions(config?: MaraModelManagerConfig): ModelManagerOptions<"openai-completions"> {
+	return createSimpleOpenAICompletionsOptions("mara", "https://api.cloud.mara.com/v1", config);
+}
 // ---------------------------------------------------------------------------
 // 10.6 Kilo Gateway
 // ---------------------------------------------------------------------------

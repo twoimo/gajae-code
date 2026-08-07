@@ -74,8 +74,14 @@ describe("fallback transport facts", () => {
 				headers: new Headers({ "retry-after-ms": "125" }),
 			}),
 		).toEqual({ class: "quota", retryAfterMs: 125 });
-		expect(classifyFallbackTrigger({ kind: "transport", status: 401 })).toEqual({ class: "auth" });
+		expect(classifyFallbackTrigger({ kind: "transport", status: 401 })).toEqual({
+			class: "auth",
+			authDisposition: "credential",
+		});
 		expect(classifyFallbackTrigger({ kind: "transport", status: 503 })).toEqual({ class: "server" });
+		expect(classifyFallbackTrigger({ kind: "transport", providerCode: "stream_first_event_timeout" })).toEqual({
+			class: "server",
+		});
 	});
 
 	it("normalizes provider transport metadata without parsing error text", () => {
@@ -89,7 +95,10 @@ describe("fallback transport facts", () => {
 		expect(quotaFacts?.headers).toEqual({ "retry-after-ms": "125" });
 		expect(classifyFallbackTrigger(quotaFacts)).toEqual({ class: "quota", retryAfterMs: 125 });
 
-		expect(classifyFallbackTrigger(transportFailureFacts({ status: 401 }))).toEqual({ class: "auth" });
+		expect(classifyFallbackTrigger(transportFailureFacts({ status: 401 }))).toEqual({
+			class: "auth",
+			authDisposition: "credential",
+		});
 		expect(classifyFallbackTrigger(transportFailureFacts({ status: 503 }))).toEqual({ class: "server" });
 		expect(transportFailureFacts({ code: "invalid_api_key" })).toMatchObject({
 			kind: "transport",
@@ -107,7 +116,7 @@ describe("fallback transport facts", () => {
 		expect(anthropic).toMatchObject({ anthropicErrorType: "rate_limit_error" });
 		expect(classifyFallbackTrigger(anthropic)).toEqual({ class: "rate_limit" });
 		expect(openai).toMatchObject({ openaiErrorCode: "invalid_api_key" });
-		expect(classifyFallbackTrigger(openai)).toEqual({ class: "auth" });
+		expect(classifyFallbackTrigger(openai)).toEqual({ class: "auth", authDisposition: "credential" });
 		expect(classifyFallbackTrigger({ kind: "transport", status: 500 })).toEqual({ class: "server" });
 	});
 
@@ -139,6 +148,17 @@ describe("fallback transport facts", () => {
 		});
 		expect(facts).toBeDefined();
 		expect(transportFailureFacts(facts)).toEqual(facts!);
+
+		// The Anthropic code lives under its own key on an already-built facts
+		// object, so re-normalization must read that key back instead of only
+		// `error.type` / `type` — otherwise the second pass silently drops it and
+		// the auth-disposition precedence sees fewer codes than the first pass.
+		const anthropicFacts = transportFailureFacts({ status: 403, error: { type: "authentication_error" } });
+		expect(anthropicFacts).toMatchObject({ anthropicErrorType: "authentication_error" });
+		expect(transportFailureFacts(anthropicFacts)).toEqual(anthropicFacts!);
+		expect(classifyFallbackTrigger(transportFailureFacts(anthropicFacts))).toEqual(
+			classifyFallbackTrigger(anthropicFacts),
+		);
 
 		const headerOnly = transportFailureFacts({ headers: { "retry-after": "3" } });
 		expect(headerOnly).toEqual({

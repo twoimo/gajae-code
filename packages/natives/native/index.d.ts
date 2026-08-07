@@ -7,8 +7,40 @@
  * consumers can import them portably; the native controller itself is built
  * only on macOS.
  */
+export interface ComputerInputAction {
+  action: "screenshot" | "click" | "double_click" | "move" | "drag" | "scroll" | "type" | "keypress" | "wait"
+  x?: number
+  y?: number
+  toX?: number
+  toY?: number
+  scrollX?: number
+  scrollY?: number
+  button?: string
+  text?: string
+  keys?: Array<string>
+  ms?: number
+  timeoutMs?: number
+  timeoutGroup?: number
+}
+
+export interface ComputerBatchStepResult {
+  index: number
+  action: string
+  screenshot?: ComputerScreenshot
+}
+
+export interface ComputerBatchResult {
+  results: Array<ComputerBatchStepResult>
+  failureCode?: string
+  failureIndex?: number
+  failureMessage?: string
+  primaryFailureCode?: string
+  primaryFailureMessage?: string
+}
+
 export declare class ComputerController {
   constructor()
+  executeBatch(expectedEpoch: number | undefined | null, actions: Array<ComputerInputAction>, timeoutMs?: number | undefined | null, signal?: unknown): Promise<ComputerBatchResult>
   screenshot(): ComputerScreenshot
   click(expectedEpoch: number | undefined | null, x: number, y: number, button?: string | undefined | null): void
   doubleClick(expectedEpoch: number | undefined | null, x: number, y: number, button?: string | undefined | null): void
@@ -491,7 +523,7 @@ export declare function __piNativesPublishOutcomeV1(): void
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV0_11_8(): void
+export declare function __piNativesV0_12_12(): void
 
 /**
  * Apply conservative pre-execution rewrites to a bash command.
@@ -835,12 +867,23 @@ export declare enum Ellipsis {
 export declare function encodeSixel(bytes: Uint8Array, targetWidthPx: number, targetHeightPx: number): string
 
 /**
- * Remove an already durably planned detached directory only when a fresh
- * descriptor-relative snapshot exactly equals the persisted snapshot. The
- * caller-planned root remains in place while its opened descriptor is
- * authoritative throughout recursive removal.
+ * Remove a directory tree only when a fresh descriptor-relative snapshot
+ * exactly equals the persisted snapshot. POSIX first no-replace detaches the
+ * verified root to its deterministic `.removing` sibling; the reopened
+ * detached descriptor remains authoritative throughout payload scrubbing and
+ * replay.
  */
-export declare function exactRemoveDirectoryTree(path: string, snapshot: NativeDirectoryTreeSnapshot): NativeExactUnlinkResult
+export declare function exactRemoveDirectoryTree(path: string, snapshot: NativeDirectoryTreeSnapshot, parentIdentity?: NativeDirectoryParentIdentity | undefined | null): NativeExactUnlinkResult
+
+/**
+ * Atomically replace a staged regular file only after validating the exact
+ * staged source and expected destination.
+ *
+ * Both identities must describe regular files in the same retained parent, not
+ * directories or detach-only requests. Publication uses an atomic namespace
+ * exchange so a substituted source or destination is never overwritten.
+ */
+export declare function exactReplacePath(sourcePath: string, destinationPath: string, expectedSource: NativeExactFileIdentity, expectedDestination: NativeExactFileIdentity): NativeExactUnlinkResult
 
 /**
  * Restore only the detached object that still has the supplied platform
@@ -1453,6 +1496,20 @@ export interface LineDiffPart {
 }
 
 /**
+ * Publish a staged regular file under a destination name that must not already
+ * exist, using `linkat(2)` instead of a rename flag. This is the stand-in for
+ * `rename_no_replace_path` on filesystems that implement no rename flag at all
+ * (NFS answers `EINVAL`, pre-3.15 kernels `ENOSYS`), and it carries the same
+ * no-overwrite guarantee because `linkat` fails with `EEXIST`.
+ *
+ * The source name survives the call. Callers holding a descriptor on the
+ * staged object must keep it across this publication and unlink the staging
+ * name only after releasing it: NFS silly-renames a still-open name instead of
+ * removing it, leaving a second link on the published inode.
+ */
+export declare function linkNoReplacePath(sourcePath: string, destinationPath: string): NativeNoReplaceResult
+
+/**
  * Walk the workspace once and return tree entries plus AGENTS.md candidates.
  *
  * File-level ignore rules for AGENTS.md are bypassed by checking each
@@ -1659,6 +1716,11 @@ export type NativeCanonicalDirectoryIdentity =
 			code: "not_found" | "not_directory" | "not_utf8" | "network_unsupported" | "identity_unavailable" | "io_error";
 	  }
 
+export interface NativeDirectoryParentIdentity {
+  dev: bigint
+  ino: bigint
+}
+
 /**
  * A deterministic, no-follow description of a directory tree. `relative_path`
  * is UTF-8, uses `/` separators, and is empty only for the root entry.
@@ -1668,6 +1730,7 @@ export interface NativeDirectoryTreeEntry {
   kind: string
   dev: string
   ino: string
+  nlink: string
   size: string
   mtimeNs: string
   ctimeNs: string
@@ -1697,6 +1760,9 @@ export interface NativeDirectoryTreeSnapshot {
 export interface NativeExactFileIdentity {
   dev: bigint
   ino: bigint
+  nlink?: bigint
+  parentDev?: bigint
+  parentIno?: bigint
   size: bigint
   mtimeNs: bigint
   /**
@@ -1726,6 +1792,15 @@ export interface NativeExactFileIdentity {
 export interface NativeExactUnlinkResult {
   ok: boolean
   code?: string
+  /**
+   * True only when retained directory payloads were descriptor-scrubbed and
+   * every file plus containing directory namespace was fsynced before return.
+   */
+  payloadDurable?: boolean
+  /**
+   * On Windows this is returned in the caller's namespace; retained handle
+   * operations continue to use the volume-GUID canonical path internally.
+   */
   detachedPath?: string
   retainedSuccessorPath?: string
   /**
@@ -1898,6 +1973,8 @@ export interface PresentationLease {
   registrationEpoch: number
 }
 
+export declare function probeWindowsJobMemory(): WindowsJobMemoryProbeResult
+
 /** Current state of a process reference. */
 export declare enum ProcessStatus {
   /** The referenced process is still running. */
@@ -1977,6 +2054,7 @@ export declare function readImageFromClipboard(): Promise<ClipboardImage | undef
 export interface RecoveryFsIdentity {
   dev: string
   ino: string
+  nlink: string
   size: string
   mtimeNs: string
   ctimeNs: string
@@ -2288,6 +2366,21 @@ export declare function visibleWidth(text: string, tabWidth: number): number
 
 /** Calculate visible widths of many strings, excluding ANSI escape sequences. */
 export declare function visibleWidths(lines: Array<string>, tabWidth: number): Array<number>
+
+export interface WindowsJobMemoryProbeResult {
+  kind: string
+  platform: string
+  isInJob?: boolean
+  jobMemoryLimitBytes?: string
+  jobMemoryUsedBytes?: string
+  peakJobMemoryUsedBytes?: string
+  processMemoryLimitBytes?: string
+  processPrivateUsageBytes?: string
+  processWorkingSetBytes?: string
+  peakProcessWorkingSetBytes?: string
+  call?: string
+  code?: string
+}
 
 /** Profiling results returned to JavaScript. */
 export interface WorkProfile {

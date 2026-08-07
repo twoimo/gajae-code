@@ -9,6 +9,7 @@ import {
 	wrapTextWithAnsi,
 } from "@gajae-code/tui";
 import type { CasReceipt } from "../../config/atomic-yaml-patch";
+import type { NotificationProvider, ProviderSecretDisposition } from "../../sdk/bus/config";
 import type {
 	BlockedTelegramRestoreResult,
 	ProposedTelegramIdentity,
@@ -32,6 +33,7 @@ export interface NotificationsEditorPreferences {
 	richDraftEnabled: boolean;
 	toolActivityEnabled: boolean;
 	streamingEnabled: boolean;
+	sound: "all" | "important" | "none";
 }
 
 /** Secret-safe snapshot used to render the Notifications tab. */
@@ -68,6 +70,43 @@ export interface PreparedTelegramConfiguration {
 	streamingEnabled: boolean;
 }
 
+export interface ProviderSecretActionInput {
+	action: ProviderSecretDisposition;
+	value?: SecretValue;
+}
+
+export interface NotificationsProviderSetupInput {
+	provider: "discord" | "slack";
+	botToken: ProviderSecretActionInput;
+	appToken?: ProviderSecretActionInput;
+	applicationId?: string;
+	guildId?: string;
+	parentChannelId?: string;
+	workspaceId?: string;
+	channelId?: string;
+	authorizedUserId?: string;
+}
+
+export interface PreparedNotificationProviderConfiguration {
+	provider: "discord" | "slack";
+	botTokenDisposition: ProviderSecretDisposition;
+	botTokenMask: string;
+	appTokenDisposition?: ProviderSecretDisposition;
+	appTokenMask?: string;
+	applicationId?: string;
+	guildId?: string;
+	parentChannelId?: string;
+	workspaceId?: string;
+	channelId?: string;
+	authorizedUserId?: string;
+	applicationIdDisplay?: string;
+	guildIdDisplay?: string;
+	parentChannelIdDisplay?: string;
+	workspaceIdDisplay?: string;
+	channelIdDisplay?: string;
+	authorizedUserIdDisplay?: string;
+}
+
 export interface NotificationsPreflightResult {
 	status: "ready" | "aborted" | "cancelled" | "error";
 	identity: ProposedTelegramIdentity;
@@ -79,6 +118,7 @@ export interface NotificationsPreflightResult {
 /** A successful configuration save always carries an opaque CAS receipt. */
 export type NotificationsConfigureCommitResult =
 	| { status: "saved"; receipt: CasReceipt; message: string }
+	| { status: "activation_failed" | "observer_failed"; receipt: CasReceipt; message: string }
 	| {
 			status: "blocked_identity";
 			receipt: CasReceipt;
@@ -90,10 +130,12 @@ export type NotificationsConfigureCommitResult =
 export interface NotificationsMutationResult {
 	message: string;
 	receipt?: CasReceipt;
+	outcome?: "success" | "degraded" | "failed";
 }
 
 export type NotificationsSaveInactiveResult =
 	| { status: "saved_inactive"; receipt: CasReceipt; message: string }
+	| { status: "observer_failed"; receipt: CasReceipt; message: string }
 	| { status: "unavailable"; guidance: string };
 
 /**
@@ -105,9 +147,13 @@ export type NotificationsSaveInactiveResult =
 export interface NotificationsEditorOperations {
 	/** Combines a buildNotificationStatusReport-shaped status snapshot with the current session-control query. */
 	loadState(): Promise<NotificationsEditorState>;
-	/** Performs offline health refreshes and a non-cancellable reachability probe when requested. */
-	refreshHealth(input: { probe: boolean; signal?: AbortSignal }): Promise<NotificationHealthReport>;
-	sendTest(): Promise<NotificationTestResult>;
+	/** Performs offline or selected REST-only health refresh. */
+	refreshHealth(input: {
+		probe: boolean;
+		provider?: NotificationProvider;
+		signal?: AbortSignal;
+	}): Promise<NotificationHealthReport>;
+	sendTest(provider?: NotificationProvider): Promise<NotificationTestResult>;
 	recover(): Promise<NotificationRecoveryReport>;
 	reconnect(): Promise<TelegramDaemonReconnectOutcome>;
 	/** Validates/discovers a Telegram destination and returns a secret-safe prepared draft. */
@@ -121,6 +167,13 @@ export interface NotificationsEditorOperations {
 	saveInactive(draft: PreparedTelegramConfiguration): Promise<NotificationsSaveInactiveResult>;
 	/** Clears adapter-local ephemeral credential material for a prepared setup draft. Idempotent. */
 	discardConfigureDraft(draft: PreparedTelegramConfiguration): void;
+	prepareProviderConfiguration(
+		input: NotificationsProviderSetupInput,
+	): Promise<PreparedNotificationProviderConfiguration>;
+	commitProviderConfiguration(draft: PreparedNotificationProviderConfiguration): Promise<NotificationsMutationResult>;
+	discardProviderConfiguration(draft: PreparedNotificationProviderConfiguration): void;
+	setProviderDesired(provider: NotificationProvider, enabled: boolean): Promise<NotificationsMutationResult>;
+	removeProvider(provider: NotificationProvider): Promise<NotificationsMutationResult>;
 	/** Enables globally without requesting or exposing a credential. */
 	enableGlobally(): Promise<NotificationsMutationResult>;
 	disableGlobally(): Promise<NotificationsMutationResult>;
@@ -137,16 +190,49 @@ export interface NotificationsSettingsEditorCallbacks {
 	onCancel?: () => void;
 }
 
-type EditorMode =
+export type EditorMode =
 	| "home"
 	| "provider-selection"
+	| "provider-actions"
+	| "provider-form"
+	| "provider-review"
 	| "chat-entry"
 	| "token-entry"
 	| "pairing"
 	| "review"
 	| "preferences"
 	| "confirmation";
-type ConfirmationAction = "disable" | "remove" | "blocked_identity";
+type ConfirmationAction = "disable" | "remove" | "remove-provider" | "blocked_identity";
+
+type ProviderActionId =
+	| "provider-configure"
+	| "provider-toggle"
+	| "provider-probe"
+	| "provider-test"
+	| "provider-remove";
+
+type ProviderFormStep =
+	| "bot-action"
+	| "bot-secret"
+	| "app-action"
+	| "app-secret"
+	| "application-id"
+	| "guild-id"
+	| "parent-channel-id"
+	| "workspace-id"
+	| "channel-id"
+	| "authorized-user-id";
+
+interface ProviderFormDraft {
+	botToken?: ProviderSecretActionInput;
+	appToken?: ProviderSecretActionInput;
+	applicationId?: string;
+	guildId?: string;
+	parentChannelId?: string;
+	workspaceId?: string;
+	channelId?: string;
+	authorizedUserId?: string;
+}
 
 type HomeActionId =
 	| "configure"
@@ -160,10 +246,11 @@ type HomeActionId =
 	| "reconnect"
 	| "remove"
 	| "preferences"
-	| "tool-activity";
+	| "tool-activity"
+	| "sound";
 
 interface Action {
-	id: HomeActionId | "telegram" | "external" | "save" | "save-inactive" | "cancel" | "confirm";
+	id: HomeActionId | ProviderActionId | NotificationProvider | "save" | "save-inactive" | "cancel" | "confirm";
 	label: string;
 	description: string;
 }
@@ -178,16 +265,46 @@ function emptyState(): NotificationsEditorState {
 			redact: false,
 			verbosity: "lean",
 			globallyConfigured: false,
-			telegram: { botTokenMasked: "(not set)", channel: undefined, configured: false, tokenFingerprint: undefined },
-			discord: { botTokenMasked: "(not set)", channel: undefined, configured: false },
-			slack: { botTokenMasked: "(not set)", channel: undefined, configured: false },
+			anyProviderComplete: false,
+			anyProviderEffective: false,
+			telegram: {
+				botTokenMasked: "(not set)",
+				channel: undefined,
+				configured: false,
+				quarantined: false,
+				desiredEnabled: false,
+				desiredSource: "legacy",
+				effectiveEnabled: false,
+				issues: [],
+				tokenFingerprint: undefined,
+			},
+			discord: {
+				botTokenMasked: "(not set)",
+				channel: undefined,
+				configured: false,
+				quarantined: false,
+				desiredEnabled: false,
+				desiredSource: "legacy",
+				effectiveEnabled: false,
+				issues: [],
+			},
+			slack: {
+				botTokenMasked: "(not set)",
+				channel: undefined,
+				configured: false,
+				quarantined: false,
+				desiredEnabled: false,
+				desiredSource: "legacy",
+				effectiveEnabled: false,
+				issues: [],
+			},
 		},
 		session: {
 			eligible: false,
 			locallyEnabled: false,
-			effectiveEnabled: false,
+			genericSessionEnabled: false,
+			genericEligibilitySource: "none",
 			running: false,
-			environment: "default",
 		},
 		preferences: {
 			redact: false,
@@ -195,14 +312,21 @@ function emptyState(): NotificationsEditorState {
 			sessionScope: "all",
 			richEnabled: true,
 			richDraftEnabled: false,
-			toolActivityEnabled: true,
+			toolActivityEnabled: false,
 			streamingEnabled: true,
+			sound: "all",
 		},
 	};
 }
 
 function statusLabel(level: "ok" | "warn" | "error"): "OK" | "WARNING" | "ERROR" {
 	return level === "ok" ? "OK" : level === "warn" ? "WARNING" : "ERROR";
+}
+
+function mutationStatus(result: NotificationsMutationResult): "OK" | "WARNING" | "ERROR" {
+	if (result.outcome === "degraded") return "WARNING";
+	if (result.outcome === "failed") return "ERROR";
+	return result.receipt || result.outcome === "success" ? "OK" : "ERROR";
 }
 
 function safeDetail(value: string | undefined, fallback: string): string {
@@ -248,6 +372,10 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 	#status = "INFO — Loading notification status…";
 	#lastTest: NotificationTestResult | undefined;
 	#prepared: PreparedTelegramConfiguration | undefined;
+	#selectedProvider: NotificationProvider = "telegram";
+	#providerFormStep: ProviderFormStep = "bot-action";
+	#providerFormDraft: ProviderFormDraft = {};
+	#providerPrepared: PreparedNotificationProviderConfiguration | undefined;
 	#preflightIdentity: ProposedTelegramIdentity["status"] | undefined;
 	#preferencesDraft: NotificationsEditorPreferences | undefined;
 	#confirmation: ConfirmationAction | undefined;
@@ -255,6 +383,8 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 	#pairingPhase: "discovery" | "validation" = "discovery";
 	#chatInput = new Input();
 	#tokenInput = new SecretInput();
+	#providerTextInput = new Input();
+	#providerSecretInput = new SecretInput();
 	#abortController = new AbortController();
 	#cancellableWork: Promise<void> | undefined;
 	#guarded = false;
@@ -272,6 +402,10 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		this.#chatInput.onEscape = () => this.#cancelCurrentMode();
 		this.#tokenInput.onSubmit = token => this.#startPreflight(token);
 		this.#tokenInput.onEscape = () => this.#cancelCurrentMode();
+		this.#providerTextInput.onSubmit = value => this.#advanceProviderText(value);
+		this.#providerTextInput.onEscape = () => this.#cancelCurrentMode();
+		this.#providerSecretInput.onSubmit = value => this.#advanceProviderSecret(value);
+		this.#providerSecretInput.onEscape = () => this.#cancelCurrentMode();
 		void this.#loadState();
 	}
 
@@ -288,17 +422,23 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 	invalidate(): void {
 		this.#chatInput.invalidate();
 		this.#tokenInput.invalidate();
+		this.#providerTextInput.invalidate();
+		this.#providerSecretInput.invalidate();
 	}
 
 	dispose(): void {
-		if (this.#disposed || this.navigationLocked) return;
+		if (this.#disposed) return;
 		this.#disposed = true;
 		this.#abortController.abort();
 		this.#clearDrafts(true);
+		this.#clearProviderDraft(true);
 	}
 
 	render(width: number): string[] {
 		if (this.#mode === "provider-selection") return this.#renderProviderSelection(width);
+		if (this.#mode === "provider-actions") return this.#renderProviderActions(width);
+		if (this.#mode === "provider-form") return this.#renderProviderForm(width);
+		if (this.#mode === "provider-review") return this.#renderProviderReview(width);
 		if (this.#mode === "chat-entry") return this.#renderChatEntry(width);
 		if (this.#mode === "token-entry") return this.#renderTokenEntry(width);
 		if (this.#mode === "pairing") return this.#renderPairing(width);
@@ -333,6 +473,11 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 			this.#tokenInput.handleInput(data);
 			return;
 		}
+		if (this.#mode === "provider-form") {
+			if (this.#providerStepUsesSecret()) this.#providerSecretInput.handleInput(data);
+			else this.#providerTextInput.handleInput(data);
+			return;
+		}
 		if (this.#mode === "pairing") {
 			if (this.#matchesCancel(data))
 				this.#cancelCancellableWork("Pairing cancelled; no notification configuration was changed.");
@@ -340,6 +485,14 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		}
 		if (this.#mode === "provider-selection") {
 			this.#handleListInput(data, this.#providerActions());
+			return;
+		}
+		if (this.#mode === "provider-actions") {
+			this.#handleListInput(data, this.#selectedProviderActions());
+			return;
+		}
+		if (this.#mode === "provider-review") {
+			this.#handleListInput(data, this.#providerReviewActions());
 			return;
 		}
 		if (this.#mode === "review") {
@@ -458,14 +611,36 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 				this.#status = "INFO — Select a notification provider to begin setup.";
 				return;
 			case "telegram":
-				this.#mode = "chat-entry";
+			case "discord":
+			case "slack":
+				this.#selectedProvider = id;
+				this.#mode = "provider-actions";
 				this.#selectedIndex = 0;
-				this.#chatInput.setValue("");
-				this.#tokenInput.clear();
-				this.#status = "INFO — Enter a private chat ID, or leave it blank for guided pairing discovery.";
+				this.#status = `INFO — ${id} provider actions.`;
 				return;
-			case "external":
-				this.#status = "INFO — Discord and Slack credentials are managed in their respective provider settings.";
+			case "provider-configure":
+				if (this.#selectedProvider === "telegram") {
+					this.#mode = "chat-entry";
+					this.#selectedIndex = 0;
+					this.#chatInput.setValue("");
+					this.#tokenInput.clear();
+					this.#status = "INFO — Enter a private chat ID, or leave it blank for guided pairing discovery.";
+				} else {
+					this.#startProviderForm();
+				}
+				return;
+			case "provider-toggle":
+				this.#setSelectedProviderDesired();
+				return;
+			case "provider-probe":
+				this.#refreshHealth(true, this.#selectedProvider);
+				return;
+			case "provider-test":
+				this.#sendTest(this.#selectedProvider);
+				return;
+			case "provider-remove":
+				if (this.#selectedProvider === "telegram") this.#openConfirmation("remove");
+				else this.#openConfirmation("remove-provider");
 				return;
 			case "enable":
 				this.#enableGlobally();
@@ -501,7 +676,8 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 				this.#status = "INFO — Edit the draft, then explicitly save it atomically.";
 				return;
 			case "save":
-				this.#commitConfiguration();
+				if (this.#mode === "provider-review") this.#commitProviderConfiguration();
+				else this.#commitConfiguration();
 				return;
 			case "save-inactive":
 				this.#saveInactive();
@@ -524,6 +700,7 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 			return;
 		}
 		this.#clearDrafts();
+		this.#clearProviderDraft();
 		this.#mode = "home";
 		this.#selectedIndex = 0;
 		this.#status = "INFO — Setup cancelled; saved notification configuration is unchanged.";
@@ -538,6 +715,163 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		this.#chatInput.setValue("");
 		this.#tokenInput.clear();
 		if (disposeSecret) this.#tokenInput.dispose();
+	}
+
+	#clearProviderDraft(disposeSecret = false): void {
+		if (this.#providerPrepared) this.operations.discardProviderConfiguration(this.#providerPrepared);
+		this.#providerPrepared = undefined;
+		this.#providerFormDraft.botToken?.value?.consume();
+		this.#providerFormDraft.appToken?.value?.consume();
+		this.#providerFormDraft = {};
+		this.#providerFormStep = "bot-action";
+		this.#providerTextInput.setValue("");
+		this.#providerSecretInput.clear();
+		if (disposeSecret) this.#providerSecretInput.dispose();
+	}
+
+	#startProviderForm(): void {
+		this.#clearProviderDraft();
+		this.#mode = "provider-form";
+		this.#providerFormStep = "bot-action";
+		this.#providerTextInput.setValue("");
+		this.#status = `INFO — Choose ${this.#selectedProvider} bot token action: keep, replace, or remove.`;
+	}
+
+	#providerStepUsesSecret(): boolean {
+		return this.#providerFormStep === "bot-secret" || this.#providerFormStep === "app-secret";
+	}
+
+	#normalizedSecretAction(value: string): ProviderSecretDisposition | undefined {
+		const action = value.trim().toLowerCase();
+		return action === "keep" || action === "replace" || action === "remove" ? action : undefined;
+	}
+
+	#advanceProviderText(value: string): void {
+		const trimmed = value.trim();
+		this.#providerTextInput.setValue("");
+		switch (this.#providerFormStep) {
+			case "bot-action": {
+				const action = this.#normalizedSecretAction(trimmed);
+				if (!action) {
+					this.#status = "ERROR — Enter keep, replace, or remove for the bot token.";
+					return;
+				}
+				this.#providerFormDraft.botToken = { action };
+				this.#providerFormStep =
+					action === "replace"
+						? "bot-secret"
+						: this.#selectedProvider === "slack"
+							? "app-action"
+							: "application-id";
+				this.#status =
+					action === "replace"
+						? "INFO — Enter the replacement bot token; only bullets are rendered."
+						: this.#selectedProvider === "slack"
+							? "INFO — Choose Slack app token action: keep, replace, or remove."
+							: "INFO — Enter the Discord application ID; blank keeps the stored value.";
+				return;
+			}
+			case "app-action": {
+				const action = this.#normalizedSecretAction(trimmed);
+				if (!action) {
+					this.#status = "ERROR — Enter keep, replace, or remove for the Slack app token.";
+					return;
+				}
+				this.#providerFormDraft.appToken = { action };
+				this.#providerFormStep = action === "replace" ? "app-secret" : "workspace-id";
+				this.#status =
+					action === "replace"
+						? "INFO — Enter the replacement Slack app token; only bullets are rendered."
+						: "INFO — Enter the Slack workspace ID; blank keeps the stored value.";
+				return;
+			}
+			case "application-id":
+				this.#providerFormDraft.applicationId = trimmed || undefined;
+				this.#providerFormStep = "guild-id";
+				this.#status = "INFO — Enter the Discord guild ID; blank keeps the stored value.";
+				return;
+			case "guild-id":
+				this.#providerFormDraft.guildId = trimmed || undefined;
+				this.#providerFormStep = "parent-channel-id";
+				this.#status = "INFO — Enter the Discord parent channel ID; blank keeps the stored value.";
+				return;
+			case "parent-channel-id":
+				this.#providerFormDraft.parentChannelId = trimmed || undefined;
+				this.#prepareProviderDraft();
+				return;
+			case "workspace-id":
+				this.#providerFormDraft.workspaceId = trimmed || undefined;
+				this.#providerFormStep = "channel-id";
+				this.#status = "INFO — Enter the Slack channel ID; blank keeps the stored value.";
+				return;
+			case "channel-id":
+				this.#providerFormDraft.channelId = trimmed || undefined;
+				this.#providerFormStep = "authorized-user-id";
+				this.#status = "INFO — Enter the optional authorized user ID; blank keeps the stored value.";
+				return;
+			case "authorized-user-id":
+				this.#providerFormDraft.authorizedUserId = trimmed || undefined;
+				this.#prepareProviderDraft();
+				return;
+			case "bot-secret":
+			case "app-secret":
+				return;
+		}
+	}
+
+	#advanceProviderSecret(value: SecretValue): void {
+		this.#providerSecretInput.clear();
+		if (this.#providerFormStep === "bot-secret") {
+			this.#providerFormDraft.botToken = { action: "replace", value };
+			this.#providerFormStep = this.#selectedProvider === "slack" ? "app-action" : "application-id";
+			this.#status =
+				this.#selectedProvider === "slack"
+					? "INFO — Choose Slack app token action: keep, replace, or remove."
+					: "INFO — Enter the Discord application ID; blank keeps the stored value.";
+			return;
+		}
+		if (this.#providerFormStep === "app-secret") {
+			this.#providerFormDraft.appToken = { action: "replace", value };
+			this.#providerFormStep = "workspace-id";
+			this.#status = "INFO — Enter the Slack workspace ID; blank keeps the stored value.";
+		}
+	}
+
+	#prepareProviderDraft(): void {
+		const botToken = this.#providerFormDraft.botToken;
+		if (!botToken || (this.#selectedProvider === "slack" && !this.#providerFormDraft.appToken)) {
+			this.#status = "ERROR — Provider secret actions are incomplete.";
+			return;
+		}
+		const input: NotificationsProviderSetupInput =
+			this.#selectedProvider === "discord"
+				? {
+						provider: "discord",
+						botToken,
+						applicationId: this.#providerFormDraft.applicationId,
+						guildId: this.#providerFormDraft.guildId,
+						parentChannelId: this.#providerFormDraft.parentChannelId,
+					}
+				: {
+						provider: "slack",
+						botToken,
+						appToken: this.#providerFormDraft.appToken,
+						workspaceId: this.#providerFormDraft.workspaceId,
+						channelId: this.#providerFormDraft.channelId,
+						authorizedUserId: this.#providerFormDraft.authorizedUserId,
+					};
+		this.#runGuarded(
+			`Preparing ${this.#selectedProvider} configuration.`,
+			() => this.operations.prepareProviderConfiguration(input),
+			draft => {
+				this.#providerFormDraft = {};
+				this.#providerPrepared = draft;
+				this.#mode = "provider-review";
+				this.#selectedIndex = 0;
+				this.#status = `INFO — Review secret-safe ${draft.provider} configuration before saving.`;
+			},
+			draft => this.operations.discardProviderConfiguration(draft),
+		);
 	}
 
 	#startPreflight(token: SecretValue): void {
@@ -618,11 +952,11 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		this.#cancellableWork = pending;
 	}
 
-	#refreshHealth(probe: boolean): void {
+	#refreshHealth(probe: boolean, provider?: NotificationProvider): void {
 		if (probe) {
 			this.#runGuarded(
 				"Health probe in progress. It cannot be cancelled once started.",
-				() => this.operations.refreshHealth({ probe: true }),
+				() => this.operations.refreshHealth({ probe: true, provider }),
 				health => {
 					this.#state = { ...this.#state, health };
 					this.#status = `${statusLabel(health.overall)} — ${this.#healthSummary(health)}`;
@@ -632,7 +966,7 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		}
 		this.#status = "PENDING — Refreshing notification health.";
 		this.#runCancellable(
-			signal => this.operations.refreshHealth({ probe: false, signal }),
+			signal => this.operations.refreshHealth({ probe: false, provider, signal }),
 			health => {
 				this.#state = { ...this.#state, health };
 				this.#status = `${statusLabel(health.overall)} — ${this.#healthSummary(health)}`;
@@ -640,14 +974,22 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		);
 	}
 
-	#runGuarded<T>(pending: string, work: () => Promise<T>, complete: (result: T) => Promise<void> | void): void {
+	#runGuarded<T>(
+		pending: string,
+		work: () => Promise<T>,
+		complete: (result: T) => Promise<void> | void,
+		disposeResult?: (result: T) => Promise<void> | void,
+	): void {
 		if (this.#guarded || this.#disposed) return;
 		this.#guarded = true;
 		this.#status = `PENDING — ${pending} Navigation is locked; it may already have started or delivered.`;
 		void (async () => {
 			try {
 				const result = await work();
-				if (this.#disposed) return;
+				if (this.#disposed) {
+					await disposeResult?.(result);
+					return;
+				}
 				await complete(result);
 			} catch {
 				if (!this.#disposed) {
@@ -660,20 +1002,32 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 	}
 
 	async #afterDurableMutation(): Promise<boolean> {
-		await this.operations.reconcileCurrentSession();
-		const health = await this.operations.refreshHealth({ probe: false });
-		if (this.#disposed) return false;
-		this.#state = { ...this.#state, health };
-		await this.#loadState();
-		return !this.#disposed;
+		try {
+			await this.operations.reconcileCurrentSession();
+			const health = await this.operations.refreshHealth({ probe: false });
+			if (this.#disposed) return false;
+			this.#state = { ...this.#state, health };
+			await this.#loadState();
+			return !this.#disposed;
+		} catch {
+			if (!this.#disposed) {
+				this.#status = "WARNING — Configuration was saved, but post-commit reconciliation or refresh failed.";
+			}
+			return false;
+		}
 	}
 
 	async #refreshAfterOperation(): Promise<boolean> {
-		const health = await this.operations.refreshHealth({ probe: false });
-		if (this.#disposed) return false;
-		this.#state = { ...this.#state, health };
-		await this.#loadState();
-		return !this.#disposed;
+		try {
+			const health = await this.operations.refreshHealth({ probe: false });
+			if (this.#disposed) return false;
+			this.#state = { ...this.#state, health };
+			await this.#loadState();
+			return !this.#disposed;
+		} catch {
+			if (!this.#disposed) this.#status = "WARNING — The operation completed, but state refresh failed.";
+			return false;
+		}
 	}
 
 	#enableGlobally(): void {
@@ -683,7 +1037,56 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 			async result => {
 				if (!(await this.#afterDurableMutation())) return;
 
-				this.#status = `OK — ${safeDetail(result.message, "Global notifications enabled using stored credentials.")}`;
+				this.#status = `${mutationStatus(result)} — ${safeDetail(result.message, "Global notifications enabled using stored credentials.")}`;
+			},
+		);
+	}
+
+	#setSelectedProviderDesired(): void {
+		const view = this.#state.status[this.#selectedProvider];
+		const enabled = !view.desiredEnabled;
+		this.#runGuarded(
+			`${enabled ? "Enabling" : "Disabling"} ${this.#selectedProvider} desired intent.`,
+			() => this.operations.setProviderDesired(this.#selectedProvider, enabled),
+			async result => {
+				if (!(await this.#afterDurableMutation())) return;
+				this.#mode = "provider-actions";
+				this.#selectedIndex = 0;
+				this.#status = `${mutationStatus(result)} — ${safeDetail(result.message, "Provider intent updated.")}`;
+			},
+		);
+	}
+
+	#commitProviderConfiguration(): void {
+		const draft = this.#providerPrepared;
+		if (!draft) {
+			this.#mode = "provider-actions";
+			this.#status = "ERROR — The provider draft expired; re-enter secret actions.";
+			return;
+		}
+		this.#runGuarded(
+			`Saving ${draft.provider} configuration.`,
+			() => this.operations.commitProviderConfiguration(draft),
+			async result => {
+				this.#providerPrepared = undefined;
+				if (!(await this.#afterDurableMutation())) return;
+				this.#mode = "provider-actions";
+				this.#selectedIndex = 0;
+				this.#status = `${mutationStatus(result)} — ${safeDetail(result.message, "Provider configuration updated.")}`;
+			},
+		);
+	}
+
+	#removeSelectedProvider(): void {
+		const provider = this.#selectedProvider;
+		this.#runGuarded(
+			`Removing ${provider} configuration.`,
+			() => this.operations.removeProvider(provider),
+			async result => {
+				if (!(await this.#afterDurableMutation())) return;
+				this.#mode = "home";
+				this.#selectedIndex = 0;
+				this.#status = `${mutationStatus(result)} — ${safeDetail(result.message, "Provider removal completed.")}`;
 			},
 		);
 	}
@@ -699,7 +1102,7 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 					if (!(await this.#afterDurableMutation())) return;
 					this.#mode = "home";
 					this.#selectedIndex = 0;
-					this.#status = `OK — ${safeDetail(result.message, "Notifications disabled globally.")}`;
+					this.#status = `${mutationStatus(result)} — ${safeDetail(result.message, "Notifications disabled globally.")}`;
 				},
 			);
 			return;
@@ -712,15 +1115,14 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 					if (!(await this.#afterDurableMutation())) return;
 					this.#mode = "home";
 					this.#selectedIndex = 0;
-					this.#status = `OK — ${safeDetail(
+					this.#status = `${mutationStatus(result)} — ${safeDetail(
 						result.message,
-						result.globallyDisabled
-							? "Telegram removed and global notifications disabled."
-							: "Telegram removed; other adapters remain enabled.",
+						"Telegram removed without changing the global master or sibling providers.",
 					)}`;
 				},
 			);
 		}
+		if (action === "remove-provider") this.#removeSelectedProvider();
 	}
 
 	#restoreBlockedConfiguration(): void {
@@ -779,8 +1181,10 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		this.#selectedIndex = 1;
 		this.#status =
 			action === "disable"
-				? "WARNING — Disable globally stops configured adapters. Confirm explicitly to continue."
-				: "WARNING — Remove only Telegram credentials. Discord and Slack remain unchanged.";
+				? "WARNING — Disable globally preserves provider configuration and desired intent but stops active runtimes. Confirm explicitly."
+				: action === "remove-provider"
+					? `WARNING — Remove only ${this.#selectedProvider} configuration and set its desired intent off. Siblings remain unchanged.`
+					: "WARNING — Remove only Telegram credentials. Discord and Slack remain unchanged.";
 	}
 
 	#setSessionLocal(enabled: boolean): void {
@@ -801,15 +1205,15 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		);
 	}
 
-	#sendTest(): void {
+	#sendTest(provider?: NotificationProvider): void {
 		this.#runGuarded(
 			"Sending a notification test.",
-			() => this.operations.sendTest(),
+			() => this.operations.sendTest(provider),
 			async result => {
 				this.#lastTest = result;
 				if (!(await this.#refreshAfterOperation())) return;
 
-				this.#status = `${result.ok ? "OK" : "ERROR"} — Test ${result.ok ? "delivered" : "failed"}: ${safeDetail(
+				this.#status = `${result.ok ? "OK" : result.uncertain ? "WARNING" : "ERROR"} — Test ${result.ok ? "delivered" : result.uncertain ? "outcome uncertain" : "failed"}: ${safeDetail(
 					result.detail,
 					"No delivery detail returned.",
 				)}`;
@@ -861,7 +1265,6 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 				this.#clearDrafts();
 				if (result.status === "blocked_identity") {
 					this.#blockedCommit = result;
-					if (!(await this.#refreshAfterOperation())) return;
 					this.#confirmation = "blocked_identity";
 					this.#mode = "confirmation";
 					this.#selectedIndex = 0;
@@ -869,6 +1272,14 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 						result.message,
 						"Configuration saved but activation blocked by a foreign daemon.",
 					)}`;
+					await this.#refreshAfterOperation();
+					return;
+				}
+				if (result.status === "activation_failed" || result.status === "observer_failed") {
+					if (!(await this.#afterDurableMutation())) return;
+					this.#mode = "home";
+					this.#selectedIndex = 0;
+					this.#status = `WARNING — ${safeDetail(result.message, "Telegram configuration was saved with a post-commit failure.")}`;
 					return;
 				}
 				if (!(await this.#afterDurableMutation())) return;
@@ -896,7 +1307,7 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 				this.#clearDrafts();
 				this.#mode = "home";
 				this.#selectedIndex = 0;
-				this.#status = `OK — ${safeDetail(result.message, "Telegram configuration saved inactive; foreign daemon untouched.")}`;
+				this.#status = `${result.status === "observer_failed" ? "WARNING" : "OK"} — ${safeDetail(result.message, "Telegram configuration saved inactive; foreign daemon untouched.")}`;
 			},
 		);
 	}
@@ -942,6 +1353,9 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 			case "test":
 				draft.streamingEnabled = !draft.streamingEnabled;
 				return;
+			case "sound":
+				draft.sound = draft.sound === "all" ? "important" : draft.sound === "important" ? "none" : "all";
+				return;
 			default:
 				return;
 		}
@@ -952,20 +1366,62 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 			{
 				id: "telegram",
 				label: "Telegram",
-				description: "Configure a masked bot token and optionally validate or discover a private-chat destination.",
+				description: "Configure pairing, desired intent, health, tests, and runtime state.",
 			},
 			{
-				id: "external",
-				label: "Discord (managed elsewhere)",
-				description:
-					"Discord credentials are configured by the Discord provider integration, not this Telegram setup flow.",
+				id: "discord",
+				label: "Discord",
+				description: "Configure the bot token and Discord routing IDs in this Settings surface.",
 			},
 			{
-				id: "external",
-				label: "Slack (managed elsewhere)",
-				description:
-					"Slack credentials are configured by the Slack provider integration, not this Telegram setup flow.",
+				id: "slack",
+				label: "Slack",
+				description: "Configure bot/app tokens and Slack routing IDs in this Settings surface.",
 			},
+		];
+	}
+
+	#selectedProviderActions(): readonly Action[] {
+		const view = this.#state.status[this.#selectedProvider];
+		return [
+			{
+				id: "provider-configure",
+				label: view.quarantined
+					? `Repair ${this.#selectedProvider}`
+					: view.configured
+						? `Edit ${this.#selectedProvider}`
+						: `Configure ${this.#selectedProvider}`,
+				description: "Use explicit keep, replace, or remove secret actions and selected-provider CAS persistence.",
+			},
+			{
+				id: "provider-toggle",
+				label: `${view.desiredEnabled ? "Disable" : "Enable"} ${this.#selectedProvider} desired intent`,
+				description: "Changes only this provider's durable desired intent; the global master stays separate.",
+			},
+			{
+				id: "provider-probe",
+				label: `Probe ${this.#selectedProvider}`,
+				description: "Run the selected provider's REST-only diagnostic without opening a socket transport.",
+			},
+			{
+				id: "provider-test",
+				label: `Test ${this.#selectedProvider}`,
+				description: "Send one selected-provider test and report delivered, failed, or uncertain truthfully.",
+			},
+			{
+				id: "provider-remove",
+				label: `Remove ${this.#selectedProvider}`,
+				description:
+					"Remove only this provider after explicit confirmation; siblings and the global master remain unchanged.",
+			},
+			{ id: "cancel", label: "Back to Notifications", description: "Return without changing settings." },
+		];
+	}
+
+	#providerReviewActions(): readonly Action[] {
+		return [
+			{ id: "save", label: "Save and activate", description: "Commit one selected-provider batch, then activate." },
+			{ id: "cancel", label: "Discard draft", description: "Clear all transient secret capabilities." },
 		];
 	}
 
@@ -973,9 +1429,8 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		return [
 			{
 				id: "configure",
-				label: this.#state.status.telegram.configured ? "Reconfigure Telegram" : "Configure Telegram",
-				description:
-					"Enter a masked Telegram credential and optionally a private-chat destination; guided discovery is available.",
+				label: "Configure notification providers",
+				description: "Set up or repair Telegram, Discord, and Slack.",
 			},
 			{
 				id: "enable",
@@ -1002,12 +1457,12 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 			{
 				id: "probe",
 				label: "Probe health",
-				description: "Optionally check Telegram reachability; once started, the probe runs to completion.",
+				description: "Infer exactly one effective provider or require an explicit provider selection.",
 			},
 			{
 				id: "test",
 				label: "Send test notification",
-				description: "Sends one test; it may already be delivered once started.",
+				description: "Infer exactly one effective provider or require an explicit provider selection.",
 			},
 			{
 				id: "recover",
@@ -1092,6 +1547,11 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 				label: `Telegram streaming: ${draft.streamingEnabled ? "on" : "off"}`,
 				description: "Toggle the unsaved Telegram streaming preference.",
 			},
+			{
+				id: "sound",
+				label: `Telegram notification sound: ${draft.sound}`,
+				description: "Cycle between all, important, and none notification sounds.",
+			},
 			{ id: "save", label: "Save preferences", description: "Atomically persist this preference draft." },
 			{ id: "cancel", label: "Cancel and discard draft", description: "Leave saved preferences unchanged." },
 		];
@@ -1108,12 +1568,101 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		const lines = [theme.bold(theme.fg("accent", "Choose a notification provider"))];
 		this.#appendWrapped(
 			lines,
-			"Select a provider to configure. Telegram setup uses a masked token and an optional private-chat ID; Discord and Slack credentials are managed by their provider integrations.",
+			"Select Telegram, Discord, or Slack for configuration, desired intent, health, test, and removal actions.",
 			width,
 			"muted",
 		);
 		lines.push("");
 		this.#renderActionList(lines, width, this.#providerActions());
+		return lines;
+	}
+
+	#renderProviderActions(width: number): string[] {
+		const view = this.#state.status[this.#selectedProvider];
+		const lines = [theme.bold(theme.fg("accent", `${this.#selectedProvider} notification settings`))];
+		this.#appendWrapped(
+			lines,
+			`configured: ${view.configured ? "yes" : "no"} · repair: ${view.quarantined ? "required" : "no"} · desired: ${view.desiredEnabled ? "on" : "off"} · effective: ${view.effectiveEnabled ? "yes" : "no"} · destination: ${view.channel ?? "(unset)"}`,
+			width,
+			"muted",
+		);
+		if (view.issues.length > 0) {
+			this.#appendWrapped(
+				lines,
+				`issues: ${view.issues.map(issue => `${issue.path}:${issue.code}`).join(", ")}`,
+				width,
+				"muted",
+			);
+		}
+		lines.push("");
+		this.#renderActionList(lines, width, this.#selectedProviderActions());
+		return lines;
+	}
+
+	#providerFormPrompt(): string {
+		switch (this.#providerFormStep) {
+			case "bot-action":
+				return "Bot token action (keep | replace | remove)";
+			case "bot-secret":
+				return "Replacement bot token";
+			case "app-action":
+				return "Slack app token action (keep | replace | remove)";
+			case "app-secret":
+				return "Replacement Slack app token";
+			case "application-id":
+				return "Discord application ID (blank keeps stored)";
+			case "guild-id":
+				return "Discord guild ID (blank keeps stored)";
+			case "parent-channel-id":
+				return "Discord parent channel ID (blank keeps stored)";
+			case "workspace-id":
+				return "Slack workspace ID (blank keeps stored)";
+			case "channel-id":
+				return "Slack channel ID (blank keeps stored)";
+			case "authorized-user-id":
+				return "Slack authorized user ID (optional; blank keeps stored)";
+		}
+	}
+
+	#renderProviderForm(width: number): string[] {
+		const lines = [theme.bold(theme.fg("accent", `${this.#selectedProvider} configuration`))];
+		this.#appendWrapped(lines, this.#providerFormPrompt(), width, "muted");
+		lines.push("");
+		if (this.#providerStepUsesSecret()) {
+			this.#providerSecretInput.focused = this.focused;
+			for (const line of this.#providerSecretInput.render(width)) lines.push(line);
+		} else {
+			this.#providerTextInput.focused = this.focused;
+			for (const line of this.#providerTextInput.render(width)) lines.push(line);
+		}
+		lines.push("");
+		this.#appendStatus(lines, width);
+		lines.push(theme.fg("dim", "  Enter to continue · Esc to discard all transient provider secrets"));
+		return lines;
+	}
+
+	#renderProviderReview(width: number): string[] {
+		const draft = this.#providerPrepared;
+		const lines = [
+			theme.bold(theme.fg("accent", `Review ${draft?.provider ?? this.#selectedProvider} configuration`)),
+		];
+		if (draft) {
+			lines.push(
+				this.#truncate(
+					`  bot token: ${draft.botTokenDisposition} ${maskedToken(draft.botTokenMask, "(unset)")}${draft.appTokenDisposition ? ` · app token: ${draft.appTokenDisposition} ${maskedToken(draft.appTokenMask, "(unset)")}` : ""}`,
+					width,
+				),
+			);
+			const routing =
+				draft.provider === "discord"
+					? `application ${draft.applicationIdDisplay ?? "(unset)"} · guild ${draft.guildIdDisplay ?? "(unset)"} · parent ${draft.parentChannelIdDisplay ?? "(unset)"}`
+					: `workspace ${draft.workspaceIdDisplay ?? "(unset)"} · channel ${draft.channelIdDisplay ?? "(unset)"} · authorized user ${draft.authorizedUserIdDisplay ?? "(unset)"}`;
+			lines.push(this.#truncate(`  ${routing}`, width));
+		}
+		lines.push("");
+		this.#appendStatus(lines, width);
+		lines.push("");
+		this.#renderActionList(lines, width, this.#providerReviewActions());
 		return lines;
 	}
 
@@ -1211,14 +1760,15 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 	#renderConfirmation(width: number): string[] {
 		const blocked = this.#confirmation === "blocked_identity";
 		const removing = this.#confirmation === "remove";
+		const removingProvider = this.#confirmation === "remove-provider";
 		const lines = [
 			theme.bold(
 				theme.fg(
 					"accent",
 					blocked
 						? "Telegram activation blocked by foreign daemon"
-						: removing
-							? "Remove Telegram configuration?"
+						: removing || removingProvider
+							? `Remove ${removingProvider ? this.#selectedProvider : "Telegram"} configuration?`
 							: "Disable notifications globally?",
 				),
 			),
@@ -1227,9 +1777,9 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 			lines,
 			blocked
 				? "Configuration saved but activation blocked by a foreign daemon. Restore the CAS-protected previous configuration, or keep the saved configuration inactive."
-				: removing
-					? "This removes only Telegram credentials. Configured Discord and Slack adapters remain unchanged."
-					: "This disables all globally configured notification adapters. It does not change a session-local preference.",
+				: removing || removingProvider
+					? `This removes only ${removingProvider ? this.#selectedProvider : "Telegram"} configuration and sets that provider's desired intent off. Siblings and the global master remain unchanged.`
+					: "This disables the global master while preserving every provider's configuration and desired intent.",
 			width,
 			"muted",
 		);
@@ -1263,30 +1813,36 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		const lines = [theme.bold(theme.fg("accent", "Notifications"))];
 		lines.push(
 			this.#truncate(
-				`  Global: ${status.enabled ? "enabled" : "disabled"} · configured: ${status.globallyConfigured ? "yes" : "no"} · Telegram: ${
-					status.telegram.configured ? "configured" : "not configured"
-				}`,
+				`  Global master: ${status.enabled ? "enabled" : "disabled"} · any provider effective: ${status.anyProviderEffective ? "yes" : "no"}`,
 				width,
 			),
 		);
-		lines.push(
-			this.#truncate(
-				`  Session: ${session.effectiveEnabled ? "ACTIVE" : "inactive"} · local: ${session.locallyEnabled ? "on" : "off"} · runtime: ${
-					session.running ? "running" : "stopped"
-				} · environment: ${session.environment}`,
-				width,
-			),
-		);
-		if (width >= 100) {
+		for (const provider of ["telegram", "discord", "slack"] as const) {
+			const view = status[provider];
+			const checkedHealth = health?.provider === provider ? statusLabel(health.overall) : "not checked";
+			const test =
+				this.#lastTest?.adapter === provider
+					? this.#lastTest.ok
+						? "OK"
+						: this.#lastTest.uncertain
+							? "UNCERTAIN"
+							: "ERROR"
+					: "not run";
 			lines.push(
 				this.#truncate(
-					`  Telegram identity: ${status.telegram.botTokenMasked} · fingerprint: ${status.telegram.tokenFingerprint ?? "(not set)"} · chat: ${
-						status.telegram.channel ?? "(not set)"
-					}`,
+					`  ${provider}: ${view.quarantined ? "NEEDS REPAIR" : view.configured ? "configured" : "not configured"} · desired ${view.desiredEnabled ? "on" : "off"} (${view.desiredSource}) · effective ${view.effectiveEnabled ? "yes" : "no"} · runtime ${view.runtime ?? "inactive"} · health ${checkedHealth} · test ${test} · destination ${view.channel ?? "(unset)"}`,
 					width,
 				),
 			);
 		}
+		lines.push(
+			this.#truncate(
+				`  Session: ${session.genericSessionEnabled ? "ACTIVE" : "inactive"} · local: ${session.locallyEnabled ? "on" : "off"} · runtime: ${
+					session.running ? "running" : "stopped"
+				} · admission: ${session.genericEligibilitySource}`,
+				width,
+			),
+		);
 		if (health && width >= 120) {
 			lines.push(
 				this.#truncate(
@@ -1316,7 +1872,7 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 		if (this.#lastTest && width >= 120) {
 			lines.push(
 				this.#truncate(
-					`  Last in-editor test: ${this.#lastTest.ok ? "OK" : "ERROR"} — ${safeDetail(this.#lastTest.detail, "No detail returned.")}`,
+					`  Last in-editor test: ${this.#lastTest.ok ? "OK" : this.#lastTest.uncertain ? "UNCERTAIN" : "ERROR"} — ${safeDetail(this.#lastTest.detail, "No detail returned.")}`,
 					width,
 				),
 			);
@@ -1327,11 +1883,12 @@ export class NotificationsSettingsEditorComponent implements Component, Focusabl
 	#renderActionList(lines: string[], width: number, actions: readonly Action[]): void {
 		if (actions.length === 0) return;
 		this.#selectedIndex = Math.max(0, Math.min(this.#selectedIndex, actions.length - 1));
+		const visibleActions = width < 100 ? 2 : VISIBLE_ACTIONS;
 		const start = Math.max(
 			0,
-			Math.min(this.#selectedIndex - Math.floor(VISIBLE_ACTIONS / 2), actions.length - VISIBLE_ACTIONS),
+			Math.min(this.#selectedIndex - Math.floor(visibleActions / 2), actions.length - visibleActions),
 		);
-		const end = Math.min(actions.length, start + VISIBLE_ACTIONS);
+		const end = Math.min(actions.length, start + visibleActions);
 		for (let index = start; index < end; index += 1) {
 			const action = actions[index];
 			if (!action) continue;

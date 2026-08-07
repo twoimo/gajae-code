@@ -1,6 +1,14 @@
 import { ThinkingLevel } from "@gajae-code/agent-core";
-import type { Component, OverlayHandle, TUI } from "@gajae-code/tui";
-import { Container, Spacer, Text } from "@gajae-code/tui";
+import {
+	type Component,
+	Container,
+	type OverlayHandle,
+	replaceTabs,
+	Spacer,
+	Text,
+	type TUI,
+	wrapTextWithAnsi,
+} from "@gajae-code/tui";
 import { logger } from "@gajae-code/utils";
 import { KeybindingsManager } from "../../config/keybindings";
 import type {
@@ -22,11 +30,17 @@ import { HookEditorComponent } from "../../modes/components/hook-editor";
 import { HookInputComponent } from "../../modes/components/hook-input";
 import { HookSelectorComponent } from "../../modes/components/hook-selector";
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "../../modes/theme/theme";
-import type { InteractiveModeContext } from "../../modes/types";
+import {
+	clearInteractiveActivityLoaders,
+	type InteractiveModeContext,
+	stopInteractiveActivityIndicator,
+	syncInteractiveActivityIndicator,
+} from "../../modes/types";
 import { createReadonlySessionManager } from "../../session/session-manager";
 import { parseThinkingLevel } from "../../thinking";
 import type { TodoPhase } from "../../tools/todo-write";
 import { setSessionTerminalTitle, setTerminalTitle } from "../../utils/title-generator";
+import { emitHostStatus } from "../utils/host-status";
 import { applyInjectedUserSubmission } from "../utils/injected-user-submission";
 import { classifyHookSelectorBellEvent, ringTerminalBell } from "../utils/terminal-bell";
 import { prepareTranscriptRebuild } from "../utils/ui-helpers";
@@ -34,15 +48,67 @@ import { prepareTranscriptRebuild } from "../utils/ui-helpers";
 const MAX_WIDGET_LINES = 10;
 const HOOK_SELECTOR_CHROME_ROWS = 7;
 const HOOK_SELECTOR_OUTLINE_ROWS = 2;
-const HOOK_SELECTOR_INLINE_INPUT_ROWS = 2;
+const HOOK_SELECTOR_INLINE_EDITOR_ROWS = 2;
+const HOOK_SELECTOR_INLINE_AUTOCOMPLETE_ROWS = 6;
+const HOOK_SELECTOR_INLINE_INPUT_ROWS = 1 + HOOK_SELECTOR_INLINE_EDITOR_ROWS + HOOK_SELECTOR_INLINE_AUTOCOMPLETE_ROWS;
+const HOOK_SELECTOR_INLINE_COMPACT_EDITOR_ROWS = 1;
+const HOOK_SELECTOR_INLINE_COMPACT_AUTOCOMPLETE_MAX_VISIBLE = 3;
+const HOOK_SELECTOR_INLINE_COMPACT_AUTOCOMPLETE_ROWS = 4;
+const HOOK_SELECTOR_INLINE_COMPACT_INPUT_ROWS =
+	1 + HOOK_SELECTOR_INLINE_COMPACT_EDITOR_ROWS + HOOK_SELECTOR_INLINE_COMPACT_AUTOCOMPLETE_ROWS;
+const HOOK_SELECTOR_INLINE_COMPACT_CHROME_ROWS = 2;
+
+const EXTENSION_ACTION_MUTATIONS: ReadonlySet<PropertyKey> = new Set([
+	"sendMessage",
+	"sendUserMessage",
+	"appendEntry",
+	"setLabel",
+	"setActiveTools",
+	"setModel",
+	"setThinkingLevel",
+	"setThinkingVisibility",
+	"cycleThinkingLevel",
+	"setThinkingLevelForControl",
+	"setThinkingVisibilityForControl",
+	"setModelTemporaryForControl",
+	"setSessionName",
+]);
+const EXTENSION_CONTEXT_MUTATIONS: ReadonlySet<PropertyKey> = new Set([
+	"abort",
+	"abortPromptAndWait",
+	"shutdown",
+	"compact",
+	"clearContext",
+	"cycleModel",
+	"setModelProfile",
+	"cycleThinkingLevel",
+	"setQueueMode",
+	"invokeSkill",
+	"setPlanMode",
+	"operateGoal",
+	"setSdkPermissionProvider",
+	"setSdkClientBridge",
+	"sdkControl",
+]);
+const EXTENSION_COMMAND_MUTATIONS: ReadonlySet<PropertyKey> = new Set([
+	"reload",
+	"newSession",
+	"branch",
+	"navigateTree",
+	"compact",
+	"switchSession",
+]);
 
 export class ExtensionUiController {
 	#extensionTerminalInputUnsubscribers = new Set<() => void>();
+	#extensionErrorUnsubscribe?: () => void;
 	#hookWidgetsAbove = new Map<string, ExtensionUiComponent>();
 	#hookWidgetsBelow = new Map<string, ExtensionUiComponent>();
 	#activeHookCustomComponent?: Component & { dispose?(): void };
 	#activeHookCustomOverlay?: OverlayHandle;
+	#activeHookCustomCancel?: () => void;
 
+	#hookSelectorResizeHandler?: () => void;
 	constructor(private ctx: InteractiveModeContext) {}
 
 	#clearActiveHookCustom(): void {
@@ -281,7 +347,24 @@ export class ExtensionUiController {
 				const disabled = [...(session.settings.get("disabledExtensions") ?? [])];
 				const on = input.on === true;
 				const next = on ? disabled.filter(value => value !== id) : [...new Set([...disabled, id])];
-				session.settings.set("disabledExtensions", next);
+				if (!session.settings.canWriteDurableConfig()) {
+					throw Object.assign(
+						new Error(
+							"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+						),
+						{ code: "invalid_request" },
+					);
+				}
+				try {
+					session.settings.set("disabledExtensions", next);
+				} catch (error) {
+					if (!session.settings.canWriteDurableConfig()) {
+						throw Object.assign(new Error(error instanceof Error ? error.message : String(error)), {
+							code: "invalid_request",
+						});
+					}
+					throw error;
+				}
 				return { changed: true, enabled: on };
 			}
 			case "session.delete":
@@ -299,6 +382,32 @@ export class ExtensionUiController {
 	#restoreComposerEditor(): void {
 		this.ctx.restoreComposer();
 	}
+	#removeHookSelectorResizeHandler(): void {
+		if (!this.#hookSelectorResizeHandler) return;
+		process.stdout.removeListener("resize", this.#hookSelectorResizeHandler);
+		this.#hookSelectorResizeHandler = undefined;
+	}
+
+	#isStopped(): boolean {
+		return this.ctx.isStopped?.() === true;
+	}
+
+	#assertActive(): void {
+		if (this.#isStopped()) throw Object.assign(new Error("Interactive mode stopped"), { code: "cancelled" });
+	}
+
+	#guardMutations<T extends object>(target: T, mutationNames: ReadonlySet<PropertyKey>): T {
+		return new Proxy(target, {
+			get: (current, property, receiver) => {
+				const member = Reflect.get(current, property, receiver) as unknown;
+				if (!mutationNames.has(property) || typeof member !== "function") return member;
+				return (...args: unknown[]) => {
+					this.#assertActive();
+					return Reflect.apply(member, current, args);
+				};
+			},
+		});
+	}
 
 	/**
 	 * Initialize the hook system with TUI-based UI context.
@@ -312,13 +421,19 @@ export class ExtensionUiController {
 			notify: (message, type) => this.showHookNotify(message, type),
 			onTerminalInput: handler => this.addExtensionTerminalInputListener(handler),
 			setStatus: (key, text) => this.setHookStatus(key, text),
-			setWorkingMessage: message => this.ctx.setWorkingMessage(message),
+			setWorkingMessage: message => {
+				if (!this.#isStopped()) this.ctx.setWorkingMessage(message);
+			},
 			setWidget: (key, content, options) => this.setHookWidget(key, content, options),
-			setTitle: title => setTerminalTitle(title),
+			setTitle: title => {
+				if (!this.#isStopped()) setTerminalTitle(title);
+			},
 			custom: (factory, options) => this.showHookCustom(factory, options),
-			setEditorText: text => this.ctx.editor.setText(text),
+			setEditorText: text => {
+				if (!this.#isStopped()) this.ctx.editor.setText(text);
+			},
 			pasteToEditor: text => {
-				this.ctx.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
+				if (!this.#isStopped()) this.ctx.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
 			},
 			getEditorText: () => this.ctx.editor.getText(),
 			editor: (title, prefill, dialogOptions, editorOptions) =>
@@ -329,17 +444,22 @@ export class ExtensionUiController {
 			getAllThemes: async () => (await getAvailableThemesWithPaths()).map(t => ({ name: t.name, path: t.path })),
 			getTheme: name => getThemeByName(name),
 			setTheme: async themeArg => {
+				if (this.#isStopped()) return { success: false, error: "Interactive mode stopped" };
 				if (typeof themeArg === "string") {
-					return await setTheme(themeArg, true);
+					return await setTheme(themeArg, true, { shouldApply: () => !this.#isStopped() });
 				}
 				// Theme object passed directly - not supported in current implementation
 				return Promise.resolve({ success: false, error: "Direct theme object not supported" });
 			},
 			setFooter: () => {},
 			setHeader: () => {},
-			setEditorComponent: factory => this.ctx.setEditorComponent(factory),
+			setEditorComponent: factory => {
+				if (!this.#isStopped()) this.ctx.setEditorComponent(factory);
+			},
 			getToolsExpanded: () => this.ctx.toolOutputExpanded,
-			setToolsExpanded: expanded => this.ctx.setToolsExpanded(expanded),
+			setToolsExpanded: expanded => {
+				if (!this.#isStopped()) this.ctx.setToolsExpanded(expanded);
+			},
 		};
 		this.ctx.setToolUIContext(uiContext, true);
 
@@ -353,8 +473,11 @@ export class ExtensionUiController {
 				const wasStreaming = this.ctx.session.isStreaming;
 				this.ctx.session
 					.sendCustomMessage(message, options)
-					.then(() => this.#applyCustomMessageDisplay(wasStreaming, message.display))
+					.then(() => {
+						if (!this.#isStopped()) this.#applyCustomMessageDisplay(wasStreaming, message.display);
+					})
 					.catch((err: unknown) => {
+						if (this.#isStopped()) return;
 						this.ctx.showError(
 							`Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`,
 						);
@@ -399,7 +522,9 @@ export class ExtensionUiController {
 		const contextActions: ExtensionContextActions = {
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
+			getActivePromptHandle: () => this.ctx.session.activePromptHandle,
 			abort: () => this.ctx.session.abort(),
+			abortPromptAndWait: (handle, options) => this.ctx.session.abortPromptAndWait(handle, options),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			getPendingMessageCounts: () => this.ctx.session.pendingMessageCounts,
 			getTranscript: () => this.ctx.session.getTranscript(),
@@ -425,6 +550,7 @@ export class ExtensionUiController {
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
 			clearContext: () => this.ctx.session.clearContext(),
 			cycleModel: () => this.ctx.session.cycleModel(),
+			setModelProfile: name => this.ctx.session.activateModelProfileForControl(name),
 			cycleThinkingLevel: () => this.ctx.session.cycleThinkingLevel(),
 			setQueueMode: (kind, mode) => {
 				if (kind === "steering" && (mode === "all" || mode === "one-at-a-time")) {
@@ -441,19 +567,16 @@ export class ExtensionUiController {
 				}
 				return false;
 			},
-			invokeSkill: (name, args) => this.ctx.session.invokeSkill(name, args),
+			invokeSkill: (name, args, options) => this.ctx.session.invokeSkill(name, args, options),
 			setPlanMode: on => this.ctx.session.setSdkPlanMode(on),
 			operateGoal: (op, objective) => this.ctx.session.operateGoal(op, objective),
 			getSkillState: () =>
 				this.ctx.session.skills.map(skill => ({ name: skill.name, description: skill.description })),
-			getConfigItems: () => ({
-				steeringMode: this.ctx.session.steeringMode,
-				followUpMode: this.ctx.session.followUpMode,
-				interruptMode: this.ctx.session.interruptMode,
-			}),
+			getConfigItems: () => this.ctx.session.getSdkConfigItems(),
 			getBranchCandidates: () => this.ctx.sessionManager.getTree(),
 			getExtensions: () => this.ctx.session.extensionRunner?.getExtensionPaths() ?? [],
 			setSdkPermissionProvider: provider => this.ctx.session.setSdkPermissionProvider(provider),
+			setSdkClientBridge: bridge => this.ctx.session.setClientBridge(bridge),
 			sdkControl: this.#sdkControl,
 		};
 		const commandActions: ExtensionCommandContextActions = {
@@ -462,10 +585,12 @@ export class ExtensionUiController {
 			reload: async () => {
 				const previousSessionId = this.ctx.sessionManager.getSessionId();
 				await this.ctx.session.reload();
+				if (this.#isStopped()) return;
 				const sessionIdentityChanged = previousSessionId !== this.ctx.sessionManager.getSessionId();
 				if (sessionIdentityChanged) this.ctx.resetIrcSidebarSession();
 				this.ctx.rebuildInitialMessages(sessionIdentityChanged ? "replace-identity" : "reconcile-same-transcript");
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return;
 				this.ctx.showStatus("Reloaded session");
 			},
 			newSession: async options => {
@@ -474,18 +599,17 @@ export class ExtensionUiController {
 				if (!success) {
 					return { cancelled: true };
 				}
+				if (this.#isStopped()) return { cancelled: true };
+				clearInteractiveActivityLoaders(this.ctx);
 				cleanupPreviousSessionUi();
 
-				if (this.ctx.loadingAnimation) {
-					this.ctx.loadingAnimation.stop();
-					this.ctx.loadingAnimation = undefined;
-				}
-				this.ctx.statusContainer.clear();
+				stopInteractiveActivityIndicator(this.ctx);
 				this.ctx.resetIrcSidebarSession();
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
 
 				if (options?.setup) {
 					await options.setup(this.ctx.sessionManager);
+					if (this.#isStopped()) return { cancelled: true };
 				}
 
 				this.ctx.statusLine.invalidate();
@@ -505,12 +629,14 @@ export class ExtensionUiController {
 					new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 0),
 				);
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return { cancelled: true };
 				this.ctx.ui.requestRender();
 
 				return { cancelled: false };
 			},
 			branch: async entryId => {
 				const result = await this.ctx.session.branch(entryId);
+				if (this.#isStopped()) return { cancelled: true };
 				if (result.cancelled) {
 					return { cancelled: true };
 				}
@@ -519,6 +645,7 @@ export class ExtensionUiController {
 				// Update UI
 				this.ctx.rebuildInitialMessages("replace-identity");
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return { cancelled: true };
 				this.ctx.editor.setText(result.selectedText);
 				this.ctx.showStatus("Branched to new session");
 
@@ -526,6 +653,7 @@ export class ExtensionUiController {
 			},
 			navigateTree: async (targetId, options) => {
 				const result = await this.ctx.session.navigateTree(targetId, { summarize: options?.summarize });
+				if (this.#isStopped()) return { cancelled: true };
 				if (result.cancelled) {
 					return { cancelled: true };
 				}
@@ -533,6 +661,7 @@ export class ExtensionUiController {
 				// Update UI
 				this.ctx.rebuildInitialMessages("reconcile-same-transcript");
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return { cancelled: true };
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText(result.editorText);
 				}
@@ -546,9 +675,11 @@ export class ExtensionUiController {
 
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath);
+				if (this.#isStopped()) return { cancelled: true };
 				if (!result) {
 					return { cancelled: true };
 				}
+				clearInteractiveActivityLoaders(this.ctx);
 				const switchingToDifferentSession = previousSessionId !== this.ctx.sessionManager.getSessionId();
 				if (switchingToDifferentSession) this.ctx.resetIrcSidebarSession();
 
@@ -557,15 +688,23 @@ export class ExtensionUiController {
 					switchingToDifferentSession ? "replace-identity" : "reconcile-same-transcript",
 				);
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return { cancelled: true };
+				syncInteractiveActivityIndicator(this.ctx);
 				return { cancelled: false };
 			},
 		};
 
-		extensionRunner.initialize(actions, contextActions, commandActions, uiContext);
+		extensionRunner.initialize(
+			this.#guardMutations(actions, EXTENSION_ACTION_MUTATIONS),
+			this.#guardMutations(contextActions, EXTENSION_CONTEXT_MUTATIONS),
+			this.#guardMutations(commandActions, EXTENSION_COMMAND_MUTATIONS),
+			uiContext,
+		);
 
 		// Subscribe to extension errors
-		extensionRunner.onError((error: ExtensionError) => {
-			this.showExtensionError(error.extensionPath, error.error);
+		this.#extensionErrorUnsubscribe?.();
+		this.#extensionErrorUnsubscribe = extensionRunner.onError((error: ExtensionError) => {
+			if (!this.#isStopped()) this.showExtensionError(error.extensionPath, error.error);
 		});
 
 		// Emit session_start event
@@ -575,6 +714,7 @@ export class ExtensionUiController {
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {
+		if (this.#isStopped()) return;
 		const placement = options?.placement ?? "aboveEditor";
 		this.#removeHookWidget(this.#hookWidgetsAbove, key);
 		this.#removeHookWidget(this.#hookWidgetsBelow, key);
@@ -701,7 +841,9 @@ export class ExtensionUiController {
 		const contextActions: ExtensionContextActions = {
 			getModel: () => this.ctx.session.model,
 			isIdle: () => !this.ctx.session.isStreaming,
+			getActivePromptHandle: () => this.ctx.session.activePromptHandle,
 			abort: () => this.ctx.session.abort(),
+			abortPromptAndWait: (handle, options) => this.ctx.session.abortPromptAndWait(handle, options),
 			hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 			getPendingMessageCounts: () => this.ctx.session.pendingMessageCounts,
 			getTranscript: () => this.ctx.session.getTranscript(),
@@ -727,6 +869,7 @@ export class ExtensionUiController {
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
 			clearContext: () => this.ctx.session.clearContext(),
 			cycleModel: () => this.ctx.session.cycleModel(),
+			setModelProfile: name => this.ctx.session.activateModelProfileForControl(name),
 			cycleThinkingLevel: () => this.ctx.session.cycleThinkingLevel(),
 			setQueueMode: (kind, mode) => {
 				if (kind === "steering" && (mode === "all" || mode === "one-at-a-time")) {
@@ -745,14 +888,11 @@ export class ExtensionUiController {
 			},
 			getSkillState: () =>
 				this.ctx.session.skills.map(skill => ({ name: skill.name, description: skill.description })),
-			getConfigItems: () => ({
-				steeringMode: this.ctx.session.steeringMode,
-				followUpMode: this.ctx.session.followUpMode,
-				interruptMode: this.ctx.session.interruptMode,
-			}),
+			getConfigItems: () => this.ctx.session.getSdkConfigItems(),
 			getBranchCandidates: () => this.ctx.sessionManager.getTree(),
 			getExtensions: () => this.ctx.session.extensionRunner?.getExtensionPaths() ?? [],
 			setSdkPermissionProvider: provider => this.ctx.session.setSdkPermissionProvider(provider),
+			setSdkClientBridge: bridge => this.ctx.session.setClientBridge(bridge),
 			sdkControl: this.#sdkControl,
 		};
 		const commandActions: ExtensionCommandContextActions = {
@@ -764,10 +904,12 @@ export class ExtensionUiController {
 				}
 				const previousSessionId = this.ctx.sessionManager.getSessionId();
 				await this.ctx.session.reload();
+				if (this.#isStopped()) return;
 				const sessionIdentityChanged = previousSessionId !== this.ctx.sessionManager.getSessionId();
 				if (sessionIdentityChanged) this.ctx.resetIrcSidebarSession();
 				this.ctx.rebuildInitialMessages(sessionIdentityChanged ? "replace-identity" : "reconcile-same-transcript");
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return;
 				this.ctx.showStatus("Reloaded session");
 			},
 			newSession: async options => {
@@ -779,17 +921,16 @@ export class ExtensionUiController {
 				if (!success) {
 					return { cancelled: true };
 				}
+				if (this.#isStopped()) return { cancelled: true };
+				clearInteractiveActivityLoaders(this.ctx);
 				cleanupPreviousSessionUi();
 
-				if (this.ctx.loadingAnimation) {
-					this.ctx.loadingAnimation.stop();
-					this.ctx.loadingAnimation = undefined;
-				}
-				this.ctx.statusContainer.clear();
+				stopInteractiveActivityIndicator(this.ctx);
 				this.ctx.resetIrcSidebarSession();
 
 				if (options?.setup) {
 					await options.setup(this.ctx.sessionManager);
+					if (this.#isStopped()) return { cancelled: true };
 				}
 
 				prepareTranscriptRebuild(this.ctx.ui, "replace-identity");
@@ -804,6 +945,7 @@ export class ExtensionUiController {
 					new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 0),
 				);
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return { cancelled: true };
 				this.ctx.ui.requestRender();
 
 				return { cancelled: false };
@@ -813,6 +955,7 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 				const result = await this.ctx.session.branch(entryId);
+				if (this.#isStopped()) return { cancelled: true };
 				if (result.cancelled) {
 					return { cancelled: true };
 				}
@@ -821,6 +964,7 @@ export class ExtensionUiController {
 				// Update UI
 				this.ctx.rebuildInitialMessages("replace-identity");
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return { cancelled: true };
 				this.ctx.editor.setText(result.selectedText);
 				this.ctx.showStatus("Branched to new session");
 
@@ -831,6 +975,7 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 				const result = await this.ctx.session.navigateTree(targetId, { summarize: options?.summarize });
+				if (this.#isStopped()) return { cancelled: true };
 				if (result.cancelled) {
 					return { cancelled: true };
 				}
@@ -838,6 +983,7 @@ export class ExtensionUiController {
 				// Update UI
 				this.ctx.rebuildInitialMessages("reconcile-same-transcript");
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return { cancelled: true };
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setText(result.editorText);
 				}
@@ -854,20 +1000,29 @@ export class ExtensionUiController {
 
 				this.clearHookWidgets();
 				const result = await this.ctx.session.switchSession(sessionPath);
+				if (this.#isStopped()) return { cancelled: true };
 				if (!result) {
 					return { cancelled: true };
 				}
+				clearInteractiveActivityLoaders(this.ctx);
 				const switchingToDifferentSession = previousSessionId !== this.ctx.sessionManager.getSessionId();
 				if (switchingToDifferentSession) this.ctx.resetIrcSidebarSession();
 				this.ctx.rebuildInitialMessages(
 					switchingToDifferentSession ? "replace-identity" : "reconcile-same-transcript",
 				);
 				await this.ctx.reloadTodos();
+				if (this.#isStopped()) return { cancelled: true };
+				syncInteractiveActivityIndicator(this.ctx);
 				return { cancelled: false };
 			},
 		};
 
-		extensionRunner.initialize(actions, contextActions, commandActions, uiContext);
+		extensionRunner.initialize(
+			this.#guardMutations(actions, EXTENSION_ACTION_MUTATIONS),
+			this.#guardMutations(contextActions, EXTENSION_CONTEXT_MUTATIONS),
+			this.#guardMutations(commandActions, EXTENSION_COMMAND_MUTATIONS),
+			uiContext,
+		);
 	}
 
 	createBackgroundUiContext(): ExtensionUIContext {
@@ -924,6 +1079,7 @@ export class ExtensionUiController {
 						sessionManager: createReadonlySessionManager(this.ctx.session.sessionManager),
 						modelRegistry: this.ctx.session.modelRegistry,
 						model: this.ctx.session.model,
+						getActivePromptHandle: () => this.ctx.session.activePromptHandle,
 						isIdle: () => !this.ctx.session.isStreaming,
 						hasPendingMessages: () => this.ctx.session.queuedMessageCount > 0,
 						getPendingMessageCounts: () => this.ctx.session.pendingMessageCounts,
@@ -1011,7 +1167,7 @@ export class ExtensionUiController {
 	 * Set hook status text in the footer.
 	 */
 	setHookStatus(key: string, text: string | undefined): void {
-		if (this.ctx.isBackgrounded) {
+		if (this.#isStopped() || this.ctx.isBackgrounded) {
 			return;
 		}
 		this.ctx.statusLine.setHookStatus(key, text);
@@ -1026,26 +1182,84 @@ export class ExtensionUiController {
 		options: string[],
 		dialogOptions?: ExtensionUIDialogOptions,
 	): Promise<string | undefined> {
+		if (this.#isStopped()) return Promise.resolve(undefined);
 		const { promise, finish, attachAbort } = this.#createHookDialogState(
 			() => this.hideHookSelector(),
 			dialogOptions?.signal,
 		);
 		const requestedTitleRows = dialogOptions?.scrollTitleRows;
-		const baseMaxVisible = Math.max(4, Math.min(15, this.ctx.ui.terminal.rows - 12));
-		const scrollOptionRows = Math.max(1, Math.min(baseMaxVisible, options.length));
-		const maxVisible =
-			requestedTitleRows === undefined ? baseMaxVisible : Math.min(15, Math.max(3, scrollOptionRows + 1));
 		const listChromeRows = dialogOptions?.outline === true ? HOOK_SELECTOR_OUTLINE_ROWS : 0;
 		// Reserve rows for the inline custom-input editor so opening it doesn't
 		// push the scrollable title past the viewport into terminal scrollback.
-		const inlineInputRows =
-			dialogOptions?.customInput || dialogOptions?.clarificationInput ? HOOK_SELECTOR_INLINE_INPUT_ROWS : 0;
-		const availableTitleRows =
-			this.ctx.ui.terminal.rows - scrollOptionRows - listChromeRows - inlineInputRows - HOOK_SELECTOR_CHROME_ROWS;
-		const scrollTitleRows =
-			requestedTitleRows === undefined ? undefined : Math.max(1, Math.min(requestedTitleRows, availableTitleRows));
+		const hasInlineInput =
+			dialogOptions?.customInput !== undefined || dialogOptions?.clarificationInput !== undefined;
+		const inlineInputRows = hasInlineInput ? HOOK_SELECTOR_INLINE_INPUT_ROWS : 0;
+		const helpText = dialogOptions?.helpText ?? "up/down navigate  enter select  esc cancel";
+		const inlineInputHelpText =
+			requestedTitleRows === undefined
+				? "enter submit  esc back to options  ctrl+g external editor"
+				: "enter submit  esc back to options  ctrl+g external editor  PgUp/PgDn: question · Wheel: transcript";
+		const computeBudget = (): {
+			maxVisible: number;
+			scrollTitleRows: number | undefined;
+			inlineEditorMaxHeight: number | undefined;
+			inlineAutocompleteMaxVisible: number | undefined;
+			compactInlineInput: boolean;
+		} => {
+			const baseMaxVisible = Math.max(4, Math.min(15, this.ctx.ui.terminal.rows - 12));
+			const scrollOptionRows = Math.max(1, Math.min(baseMaxVisible, options.length));
+			const helpWidth = Math.max(1, this.ctx.ui.terminal.columns - 2);
+			const helpTextRows = Math.max(
+				wrapTextWithAnsi(replaceTabs(helpText), helpWidth).length,
+				hasInlineInput ? wrapTextWithAnsi(replaceTabs(inlineInputHelpText), helpWidth).length : 0,
+				1,
+			);
+			const baseChromeRows = HOOK_SELECTOR_CHROME_ROWS - 1 + helpTextRows;
+			const compactInlineInput =
+				requestedTitleRows !== undefined &&
+				hasInlineInput &&
+				this.ctx.ui.terminal.rows < baseChromeRows + listChromeRows + inlineInputRows + 2;
+			const chromeRows = baseChromeRows - (compactInlineInput ? HOOK_SELECTOR_INLINE_COMPACT_CHROME_ROWS : 0);
+			const effectiveInlineInputRows = compactInlineInput
+				? HOOK_SELECTOR_INLINE_COMPACT_INPUT_ROWS
+				: inlineInputRows;
+			const maxVisible =
+				requestedTitleRows === undefined
+					? baseMaxVisible
+					: Math.max(
+							1,
+							Math.min(
+								15,
+								scrollOptionRows,
+								this.ctx.ui.terminal.rows - listChromeRows - effectiveInlineInputRows - chromeRows - 1,
+							),
+						);
+			const availableTitleRows =
+				this.ctx.ui.terminal.rows - maxVisible - listChromeRows - effectiveInlineInputRows - chromeRows;
+			const scrollTitleRows =
+				requestedTitleRows === undefined
+					? undefined
+					: Math.max(1, Math.min(requestedTitleRows, availableTitleRows));
+			return {
+				maxVisible,
+				scrollTitleRows,
+				inlineEditorMaxHeight:
+					requestedTitleRows !== undefined && hasInlineInput
+						? compactInlineInput
+							? HOOK_SELECTOR_INLINE_COMPACT_EDITOR_ROWS
+							: HOOK_SELECTOR_INLINE_EDITOR_ROWS
+						: undefined,
+				inlineAutocompleteMaxVisible: compactInlineInput
+					? HOOK_SELECTOR_INLINE_COMPACT_AUTOCOMPLETE_MAX_VISIBLE
+					: undefined,
+				compactInlineInput,
+			};
+		};
+		const { maxVisible, scrollTitleRows, inlineEditorMaxHeight, inlineAutocompleteMaxVisible, compactInlineInput } =
+			computeBudget();
 
 		ringTerminalBell(classifyHookSelectorBellEvent(title));
+		emitHostStatus("attention");
 
 		this.ctx.hookSelector = new HookSelectorComponent(
 			title,
@@ -1079,8 +1293,6 @@ export class ExtensionUiController {
 				timeout: dialogOptions?.timeout,
 				onTimeout: dialogOptions?.onTimeout,
 				tui: this.ctx.ui,
-				// Share the main prompt editor's autocomplete provider so the
-				// inline "Other (type your own)" editor supports `@` file links.
 				autocompleteProvider:
 					dialogOptions?.customInput || dialogOptions?.clarificationInput
 						? this.ctx.editor.getAutocompleteProvider()
@@ -1089,6 +1301,9 @@ export class ExtensionUiController {
 				wrapFocused: dialogOptions?.wrapFocused,
 				scrollTitleRows,
 				maxVisible,
+				inlineEditorMaxHeight,
+				inlineAutocompleteMaxVisible,
+				compactInlineInput,
 				customInput: dialogOptions?.customInput
 					? {
 							optionLabel: dialogOptions.customInput.optionLabel,
@@ -1121,6 +1336,24 @@ export class ExtensionUiController {
 		this.ctx.editorContainer.addChild(this.ctx.hookSelector);
 		this.ctx.ui.setFocus(this.ctx.hookSelector);
 		this.ctx.ui.requestRender();
+		if (requestedTitleRows !== undefined) {
+			this.#removeHookSelectorResizeHandler();
+			const resizeHandler = () => {
+				const selector = this.ctx.hookSelector;
+				const nextBudget = computeBudget();
+				if (!selector || nextBudget.scrollTitleRows === undefined) return;
+				selector.setLayoutBudget(
+					nextBudget.maxVisible,
+					nextBudget.scrollTitleRows,
+					nextBudget.inlineEditorMaxHeight,
+					nextBudget.inlineAutocompleteMaxVisible,
+					nextBudget.compactInlineInput,
+				);
+				this.ctx.ui.requestRender();
+			};
+			this.#hookSelectorResizeHandler = resizeHandler;
+			process.stdout.on("resize", resizeHandler);
+		}
 		attachAbort();
 		return promise;
 	}
@@ -1129,9 +1362,11 @@ export class ExtensionUiController {
 	 * Hide the hook selector.
 	 */
 	hideHookSelector(): void {
+		this.#removeHookSelectorResizeHandler();
 		this.ctx.hookSelector?.dispose();
-		this.#restoreComposerEditor();
 		this.ctx.hookSelector = undefined;
+		if (this.#isStopped()) return;
+		this.#restoreComposerEditor();
 		this.ctx.ui.setFocus(this.ctx.editor);
 		this.ctx.ui.requestRender();
 	}
@@ -1153,6 +1388,7 @@ export class ExtensionUiController {
 		dialogOptions?: ExtensionUIDialogOptions,
 		inputOptions?: { readonly initialValue?: string },
 	): Promise<string | undefined> {
+		if (this.#isStopped()) return Promise.resolve(undefined);
 		const { promise, finish, attachAbort } = this.#createHookDialogState(
 			() => this.hideHookInput(),
 			dialogOptions?.signal,
@@ -1191,8 +1427,9 @@ export class ExtensionUiController {
 	 */
 	hideHookInput(): void {
 		this.ctx.hookInput?.dispose();
-		this.#restoreComposerEditor();
 		this.ctx.hookInput = undefined;
+		if (this.#isStopped()) return;
+		this.#restoreComposerEditor();
 		this.ctx.ui.setFocus(this.ctx.editor);
 		this.ctx.ui.requestRender();
 	}
@@ -1206,6 +1443,7 @@ export class ExtensionUiController {
 		dialogOptions?: ExtensionUIDialogOptions,
 		editorOptions?: { promptStyle?: boolean },
 	): Promise<string | undefined> {
+		if (this.#isStopped()) return Promise.resolve(undefined);
 		const { promise, finish, attachAbort } = this.#createHookDialogState(
 			() => this.hideHookEditor(),
 			dialogOptions?.signal,
@@ -1240,6 +1478,11 @@ export class ExtensionUiController {
 	 * Hide the hook editor.
 	 */
 	hideHookEditor(): void {
+		if (this.#isStopped()) {
+			this.ctx.hookEditor?.dispose();
+			this.ctx.hookEditor = undefined;
+			return;
+		}
 		this.#restoreComposerEditor();
 		this.ctx.hookEditor = undefined;
 		this.ctx.ui.setFocus(this.ctx.editor);
@@ -1250,6 +1493,7 @@ export class ExtensionUiController {
 	 * Show a notification for hooks.
 	 */
 	showHookNotify(message: string, type?: "info" | "warning" | "error"): void {
+		if (this.#isStopped()) return;
 		if (type === "error") {
 			this.ctx.showError(message);
 		} else if (type === "warning") {
@@ -1271,6 +1515,7 @@ export class ExtensionUiController {
 		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
 		options?: { overlay?: boolean },
 	): Promise<T> {
+		if (this.#isStopped()) return undefined as T;
 		const savedText = this.ctx.editor.getText();
 		const keybindings = KeybindingsManager.inMemory();
 
@@ -1281,7 +1526,12 @@ export class ExtensionUiController {
 		const close = (result: T) => {
 			if (closed) return;
 			closed = true;
+			this.#activeHookCustomCancel = undefined;
 			this.#clearActiveHookCustom();
+			if (this.#isStopped()) {
+				resolve(result);
+				return;
+			}
 			if (!options?.overlay) {
 				this.#restoreComposerEditor();
 				this.ctx.editor.setText(savedText);
@@ -1291,10 +1541,16 @@ export class ExtensionUiController {
 			resolve(result);
 		};
 
+		this.#activeHookCustomCancel?.();
 		this.#clearActiveHookCustom();
+		this.#activeHookCustomCancel = () => close(undefined as T);
 		Promise.try(() => factory(this.ctx.ui, theme, keybindings, close)).then(c => {
-			if (closed) {
+			if (closed || this.#isStopped()) {
 				c.dispose?.();
+				if (!closed) {
+					closed = true;
+					resolve(undefined as T);
+				}
 				return;
 			}
 			component = c;
@@ -1323,6 +1579,7 @@ export class ExtensionUiController {
 	 * Show an extension error in the UI.
 	 */
 	addExtensionTerminalInputListener(handler: TerminalInputHandler): () => void {
+		if (this.#isStopped()) return () => {};
 		const unsubscribe = this.ctx.ui.addInputListener(handler);
 		this.#extensionTerminalInputUnsubscribers.add(unsubscribe);
 		return () => {
@@ -1351,7 +1608,18 @@ export class ExtensionUiController {
 		this.#extensionTerminalInputUnsubscribers.clear();
 	}
 
+	dispose(): void {
+		this.#removeHookSelectorResizeHandler();
+		this.#extensionErrorUnsubscribe?.();
+		this.#extensionErrorUnsubscribe = undefined;
+		this.#activeHookCustomCancel?.();
+		this.#activeHookCustomCancel = undefined;
+		this.clearExtensionTerminalInputListeners();
+		this.clearHookWidgets();
+	}
+
 	showExtensionError(extensionPath: string, error: string): void {
+		if (this.#isStopped()) return;
 		const errorText = new Text(theme.fg("error", `Extension "${extensionPath}" error: ${error}`), 1, 0);
 		this.ctx.chatContainer.addChild(errorText);
 		this.ctx.ui.requestRender();
@@ -1377,6 +1645,7 @@ export class ExtensionUiController {
 	}
 
 	#sendExtensionUserMessage: SendUserMessageHandler = (content, options) => {
+		if (this.#isStopped()) return Promise.resolve();
 		// Compute queued BEFORE send: prompt() may flip session.isStreaming synchronously.
 		const queued = Boolean(options?.deliverAs) || this.ctx.session.isStreaming;
 		// Call send first so the busy/queued path finds the session queue populated
@@ -1384,6 +1653,7 @@ export class ExtensionUiController {
 		const send = this.ctx.session.sendUserMessage(content, options);
 		applyInjectedUserSubmission(this.ctx, { content, queued });
 		void send.catch((err: unknown) => {
+			if (this.#isStopped()) return;
 			this.ctx.showError(`Extension sendUserMessage failed: ${err instanceof Error ? err.message : String(err)}`);
 		});
 		return send;
@@ -1407,20 +1677,21 @@ export class ExtensionUiController {
 	} {
 		const { promise, resolve } = Promise.withResolvers<string | undefined>();
 		let settled = false;
-		const onAbort = () => {
-			hide();
-			if (!settled) {
-				settled = true;
-				resolve(undefined);
-			}
-		};
+		let unregisterStop: (() => void) | undefined;
 		const finish = (value: string | undefined) => {
 			if (settled) return;
 			settled = true;
 			signal?.removeEventListener("abort", onAbort);
+			unregisterStop?.();
 			resolve(value);
 		};
+		const onAbort = () => {
+			hide();
+			finish(undefined);
+		};
 		const attachAbort = () => {
+			unregisterStop = this.ctx.onStop?.(onAbort);
+			if (settled) unregisterStop?.();
 			if (!signal) return;
 			if (signal.aborted) {
 				onAbort();

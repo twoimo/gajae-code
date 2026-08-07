@@ -203,6 +203,30 @@ describe("SelectList", () => {
 		expect(cancelled).toBe(true);
 	});
 
+	it.each([10, 0])("bounds the no-match row to render width %d", width => {
+		const list = new SelectList([{ value: "run", label: "run" }], 5, testTheme);
+		list.setFilter("missing");
+
+		const rendered = list.render(width);
+
+		expect(rendered).toHaveLength(1);
+		expect(visibleWidth(rendered[0])).toBeLessThanOrEqual(width);
+	});
+
+	it("preserves ANSI styling while bounding the no-match row", () => {
+		const list = new SelectList([{ value: "run", label: "run" }], 5, {
+			...testTheme,
+			noMatch: text => `\x1b[31m${text}\x1b[0m`,
+		});
+		list.setFilter("missing");
+
+		const [row] = list.render(10);
+
+		expect(visibleWidth(row)).toBeLessThanOrEqual(10);
+		expect(row).toContain("\x1b[31m");
+		expect(row).toContain("\x1b[0m");
+	});
+
 	it("preserves enabled-only callbacks when arrow navigation wraps to the same item", () => {
 		const changed: string[] = [];
 		const list = new SelectList([{ value: "only", label: "only" }], 5, testTheme);
@@ -232,6 +256,26 @@ describe("SelectList", () => {
 		list.handleInput("\x1b[6~");
 
 		expect(changed).toEqual(["one", "three"]);
+	});
+	it("applies resolved navigation actions without keybinding resolution", () => {
+		const list = new SelectList(
+			[
+				{ value: "one", label: "one" },
+				{ value: "two", label: "two" },
+				{ value: "three", label: "three" },
+			],
+			2,
+			testTheme,
+		);
+
+		list.handleNavigation("tui.select.down");
+		expect(list.getSelectedItem()?.value).toBe("two");
+		list.handleNavigation("tui.select.pageDown");
+		expect(list.getSelectedItem()?.value).toBe("three");
+		list.handleNavigation("tui.select.pageUp");
+		expect(list.getSelectedItem()?.value).toBe("one");
+		list.handleNavigation("tui.select.up");
+		expect(list.getSelectedItem()?.value).toBe("three");
 	});
 
 	it("dims disabled items and excludes them from selection", () => {

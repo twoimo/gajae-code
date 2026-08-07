@@ -33,6 +33,13 @@ import type { PasteTextContext } from "../components/custom-editor";
 import { QueuePaneComponent } from "../components/queue-pane";
 import { type QueuedMessageMoveDirection, QueuedMessageSelectorComponent } from "../components/queued-message-selector";
 
+const QUEUE_SELECTOR_NAVIGATION_ACTIONS = [
+	"tui.select.up",
+	"tui.select.down",
+	"tui.select.pageUp",
+	"tui.select.pageDown",
+] as const;
+
 interface Expandable {
 	setExpanded(expanded: boolean): void;
 	setManuallyExpanded?(expanded: boolean): void;
@@ -151,15 +158,24 @@ export class InputController {
 			case "app.editor.external":
 				return Boolean(getEditorCommand());
 			case "app.message.followUp":
-			case "app.message.queue":
 				return (
 					this.ctx.session.isStreaming ||
 					this.ctx.session.isCompacting ||
 					this.ctx.session.isBashRunning ||
 					this.ctx.session.isEvalRunning
 				);
+			case "app.message.queue":
+				return (
+					this.ctx.editor.getText().trim().length > 0 &&
+					(this.ctx.session.isStreaming ||
+						this.ctx.session.isCompacting ||
+						this.ctx.session.isBashRunning ||
+						this.ctx.session.isEvalRunning)
+				);
 			case "app.message.dequeue":
-				return this.ctx.session.queuedMessageCount > 0;
+				return (
+					this.ctx.session.getQueuedMessageEntries().length > 0 || this.ctx.compactionQueuedMessages.length > 0
+				);
 			case "app.clipboard.copyPrompt":
 				return this.ctx.editor.getText().length > 0;
 			case "app.session.tree":
@@ -806,6 +822,17 @@ export class InputController {
 		if (runner?.hasHandlers("input")) {
 			const result = await runner.emitInput(text, inputImages, "interactive");
 			if (result?.handled) {
+				const handledText = result.text === undefined ? "" : sanitizeText(result.text).trim();
+				if (handledText) {
+					this.ctx.addMessageToChat({
+						role: "custom",
+						customType: "extension-input-result",
+						content: handledText,
+						display: true,
+						timestamp: Date.now(),
+					});
+					this.ctx.ui.requestRender();
+				}
 				if (this.#canModifyComposer(composer)) {
 					this.ctx.editor.setText("");
 				}
@@ -1037,6 +1064,21 @@ export class InputController {
 		};
 		const pane = new QueuePaneComponent(entries, {
 			selectedIndex,
+			formatKeyHint: key => this.ctx.keybindings.formatKeyHint(key),
+			formatSelectAction: action => this.ctx.keybindings.getDisplayString(action),
+			matchesSelectAction: (keyData, action) =>
+				this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+			resolveSelectNavigation: keyData =>
+				QUEUE_SELECTOR_NAVIGATION_ACTIONS.find(action =>
+					this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+				),
+			onSelect: entry => {
+				const restored = this.#restoreQueuedMessageToEditor(entry);
+				close();
+				this.ctx.showStatus(
+					restored === 0 ? "Queued message is no longer available" : "Restored queued message to editor",
+				);
+			},
 			onDelete: (entry, index) => {
 				const deleted = this.ctx.session.removeQueuedMessageForEditing(entry.id) !== undefined;
 				const remaining = this.ctx.session.getQueuedMessageEntries();
@@ -1209,7 +1251,17 @@ export class InputController {
 				this.#restoreEditorFocus();
 				this.ctx.ui.requestRender();
 			},
-			{ selectedIndex },
+			{
+				selectedIndex,
+				formatKeyHint: key => this.ctx.keybindings.formatKeyHint(key),
+				formatSelectAction: action => this.ctx.keybindings.getDisplayString(action),
+				matchesSelectAction: (keyData, action) =>
+					this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+				resolveSelectNavigation: keyData =>
+					QUEUE_SELECTOR_NAVIGATION_ACTIONS.find(action =>
+						this.ctx.keybindings.getKeys(action).some(key => matchesKey(keyData, key)),
+					),
+			},
 		);
 		this.ctx.editorContainer.clear();
 		this.ctx.editorContainer.addChild(selector);
@@ -2003,9 +2055,24 @@ export class InputController {
 	}
 
 	toggleThinkingBlockVisibility(): void {
-		this.ctx.hideThinkingBlock = !this.ctx.hideThinkingBlock;
-		settings.set("hideThinkingBlock", this.ctx.hideThinkingBlock);
-		this.ctx.session.agent.hideThinkingSummary = this.ctx.hideThinkingBlock;
+		if (!settings.canWriteDurableConfig()) {
+			this.ctx.showError(
+				"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+			);
+			return;
+		}
+		const hideThinkingBlock = !this.ctx.hideThinkingBlock;
+		try {
+			settings.set("hideThinkingBlock", hideThinkingBlock);
+		} catch (error) {
+			if (!settings.canWriteDurableConfig()) {
+				this.ctx.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
+			throw error;
+		}
+		this.ctx.hideThinkingBlock = hideThinkingBlock;
+		this.ctx.session.setThinkingVisibility(hideThinkingBlock ? "hidden" : "visible");
 
 		// Rebuild chat from session messages
 		// Detach the live streaming component before the disposing clear() so the

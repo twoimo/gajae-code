@@ -16,7 +16,7 @@
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `command` | `string` | Yes | Shell command to run as a background monitor. Each sanitized stdout line is delivered as a task-notification. |
+| `command` | `string` | Yes | Shell command to run as a background monitor. Each sanitized stdout line is captured; persistent notifications are coalesced before delivery. |
 | `kind` | `"log" \| "poll" \| "watch" \| "other"` | Yes | Category of monitor. Surfaces in listings. |
 | `description` | `string` | Yes | Short human-readable summary of what is being monitored. |
 | `timeout` | `number` | No | Maximum wall-clock seconds the monitor may run before automatic shutdown. Omit for session lifetime. |
@@ -29,14 +29,14 @@ The tool returns one text block plus `details`:
 - `content[0].text`: `Monitor started · task <task_id> · persistent: true|false`.
 - `details`: `{ taskId, kind, description, command, persistent }`.
 
-Each newline-terminated stdout line is appended to the manager-owned cursor and sent to the agent as a `<task-notification>` custom message between turns. Use `job` with the returned `taskId` to inspect completion state or terminate the monitor.
+Each newline-terminated stdout line is appended to the manager-owned cursor. Persistent monitors debounce notification delivery and send the latest line with a count of coalesced earlier lines; ordinary log/poll traffic therefore does not create one model turn per event-loop tick. Use `job` with the returned `taskId` to inspect completion state or terminate the monitor.
 
 ## Behavior / Lifecycle
 
 1. `MonitorTool.createIf(session)` gates the tool on `isBackgroundJobSupportEnabled(session.settings)` — identical to `JobTool`'s gate.
 2. `execute(...)` delegates to `BashTool.startMonitorJob(...)`, so Monitor inherits Bash's interception rules, cwd normalization, internal URL expansion, environment construction, artifact allocation, timeout clamping, and unthrottled raw capture.
-3. The helper mirrors every sanitized raw chunk to `manager.appendOutput(jobId, chunk)` and line-buffers the stream so each stdout line dispatches one `<task-notification>` event.
-4. Non-persistent monitors auto-cancel after delivering their first stdout-line notification. Persistent monitors terminate when the underlying command exits, `timeout` elapses, the calling agent is torn down, or the user cancels the returned background task via `job`.
+3. The helper mirrors every sanitized raw chunk to `manager.appendOutput(jobId, chunk)` and line-buffers the stream. Persistent notifications are latest-biased and coalesced over a short debounce window; terminal completion flushes the newest pending line.
+4. Non-persistent monitors auto-cancel after delivering their first stdout-line notification. Persistent monitors terminate when the underlying command exits, `timeout` elapses, the calling agent is torn down, or the user cancels the returned background task via `job`. Cancellation and eviction purge pending persistent notifications rather than delivering stale output.
 
 ## Errors
 

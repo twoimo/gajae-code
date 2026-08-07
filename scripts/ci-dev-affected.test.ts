@@ -16,6 +16,8 @@ const packages: WorkspacePackage[] = [
 	},
 ];
 
+const EMBEDDED_DOCS_GATE_KEY = "test:packages/coding-agent/test/docs-index-lazy.test.ts";
+
 function planForPaths(paths: readonly string[]) {
 	return planTasks(paths, packages);
 }
@@ -47,22 +49,36 @@ describe("planTasks command shape (issue #622)", () => {
 
 describe("dev-ci canonical-plan workflow contract", () => {
 	test("pins independent no-shard and multi-shard detached-document byte oracles", () => {
-		const noShardManifest = "{\"schemaVersion\":1,\"subject\":\"ci-dev-affected-evidence\",\"sourceSha\":\"0123456789abcdef0123456789abcdef01234567\",\"planDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"planMode\":\"pr\",\"replayScope\":{\"repository\":\"owner/repo\",\"workflow\":\"Dev CI\",\"runId\":\"42\"},\"aggregateResults\":{\"plan\":\"success\",\"native\":\"skipped\",\"shards\":\"skipped\",\"windowsDoctor\":\"skipped\",\"windowsDoctorRequired\":\"false\",\"telegramGuard\":\"skipped\",\"telegramGuardRequired\":\"false\",\"telegramWindows\":\"skipped\",\"telegramWindowsRequired\":\"false\",\"hasNative\":\"false\",\"hasTasks\":\"false\",\"darwinArm64TabWorkerSmoke\":\"skipped\",\"darwinArm64TabWorkerSmokeRequired\":\"false\"},\"taskIdentities\":[],\"childEvidence\":[{\"name\":\".ci-dev-affected-plan.json\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]}\n";
-		const multiShardManifest = "{\"schemaVersion\":1,\"subject\":\"ci-dev-affected-evidence\",\"sourceSha\":\"0123456789abcdef0123456789abcdef01234567\",\"planDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"planMode\":\"push\",\"replayScope\":{\"repository\":\"owner/repo\",\"workflow\":\"Dev CI\",\"runId\":\"42\"},\"aggregateResults\":{\"plan\":\"success\",\"native\":\"success\",\"shards\":\"success\",\"windowsDoctor\":\"success\",\"windowsDoctorRequired\":\"true\",\"telegramGuard\":\"success\",\"telegramGuardRequired\":\"true\",\"telegramWindows\":\"success\",\"telegramWindowsRequired\":\"true\",\"hasNative\":\"true\",\"hasTasks\":\"true\",\"darwinArm64TabWorkerSmoke\":\"skipped\",\"darwinArm64TabWorkerSmokeRequired\":\"false\"},\"taskIdentities\":[{\"key\":\"one\",\"identity\":\"id-one\"},{\"key\":\"two\",\"identity\":\"id-two\"}],\"childEvidence\":[{\"name\":\".ci-dev-affected-plan.json\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},{\"name\":\".ci-dev-shard-receipts/0.json\",\"sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"},{\"name\":\".ci-dev-shard-receipts/1.json\",\"sha256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}]}\n";
-		const noShardReceipt = "{\"schemaVersion\":1,\"subject\":\"ci-dev-affected-evidence\",\"manifestSha256\":\"54a4c5abf1fc7a81f2fee152dce6aba6d3838148b8cb0c193a868cf333fc52b2\",\"sourceSha\":\"0123456789abcdef0123456789abcdef01234567\",\"planDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"replayScope\":{\"repository\":\"owner/repo\",\"workflow\":\"Dev CI\",\"runId\":\"42\"}}\n";
-		const multiShardReceipt = "{\"schemaVersion\":1,\"subject\":\"ci-dev-affected-evidence\",\"manifestSha256\":\"0b8ee9d2d0d223ee62eb43ad67364116e9d882d08eb84aa3ba9d428a78bdae08\",\"sourceSha\":\"0123456789abcdef0123456789abcdef01234567\",\"planDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"replayScope\":{\"repository\":\"owner/repo\",\"workflow\":\"Dev CI\",\"runId\":\"42\"}}\n";
+		const noShardManifest = "{\"schemaVersion\":1,\"subject\":\"ci-dev-affected-evidence\",\"sourceSha\":\"0123456789abcdef0123456789abcdef01234567\",\"planDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"planMode\":\"pr\",\"replayScope\":{\"repository\":\"owner/repo\",\"workflow\":\"Dev CI\",\"runId\":\"42\"},\"aggregateResults\":{\"plan\":\"success\",\"native\":\"skipped\",\"shards\":\"skipped\",\"windowsDoctor\":\"skipped\",\"windowsDoctorRequired\":\"false\",\"windowsNativeToolchain\":\"skipped\",\"windowsNativeToolchainRequired\":\"false\",\"telegramGuard\":\"skipped\",\"telegramGuardRequired\":\"false\",\"telegramWindows\":\"skipped\",\"telegramWindowsRequired\":\"false\",\"hasNative\":\"false\",\"hasTasks\":\"false\",\"darwinArm64TabWorkerSmoke\":\"skipped\",\"darwinArm64TabWorkerSmokeRequired\":\"false\"},\"taskIdentities\":[],\"childEvidence\":[{\"name\":\".ci-dev-affected-plan.json\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}]}\n";
+		const multiShardManifest = "{\"schemaVersion\":1,\"subject\":\"ci-dev-affected-evidence\",\"sourceSha\":\"0123456789abcdef0123456789abcdef01234567\",\"planDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"planMode\":\"push\",\"replayScope\":{\"repository\":\"owner/repo\",\"workflow\":\"Dev CI\",\"runId\":\"42\"},\"aggregateResults\":{\"plan\":\"success\",\"native\":\"success\",\"shards\":\"success\",\"windowsDoctor\":\"success\",\"windowsDoctorRequired\":\"true\",\"windowsNativeToolchain\":\"success\",\"windowsNativeToolchainRequired\":\"true\",\"telegramGuard\":\"success\",\"telegramGuardRequired\":\"true\",\"telegramWindows\":\"success\",\"telegramWindowsRequired\":\"true\",\"hasNative\":\"true\",\"hasTasks\":\"true\",\"darwinArm64TabWorkerSmoke\":\"skipped\",\"darwinArm64TabWorkerSmokeRequired\":\"false\"},\"taskIdentities\":[{\"key\":\"one\",\"identity\":\"id-one\"},{\"key\":\"two\",\"identity\":\"id-two\"}],\"childEvidence\":[{\"name\":\".ci-dev-affected-plan.json\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},{\"name\":\".ci-dev-shard-receipts/0.json\",\"sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"},{\"name\":\".ci-dev-shard-receipts/1.json\",\"sha256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}]}\n";
+		const noShardReceipt = "{\"schemaVersion\":1,\"subject\":\"ci-dev-affected-evidence\",\"manifestSha256\":\"a4069f49c385d008aebe32436bb4cbde309cae51d28c4236bb0e33f0be186094\",\"sourceSha\":\"0123456789abcdef0123456789abcdef01234567\",\"planDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"replayScope\":{\"repository\":\"owner/repo\",\"workflow\":\"Dev CI\",\"runId\":\"42\"}}\n";
+		const multiShardReceipt = "{\"schemaVersion\":1,\"subject\":\"ci-dev-affected-evidence\",\"manifestSha256\":\"760601ea59164b84d93bc4bf192085447ea86c90e969b080aeea48828f1b5320\",\"sourceSha\":\"0123456789abcdef0123456789abcdef01234567\",\"planDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"replayScope\":{\"repository\":\"owner/repo\",\"workflow\":\"Dev CI\",\"runId\":\"42\"}}\n";
 		const hash = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
-		expect(hash(noShardManifest)).toBe("54a4c5abf1fc7a81f2fee152dce6aba6d3838148b8cb0c193a868cf333fc52b2");
-		expect(hash(multiShardManifest)).toBe("0b8ee9d2d0d223ee62eb43ad67364116e9d882d08eb84aa3ba9d428a78bdae08");
-		expect(hash(noShardReceipt)).toBe("94811782eb24e82ea14b59b600a13f2b0969f50767b300910b8665855f534c19");
-		expect(hash(multiShardReceipt)).toBe("09341439a0211c277328dcb07117568d57a3ecddad4d35ae6f03dae57c37e260");
+		expect(hash(noShardManifest)).toBe("a4069f49c385d008aebe32436bb4cbde309cae51d28c4236bb0e33f0be186094");
+		expect(hash(multiShardManifest)).toBe("760601ea59164b84d93bc4bf192085447ea86c90e969b080aeea48828f1b5320");
+		expect(hash(noShardReceipt)).toBe("7f3cb1ebf7ca106b8030dd79353dabbc57ed22137ac41e169cc5700d29493091");
+		expect(hash(multiShardReceipt)).toBe("2c298faf1d92681cef1499a7526d1df0e8aee947694804d50aa47e015b222e26");
 	});
+	test("requires a pull request exact head to contain the event base before planning", async () => {
+		const workflow = await Bun.file(path.join(import.meta.dir, "..", ".github", "workflows", "dev-ci.yml")).text();
+		const guardStart = workflow.indexOf("      - name: Verify PR head contains exact base");
+		const guardEnd = workflow.indexOf("\n      - ", guardStart + 1);
+		const guard = workflow.slice(guardStart, guardEnd);
+		expect(guardStart).toBeGreaterThan(0);
+		expect(guard).toContain("if: ${{ github.event_name == 'pull_request' }}");
+		expect(guard).toContain('if ! git fetch --no-tags origin "${GITHUB_BASE_SHA}"; then');
+		expect(guard).toContain("Could not fetch immutable event base ${GITHUB_BASE_SHA}");
+		expect(guard).toContain('if git merge-base --is-ancestor "${GITHUB_BASE_SHA}" HEAD; then');
+		expect(guard).toContain("merge-base exit ${status}");
+		expect(guard).toContain("rebase onto current ${GITHUB_BASE_REF}");
+	});
+
 	test("uses a detached finalized evidence producer and artifact-ID consumer", async () => {
 		const workflow = await Bun.file(path.join(import.meta.dir, "..", ".github", "workflows", "dev-ci.yml")).text();
 		expect(workflow).toContain("affected-evidence-producer:");
 		expect(workflow).toContain("name: Affected path validation / evidence producer");
 		expect(workflow).toContain("  affected:\n    name: Affected path validation\n    if: ${{ always() }}");
-		expect(workflow).toContain("needs: [affected-evidence-producer, affected-plan, affected-native, affected-python-matrix, affected-shards, telegram-daemon-generation, windows-dev-doctor, windows-telegram-daemon-safety, affected-darwin-arm64-tab-worker-smoke]");
+		expect(workflow).toContain("needs: [affected-evidence-producer, affected-plan, affected-native, affected-python-matrix, affected-shards, telegram-daemon-generation, windows-dev-doctor, windows-native-build-toolchain, windows-telegram-daemon-safety, affected-darwin-arm64-tab-worker-smoke]");
 		expect(workflow).toContain("artifact_id: ${{ steps.upload-evidence.outputs.artifact-id }}");
 		expect(workflow).toContain("artifact_digest: ${{ steps.upload-evidence.outputs.artifact-digest }}");
 		expect(workflow).toContain("artifact-ids: ${{ needs.affected-evidence-producer.outputs.artifact_id }}");
@@ -83,6 +99,9 @@ describe("dev-ci canonical-plan workflow contract", () => {
 		expect(workflow).toContain("CI_DEV_TELEGRAM_GUARD_REQUIRED: ${{ needs.affected-plan.outputs.relevant }}");
 		expect(workflow).toContain("CI_DEV_TELEGRAM_WINDOWS_RESULT: ${{ needs.windows-telegram-daemon-safety.result }}");
 		expect(workflow).toContain("CI_DEV_TELEGRAM_WINDOWS_REQUIRED:");
+		expect(workflow).toContain("bun test ./packages/natives/test/path-identity-windows.test.ts");
+		expect(workflow).toContain("contains(needs.affected-plan.outputs.changed_paths, 'packages/natives/test/path-identity-windows.test.ts')");
+		expect(workflow).toContain("contains(needs.affected-plan.outputs.changed_paths, 'packages/natives/native/index.js')");
 		expect(workflow).not.toContain("pull_request_target");
 		expect(workflow).not.toContain("github.run_attempt");
 		expect(workflow).toContain("artifact_digest");
@@ -130,7 +149,11 @@ describe("dev-ci canonical-plan workflow contract", () => {
 		expect(windowsJob).toContain("runs-on: windows-latest");
 		expect(windowsJob).toContain("needs.affected-plan.outputs.has_windows_session_path == 'true'");
 		expect(windowsJob).toContain("Windows session-path canonicalization regression");
-		expect(windowsJob).toContain("bun test packages/coding-agent/test/session-manager/windows-canonical-path.test.ts");
+		// The `./` prefix is load-bearing on Windows: without it Bun treats the argument
+		// as a name filter rather than a path, matches nothing, and exits 1. Pinned here
+		// and enforced workflow-wide by dev-ci-guard-topology.test.ts.
+		expect(windowsJob).toContain("bun test ./packages/coding-agent/test/session-manager/windows-canonical-path.test.ts");
+		expect(windowsJob).toContain("bun test ./packages/coding-agent/test/session/managed-lock-lease.windows.test.ts");
 		// The required predicate must textually match the job gate so the aggregate
 		// invariant (windowsDoctor === required ? success : skipped) never fails closed.
 		const requiredLines = workflow.split("\n").filter(line => line.includes("CI_DEV_WINDOWS_DOCTOR_REQUIRED:"));
@@ -149,6 +172,8 @@ describe("dev-ci canonical-plan workflow contract", () => {
 			python: "skipped",
 			windowsDoctor: "skipped",
 			windowsDoctorRequired: "false",
+			windowsNativeToolchain: "skipped",
+			windowsNativeToolchainRequired: "false",
 			telegramGuard: "skipped",
 			telegramGuardRequired: "false",
 			telegramWindows: "skipped",
@@ -170,7 +195,8 @@ describe("dev-ci canonical-plan workflow contract", () => {
 				CI_DEV_EVIDENCE_ROOT: root, CI_DEV_AFFECTED_PLAN: path.join(root, ".ci-dev-affected-plan.json"), CI_DEV_PLAN_SOURCE_SHA: sourceSha,
 				CI_DEV_SOURCE_SHA: sourceSha, CI_DEV_PLAN_DIGEST: digest, CI_DEV_PLAN_MODE: "pr", GITHUB_REPOSITORY: "owner/repo", GITHUB_WORKFLOW: "Dev CI", GITHUB_RUN_ID: "42",
 				CI_DEV_PLAN_RESULT: baseAggregate.plan, CI_DEV_NATIVE_RESULT: baseAggregate.native, CI_DEV_SHARDS_RESULT: baseAggregate.shards, CI_DEV_WINDOWS_DOCTOR_RESULT: baseAggregate.windowsDoctor,
-				CI_DEV_WINDOWS_DOCTOR_REQUIRED: baseAggregate.windowsDoctorRequired, CI_DEV_HAS_NATIVE: baseAggregate.hasNative, CI_DEV_HAS_TASKS: baseAggregate.hasTasks,
+				CI_DEV_WINDOWS_DOCTOR_REQUIRED: baseAggregate.windowsDoctorRequired, CI_DEV_WINDOWS_NATIVE_TOOLCHAIN_RESULT: baseAggregate.windowsNativeToolchain,
+				CI_DEV_WINDOWS_NATIVE_TOOLCHAIN_REQUIRED: baseAggregate.windowsNativeToolchainRequired, CI_DEV_HAS_NATIVE: baseAggregate.hasNative, CI_DEV_HAS_TASKS: baseAggregate.hasTasks,
 				CI_DEV_PYTHON_RESULT: baseAggregate.python, CI_DEV_HAS_PYTHON: baseAggregate.hasPython,
 				CI_DEV_DARWIN_ARM64_TAB_WORKER_SMOKE_RESULT: baseAggregate.darwinArm64TabWorkerSmoke,
 				CI_DEV_DARWIN_ARM64_TAB_WORKER_SMOKE_REQUIRED: baseAggregate.darwinArm64TabWorkerSmokeRequired,
@@ -357,10 +383,10 @@ describe("dev-ci canonical-plan workflow contract", () => {
 
 	test("aggregate result truth table rejects every missing, failed, cancelled, and unplanned dependency", () => {
 		const valid: AffectedAggregateResults[] = [
-			{ plan: "success", native: "success", shards: "success", python: "success", windowsDoctor: "success", windowsDoctorRequired: "true", telegramGuard: "success", telegramGuardRequired: "true", telegramWindows: "success", telegramWindowsRequired: "true", hasNative: "true", hasTasks: "true", hasPython: "true", darwinArm64TabWorkerSmoke: "success", darwinArm64TabWorkerSmokeRequired: "true" },
-			{ plan: "success", native: "skipped", shards: "skipped", python: "skipped", windowsDoctor: "skipped", windowsDoctorRequired: "false", telegramGuard: "skipped", telegramGuardRequired: "false", telegramWindows: "skipped", telegramWindowsRequired: "false", hasNative: "false", hasTasks: "false", hasPython: "false", darwinArm64TabWorkerSmoke: "skipped", darwinArm64TabWorkerSmokeRequired: "false" },
-			{ plan: "success", native: "success", shards: "skipped", python: "skipped", windowsDoctor: "skipped", windowsDoctorRequired: "false", telegramGuard: "success", telegramGuardRequired: "true", telegramWindows: "success", telegramWindowsRequired: "true", hasNative: "true", hasTasks: "false", hasPython: "false", darwinArm64TabWorkerSmoke: "skipped", darwinArm64TabWorkerSmokeRequired: "false" },
-			{ plan: "success", native: "skipped", shards: "success", python: "skipped", windowsDoctor: "success", windowsDoctorRequired: "true", telegramGuard: "success", telegramGuardRequired: "true", telegramWindows: "success", telegramWindowsRequired: "true", hasNative: "false", hasTasks: "true", hasPython: "false", darwinArm64TabWorkerSmoke: "skipped", darwinArm64TabWorkerSmokeRequired: "false" },
+			{ plan: "success", native: "success", shards: "success", python: "success", windowsDoctor: "success", windowsDoctorRequired: "true", windowsNativeToolchain: "success", windowsNativeToolchainRequired: "true", telegramGuard: "success", telegramGuardRequired: "true", telegramWindows: "success", telegramWindowsRequired: "true", hasNative: "true", hasTasks: "true", hasPython: "true", darwinArm64TabWorkerSmoke: "success", darwinArm64TabWorkerSmokeRequired: "true" },
+			{ plan: "success", native: "skipped", shards: "skipped", python: "skipped", windowsDoctor: "skipped", windowsDoctorRequired: "false", windowsNativeToolchain: "skipped", windowsNativeToolchainRequired: "false", telegramGuard: "skipped", telegramGuardRequired: "false", telegramWindows: "skipped", telegramWindowsRequired: "false", hasNative: "false", hasTasks: "false", hasPython: "false", darwinArm64TabWorkerSmoke: "skipped", darwinArm64TabWorkerSmokeRequired: "false" },
+			{ plan: "success", native: "success", shards: "skipped", python: "skipped", windowsDoctor: "skipped", windowsDoctorRequired: "false", windowsNativeToolchain: "skipped", windowsNativeToolchainRequired: "false", telegramGuard: "success", telegramGuardRequired: "true", telegramWindows: "success", telegramWindowsRequired: "true", hasNative: "true", hasTasks: "false", hasPython: "false", darwinArm64TabWorkerSmoke: "skipped", darwinArm64TabWorkerSmokeRequired: "false" },
+			{ plan: "success", native: "skipped", shards: "success", python: "skipped", windowsDoctor: "success", windowsDoctorRequired: "true", windowsNativeToolchain: "success", windowsNativeToolchainRequired: "true", telegramGuard: "success", telegramGuardRequired: "true", telegramWindows: "success", telegramWindowsRequired: "true", hasNative: "false", hasTasks: "true", hasPython: "false", darwinArm64TabWorkerSmoke: "skipped", darwinArm64TabWorkerSmokeRequired: "false" },
 		];
 		for (const results of valid) expect(() => validateAffectedAggregate(results)).not.toThrow();
 
@@ -375,6 +401,9 @@ describe("dev-ci canonical-plan workflow contract", () => {
 			{ ...valid[0]!, windowsDoctor: "failure" },
 			{ ...valid[0]!, windowsDoctor: "cancelled" },
 			{ ...valid[0]!, windowsDoctor: "skipped" },
+			{ ...valid[0]!, windowsNativeToolchain: "failure" },
+			{ ...valid[0]!, windowsNativeToolchain: "cancelled" },
+			{ ...valid[0]!, windowsNativeToolchain: "skipped" },
 			{ ...valid[0]!, darwinArm64TabWorkerSmoke: "failure" },
 			{ ...valid[0]!, darwinArm64TabWorkerSmoke: "cancelled" },
 			{ ...valid[0]!, darwinArm64TabWorkerSmoke: "skipped" },
@@ -392,10 +421,13 @@ describe("dev-ci canonical-plan workflow contract", () => {
 			{ ...valid[1]!, telegramWindowsRequired: "" },
 			{ ...valid[1]!, telegramWindowsRequired: "maybe" },
 			{ ...valid[1]!, windowsDoctor: "success" },
+			{ ...valid[1]!, windowsNativeToolchain: "success" },
 			{ ...valid[1]!, telegramGuard: "success" },
 			{ ...valid[1]!, telegramWindows: "success" },
 			{ ...valid[1]!, windowsDoctorRequired: "" },
 			{ ...valid[1]!, windowsDoctorRequired: "maybe" },
+			{ ...valid[1]!, windowsNativeToolchainRequired: "" },
+			{ ...valid[1]!, windowsNativeToolchainRequired: "maybe" },
 			{ ...valid[1]!, hasNative: "" },
 			{ ...valid[1]!, hasTasks: "maybe" },
 			{ ...valid[1]!, hasPython: "maybe" },
@@ -922,8 +954,10 @@ describe("--matrix-json and --task CLI fan-out", () => {
 		expect(stderr).toContain("not in the current plan");
 	});
 
+	// CHANGELOG.md, not a docs/ path: docs/**/*.md selects the embedded-docs gate,
+	// which is a native consumer and therefore now carries a native producer.
 	test("--native-build is a no-op when the plan has no native build task", async () => {
-		const { stdout, exitCode } = await runScript(["--native-build"], "docs/readme.md");
+		const { stdout, exitCode } = await runScript(["--native-build"], "CHANGELOG.md");
 		expect(exitCode).toBe(0);
 		expect(stdout).toContain("no native build tasks in plan");
 	});
@@ -1039,9 +1073,13 @@ test("tab-worker graph changes always include install-methods and are Darwin rel
 	test("routes the Windows session-path regression for session I/O sources and its regression test", () => {
 		for (const changedPath of [
 			"packages/coding-agent/src/session/internal/managed-session-scope.ts",
+			"packages/coding-agent/src/session/internal/managed-session-storage.ts",
 			"packages/coding-agent/src/session/blob-store.ts",
+			"packages/coding-agent/src/sdk/session-directory.ts",
 			"packages/coding-agent/src/session/session-manager.ts",
 			"packages/coding-agent/test/session-manager/windows-canonical-path.test.ts",
+			"packages/coding-agent/test/session/managed-lock-lease.windows.test.ts",
+			"packages/coding-agent/test/sdk-session-directory.windows.test.ts",
 		]) {
 			expect(isWindowsSessionPathRegressionPath(changedPath)).toBe(true);
 			expect(needsWindowsSessionPathRegression([changedPath])).toBe(true);
@@ -1133,19 +1171,32 @@ test("tab-worker graph changes always include install-methods and are Darwin rel
 		expect(tasks[2]?.command).toEqual(["bash", "-lc", 'TARGET_VARIANTS="baseline modern" bun scripts/ci-build-native.ts']);
 	});
 
-	test("a CI workflow change plans yaml-parse + ci-selftest + ci-dry-run only", () => {
+	test("a CI workflow change plans yaml-parse + ci-selftest + ci-dry-run + workflow-permissions", () => {
 		const tasks = targeted([".github/workflows/dev-ci.yml"]);
-		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest", "yaml-parse"]);
+		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest", "workflow-permissions", "yaml-parse"]);
 	});
 
-	test("a CI harness script change plans ci-selftest + ci-dry-run (no yaml-parse)", () => {
+	test("broad planner schedules workflow permission regression for workflow and checker changes", () => {
+		for (const changedPath of [".github/workflows/dev-ci.yml", "scripts/check-workflow-permissions.ts"]) {
+			const task = planTasks([changedPath], targetingPackages).find(candidate => candidate.key === "workflow-permissions");
+			expect(task).toBeDefined();
+			expect(task?.command).toEqual(["bun", "test", "scripts/check-workflow-permissions.test.ts", "scripts/release-policy.test.ts"]);
+		}
+	});
+
+	test("a CI harness script change plans ci-selftest + ci-dry-run + workflow-permissions (no yaml-parse)", () => {
 		const tasks = targeted(["scripts/ci-dev-affected.ts"]);
-		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest"]);
+		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest", "workflow-permissions"]);
+	});
+
+	test("a workflow permission checker change plans its own regression", () => {
+		const tasks = targeted(["scripts/check-workflow-permissions.ts"]);
+		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest", "workflow-permissions"]);
 	});
 
 	test("the dev CI guard topology test is scheduled and executed as a CI harness change", () => {
 		const tasks = targeted(["scripts/dev-ci-guard-topology.test.ts"]);
-		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest"]);
+		expect(tasks.map(task => task.key).sort()).toEqual(["ci-dry-run", "ci-selftest", "workflow-permissions"]);
 		expect(tasks.find(task => task.key === "ci-selftest")?.command).toEqual([
 			"bun",
 			"test",
@@ -1205,8 +1256,65 @@ test("tab-worker graph changes always include install-methods and are Darwin rel
 		expect(rootCheck).toMatchObject({ command: ["bun", "run", "ci:check:full"], native: true, nativeBuild: false });
 	});
 
-	test("docs/changelog-only changes plan nothing expensive", () => {
-		expect(targeted(["docs/guide.md", "CHANGELOG.md", "packages/coding-agent/README.md"])).toEqual([]);
+	test("changelog and package-readme-only changes plan nothing", () => {
+		expect(targeted(["CHANGELOG.md", "packages/coding-agent/README.md"])).toEqual([]);
+	});
+
+	// docs/ is the source the embedded docs index is generated from, so shipping a
+	// docs edit without regenerating that index is the one drift class a docs-only
+	// change can introduce. Both planners must select that gate, because dev CI runs
+	// on push as well as pull_request. The gate reads the generated corpus through the
+	// package barrel, so it is a native consumer: it has to bring its own producer, or
+	// the shard's `if: matrix.native` download step asks for an artifact that the
+	// skipped `affected-native` job never uploaded.
+	test("docs-only changes select the embedded-docs gate and its native producer", () => {
+		const changed = ["docs/guide.md", "docs/nested/other.md"];
+		for (const keys of [targeted(changed), planTasks(changed, packages)].map(tasks =>
+			tasks.map(task => task.key),
+		)) {
+			expect(keys).toEqual([EMBEDDED_DOCS_GATE_KEY, "native-linux-x64"]);
+		}
+	});
+
+	// The producer invariant stated as the matrix sees it: any plan with a native
+	// consumer must also carry a native producer, or has_native gates it off.
+	test("a docs-only plan never ships a native consumer without a producer", () => {
+		for (const changed of [["docs/guide.md"], ["docs/tools/read.md", "docs/guide.md"]]) {
+			for (const tasks of [targeted(changed), planTasks(changed, packages)]) {
+				const entries = describeTasks(tasks);
+				expect(entries.some(entry => entry.native)).toBe(true);
+				expect(entries.some(entry => entry.nativeBuild)).toBe(true);
+			}
+		}
+	});
+
+	// The generated index is a real source file, so it also pulls its owning-package
+	// tasks. The gate must still be selected -- that is the half a docs-only plan
+	// cannot cover on its own.
+	test("a generated-docs-index change also selects the embedded-docs gate", () => {
+		for (const changed of [
+			["packages/coding-agent/src/internal-urls/docs-index.generated.ts"],
+			["docs/guide.md", "packages/coding-agent/src/internal-urls/docs-index.generated.ts"],
+		]) {
+			for (const tasks of [targeted(changed), planTasks(changed, packages)]) {
+				expect(tasks.map(task => task.key)).toContain(EMBEDDED_DOCS_GATE_KEY);
+			}
+		}
+	});
+
+	// Markdown outside docs/ is not embedded, so it must not drag the gate in.
+	test("the embedded-docs gate stays out of unrelated plans", () => {
+		for (const changed of [
+			["CHANGELOG.md"],
+			["packages/coding-agent/README.md"],
+			["README.md"],
+			[".gjc/skills/example/SKILL.md"],
+			["packages/example/src/index.ts"],
+		]) {
+			for (const tasks of [targeted(changed), planTasks(changed, packages)]) {
+				expect(tasks.map(task => task.key)).not.toContain(EMBEDDED_DOCS_GATE_KEY);
+			}
+		}
 	});
 
 test("Python SDK changes plan dedicated Python validation and one native build", () => {

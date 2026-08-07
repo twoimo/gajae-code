@@ -1,4 +1,5 @@
 import { CODEX_GPT_5_6_CONTEXT_CAP, isCodexGpt56Tier, isCodexProductTransport } from "./context-cap-policy";
+import { applyOpenAIModelPricing } from "./model-pricing";
 import { resolveOpenAICompat } from "./providers/openai-completions-compat";
 import type { Api, Model as ApiModel, ThinkingConfig } from "./types";
 import { isClaudeForcedToolChoiceIncapableModelId } from "./utils/tool-choice-capability";
@@ -51,6 +52,7 @@ const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effo
 const GPT_5_6_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max];
 const GPT_5_5_DEFAULT_EFFORT = Effort.XHigh;
 const KIMI_K3_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High, Effort.Max];
+const DEEPSEEK_V4_FLASH_0731_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High, Effort.Max];
 
 const GPT_5_1_CODEX_MINI_EFFORTS: readonly Effort[] = [Effort.Medium, Effort.High];
 const CLOUDFLARE_AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic";
@@ -198,7 +200,12 @@ export function refreshModelThinking<TApi extends Api>(model: ApiModel<TApi>): A
  */
 export function applyGeneratedModelPolicies(models: ApiModel<Api>[]): void {
 	for (let index = 0; index < models.length; index++) {
-		const model = refreshModelThinking(models[index]!);
+		const source = models[index]!;
+		if (source.provider === "alibaba-token-plan" && source.id === "deepseek-v4-flash-0731") {
+			source.reasoning = true;
+			source.name = "DeepSeek V4 Flash 0731";
+		}
+		const model = refreshModelThinking(source);
 		applyGeneratedModelPolicy(model);
 		models[index] = model;
 	}
@@ -350,6 +357,25 @@ export function hasOpus47ApiRestrictions(modelId: string): boolean {
 	return semverGte(parsed.version, "4.7") && parsed.kind === "opus";
 }
 
+/**
+ * Adaptive thinking `display` is supported starting with Anthropic Opus 4.7.
+ * Older adaptive-thinking models (Opus 4.6, Sonnet 4.6+) reject the field.
+ * Fable (5+) postdates Opus 4.7, accepts `display`, and defaults it to
+ * "omitted" — thinking tokens are billed but no content streams back — so it
+ * must opt in like Opus 4.7+ (issue #2791).
+ *
+ * Shares `hasOpus47ApiRestrictions` version parsing on purpose: the two
+ * predicates describe the same API generation, and a private `claude-opus-(\d+)-(\d+)`
+ * regex silently disagreed with it for single-component aliases (`claude-opus-5`
+ * matched nothing while `claude-opus-5-20260101` matched), so the same model sent
+ * a different thinking shape and beta set depending on which id string was used.
+ * Bedrock region/inference-profile prefixes are handled by the canonical parser.
+ */
+export function supportsAnthropicAdaptiveThinkingDisplay(modelId: string): boolean {
+	if (/claude-fable-\d/.test(modelId)) return true;
+	return hasOpus47ApiRestrictions(modelId);
+}
+
 function anthropicModelHasRealXHighEffort<TApi extends Api>(model: ApiModel<TApi>): boolean {
 	if (model.api !== "anthropic-messages") return false;
 	const parsedModel = parseKnownModel(model.id);
@@ -358,6 +384,7 @@ function anthropicModelHasRealXHighEffort<TApi extends Api>(model: ApiModel<TApi
 }
 
 function applyGeneratedModelPolicy(model: ApiModel<Api>): void {
+	applyOpenAIModelPricing(model);
 	const copilotLimits = model.provider === "github-copilot" ? COPILOT_GENERATED_LIMITS[model.id] : undefined;
 	if (copilotLimits) {
 		model.contextWindow = copilotLimits.contextWindow;
@@ -418,11 +445,28 @@ function applyGeneratedModelPolicy(model: ApiModel<Api>): void {
 	if (model.provider === "zai" && model.id === "glm-5.2") {
 		model.contextWindow = 1_000_000;
 	}
-	// MiniMax-M3: MiniMax exposes a 1M context tier, but usage beyond 512K is
-	// billed separately. Keep bundled/default metadata at the billing-safe 512K
-	// unless an explicit paid-tier contract is added.
-	if (model.provider !== "opencode-go" && model.id === "minimax-m3") {
-		model.contextWindow = 512_000;
+	if (model.provider === "alibaba-token-plan" && model.id === "deepseek-v4-flash-0731") {
+		model.contextWindow = 1_000_000;
+		model.maxTokens = 384_000;
+		model.compat = {
+			...(model.compat ?? {}),
+			supportsDeveloperRole: false,
+			supportsReasoningEffort: true,
+			reasoningContentField: "reasoning_content",
+			requiresReasoningContentForToolCalls: true,
+		};
+	}
+	// MiniMax-M3's official Token Plan routes expose a 1M context window.
+	// Scope the correction to the four first-class regional MiniMax routes;
+	// unrelated catalog aliases and providers keep their own contracts.
+	if (
+		model.id === "minimax-m3" &&
+		(model.provider === "minimax" ||
+			model.provider === "minimax-cn" ||
+			model.provider === "minimax-code" ||
+			model.provider === "minimax-code-cn")
+	) {
+		model.contextWindow = 1_000_000;
 	}
 }
 
@@ -597,6 +641,9 @@ function expandEffortRange(thinking: ThinkingConfig): readonly Effort[] {
 function inferSupportedEfforts<TApi extends Api>(parsedModel: ParsedModel, model: ApiModel<TApi>): readonly Effort[] {
 	if (model.provider === "kimi-code" && model.id === "k3") {
 		return KIMI_K3_EFFORTS;
+	}
+	if (model.provider === "alibaba-token-plan" && model.id === "deepseek-v4-flash-0731") {
+		return DEEPSEEK_V4_FLASH_0731_EFFORTS;
 	}
 	switch (parsedModel.family) {
 		case "openai":

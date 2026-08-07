@@ -1,5 +1,4 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { Agent } from "@gajae-code/agent-core";
 import type { AssistantMessage } from "@gajae-code/ai";
@@ -16,7 +15,9 @@ import type {
 	ExtensionUIContext,
 } from "../src/extensibility/extensions";
 import { CustomEditor } from "../src/modes/components/custom-editor";
+import { computeIrcWorkLaneWidths, IrcSplitViewComponent } from "../src/modes/components/irc-sidebar";
 import { ExtensionUiController } from "../src/modes/controllers/extension-ui-controller";
+import { SelectorController } from "../src/modes/controllers/selector-controller";
 import { InteractiveMode } from "../src/modes/interactive-mode";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
@@ -50,7 +51,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-editor-component-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
+		authStorage = await AuthStorage.create(":memory:");
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) {
@@ -87,8 +88,8 @@ describe("InteractiveMode.setEditorComponent", () => {
 		mode?.stop();
 		await session?.dispose();
 		authStorage?.close();
-		tempDir?.removeSync();
 		resetSettingsForTest();
+		await tempDir?.remove();
 	});
 
 	it("applies viewport policy inside the real destructive rebuild methods", () => {
@@ -112,6 +113,20 @@ describe("InteractiveMode.setEditorComponent", () => {
 			mode: "none",
 		});
 		expect(reconcile).toHaveBeenCalledTimes(1);
+	});
+
+	it("reports output revision changes while chrome-only editor reflow reports no output mutation", async () => {
+		await mode.init();
+		const report = vi.spyOn(mode.ui, "setViewportOutputSource");
+
+		mode.recordVisibleTranscriptMutation();
+		expect(report).toHaveBeenCalledTimes(1);
+		expect(report.mock.calls[0]?.[0]).toMatchObject({ revision: 1n });
+
+		report.mockClear();
+		mode.editor.setText("draft that changes editor chrome only");
+		mode.updateEditorChrome();
+		expect(report).not.toHaveBeenCalled();
 	});
 
 	it("renders an idle extension custom message through the real rebuild boundary", async () => {
@@ -205,19 +220,59 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(mode.captureIrcArrivalSnapshot().resolvedToggleKey).toBe("alt+i");
 	});
 
-	it("converts requested-visible state to a closed arrival snapshot below the sidebar width floor", () => {
+	it("preserves requested IRC visibility across the exact width boundary round trip", async () => {
+		vi.spyOn(mode.ui, "start").mockImplementation(() => {});
+		await mode.init();
 		mode.settings.set("irc.enabled", true);
 		mode.settings.set("irc.sidebar.enabled", true);
 		mode.applyIrcSidebarAvailability(true);
 		mode.toggleIrcSidebar();
+		mode.addMessageToChat({ role: "user", content: "anchored transcript", timestamp: 1 });
+
+		const split = mode.ui.children.find(component => component instanceof IrcSplitViewComponent);
+		if (!(split instanceof IrcSplitViewComponent)) throw new Error("Expected IRC split in the production root");
+		for (const columns of [64, 65, 80, 120, 160, 120, 80, 65, 64]) {
+			forceTerminalSize(mode, columns, 24);
+			const arrival = mode.captureIrcArrivalSnapshot();
+			const layout = computeIrcWorkLaneWidths(columns, arrival.panelVisible);
+			const rendered = mode.ui.render(columns).map(stripRenderControls);
+			const splitLines = split.render(columns).map(stripRenderControls);
+			expect(arrival.panelRequestedVisible).toBe(true);
+			expect(arrival.panelVisible).toBe(columns >= 65);
+			expect(layout.leftWidth + layout.separatorWidth + layout.rightWidth).toBe(columns);
+			expect(layout.separatorWidth === 3).toBe(columns >= 65);
+			expect(splitLines.some(line => line.includes(theme.boxSharp.vertical))).toBe(columns >= 65);
+			expect(rendered.every(line => visibleWidth(line) <= columns)).toBe(true);
+		}
+	});
+	it("keeps todos in the transcript lane without changing the production root order", async () => {
+		await mode.init();
+		mode.settings.set("irc.enabled", true);
+		mode.settings.set("irc.sidebar.enabled", true);
+		mode.applyIrcSidebarAvailability(true);
+		mode.toggleIrcSidebar();
+		mode.setTodos([{ content: "A long todo that must not occupy IRC cells", status: "in_progress" }]);
+
+		const root = mode.ui.children;
+		const splitIndex = root.findIndex(component => component instanceof IrcSplitViewComponent);
+		expect(root.slice(splitIndex, splitIndex + 10)).toEqual([
+			root[splitIndex],
+			mode.pendingMessagesContainer,
+			mode.statusContainer,
+			mode.todoContainer,
+			mode.btwContainer,
+			mode.statusLine,
+			mode.hookWidgetContainerAbove,
+			mode.editorContainer,
+			mode.petFloorContainer,
+			mode.hookWidgetContainerBelow,
+		]);
+		expect(mode.todoContainer.render(65).every(line => visibleWidth(line) <= 32)).toBe(true);
 
 		forceTerminalSize(mode, 64, 24);
-		const narrow = mode.captureIrcArrivalSnapshot();
-		expect(narrow.panelVisible).toBe(false);
-
-		forceTerminalSize(mode, 65, 24);
-		const wideEnough = mode.captureIrcArrivalSnapshot();
-		expect(wideEnough.panelVisible).toBe(true);
+		expect(mode.todoContainer.render(64).some(line => visibleWidth(line) > 32)).toBe(true);
+		forceTerminalSize(mode, 80, 24);
+		expect(mode.todoContainer.render(80).every(line => visibleWidth(line) <= 47)).toBe(true);
 	});
 
 	it("suppresses the toggle hint when the panel is requested-open but yielded at narrow width", () => {
@@ -454,10 +509,10 @@ describe("InteractiveMode.setEditorComponent", () => {
 		expect(promptLine!).toContain("이전 커밋들");
 	});
 
-	function expectedQueueShortcutHint(): string {
+	function expectedQueueShortcutHint(action = "Queue"): string {
 		const shortcut = mode.keybindings.getKeys("app.message.queue")[0];
 		if (!shortcut) throw new Error("Expected a queue message keybinding");
-		return `${formatKeyHint(shortcut, injectedKeyDisplayContext)}: Queue`;
+		return `${formatKeyHint(shortcut, injectedKeyDisplayContext)}: ${action}`;
 	}
 	function expectedSubmitShortcutHint(action = "Steer"): string {
 		const shortcut = mode.keybindings.getDisplayString("tui.input.submit", injectedKeyDisplayContext);
@@ -465,20 +520,22 @@ describe("InteractiveMode.setEditorComponent", () => {
 		return `${shortcut}: ${action}`;
 	}
 
-	it("shows busy steering and queueing hints only while work is active", () => {
-		let rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
+	it("keeps common shortcut discovery in the composer and shows actionable busy delivery hints", () => {
+		let rendered = mode.editor.render(300).map(stripRenderControls).join("\n");
 		expect(rendered).toContain("Type your message...");
 		expect(rendered).toContain(expectedNewlineShortcutHint());
 		expect(rendered).toContain(`${formatKeyHint("ctrl+c", injectedKeyDisplayContext)}: Clear`);
-		expect(rendered).toContain(`${formatKeyHint("ctrl+r", injectedKeyDisplayContext)}: Search history`);
-		expect(rendered).toContain(`${formatKeyHint("shift+tab", injectedKeyDisplayContext)}: Reasoning`);
+		expect(rendered).toContain(`${formatKeyHint("ctrl+r", injectedKeyDisplayContext)}: History`);
+		expect(rendered).toContain(`${formatKeyHint("shift+tab", injectedKeyDisplayContext)}: Thinking`);
 		expect(rendered).not.toContain(expectedSubmitShortcutHint());
-		expect(rendered).not.toContain(expectedQueueShortcutHint());
+		expect(rendered).toContain(expectedQueueShortcutHint("Queue (busy)"));
+		const narrowRendered = mode.editor.render(80).map(stripRenderControls).join("\n");
+		expect(narrowRendered).toContain(expectedQueueShortcutHint("Queue (busy)"));
 
 		(session.agent as unknown as { state: { isStreaming: boolean } }).state.isStreaming = true;
 		mode.updateEditorChrome();
 
-		rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
+		rendered = mode.editor.render(300).map(stripRenderControls).join("\n");
 		expect(rendered).toContain("Type your message...");
 		expect(rendered).toContain(expectedSubmitShortcutHint());
 		expect(rendered).toContain(expectedQueueShortcutHint());
@@ -486,17 +543,45 @@ describe("InteractiveMode.setEditorComponent", () => {
 		(session.agent as unknown as { state: { isStreaming: boolean } }).state.isStreaming = false;
 		mode.updateEditorChrome();
 
-		rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
+		rendered = mode.editor.render(300).map(stripRenderControls).join("\n");
 		expect(rendered).toContain("Type your message...");
 		expect(rendered).not.toContain(expectedSubmitShortcutHint());
-		expect(rendered).not.toContain(expectedQueueShortcutHint());
+		expect(rendered).toContain(expectedQueueShortcutHint("Queue (busy)"));
+	});
+	it("applies the public shortcut-hint setting through the live composer side-effect path", () => {
+		const controller = new SelectorController(mode);
+		mode.settings.set("statusLine.showActionHints", false);
+		controller.handleSettingChange("statusLine.showActionHints", false);
+
+		let rendered = mode.editor.render(300).map(stripRenderControls).join("\n");
+		expect(rendered).toContain("Type your message...");
+		expect(rendered).not.toContain(expectedQueueShortcutHint("Queue (busy)"));
+		expect(rendered).not.toContain(expectedNewlineShortcutHint());
+
+		mode.settings.set("statusLine.showActionHints", true);
+		controller.handleSettingChange("statusLine.showActionHints", true);
+
+		rendered = mode.editor.render(300).map(stripRenderControls).join("\n");
+		expect(rendered).toContain(expectedQueueShortcutHint("Queue (busy)"));
+		expect(rendered).toContain(expectedNewlineShortcutHint());
+	});
+	it("keeps adjacent status-line settings on the live status update path", () => {
+		const updateSettings = vi.spyOn(mode.statusLine, "updateSettings");
+		const updateEditorTopBorder = vi.spyOn(mode, "updateEditorTopBorder");
+		const controller = new SelectorController(mode);
+
+		mode.settings.set("statusLine.separator", "pipe");
+		controller.handleSettingChange("statusLine.separator", "pipe");
+
+		expect(updateSettings).toHaveBeenCalledTimes(1);
+		expect(updateEditorTopBorder).toHaveBeenCalledTimes(1);
 	});
 	it("uses the effective submit binding in busy hints and omits it when unbound", () => {
 		(session.agent as unknown as { state: { isStreaming: boolean } }).state.isStreaming = true;
 		mode.keybindings.setUserBindings({ "tui.input.submit": "ctrl+enter" });
 		mode.updateEditorChrome();
 
-		let rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
+		let rendered = mode.editor.render(300).map(stripRenderControls).join("\n");
 		const remappedSubmit = mode.keybindings.getDisplayString("tui.input.submit", injectedKeyDisplayContext);
 		expect(rendered).toContain(`${remappedSubmit}: Steer`);
 		expect(rendered).toContain(expectedQueueShortcutHint());
@@ -508,9 +593,10 @@ describe("InteractiveMode.setEditorComponent", () => {
 		});
 		mode.updateEditorChrome();
 
-		rendered = mode.editor.render(160).map(stripRenderControls).join("\n");
+		rendered = mode.editor.render(300).map(stripRenderControls).join("\n");
 		expect(rendered).not.toContain(": Steer");
-		expect(rendered).not.toContain(`${formatKeyHint("shift+tab", injectedKeyDisplayContext)}: Reasoning ·`);
+		expect(rendered).toContain(`${formatKeyHint("shift+tab", injectedKeyDisplayContext)}: Thinking`);
+		expect(rendered).not.toContain(": Queue");
 		expect(rendered).toContain("Type your message...");
 	});
 	it("propagates the injected non-host key display context to the composed TUI surfaces", async () => {
@@ -518,9 +604,10 @@ describe("InteractiveMode.setEditorComponent", () => {
 		forceTerminalSize(mode, 160, 40);
 		await mode.init();
 
-		const composer = mode.editor.render(160).map(stripRenderControls).join("\n");
+		const composer = mode.editor.render(300).map(stripRenderControls).join("\n");
 		const welcome = mode.ui.render(160).map(stripRenderControls).join("\n");
 		expect(composer).toContain(expectedNewlineShortcutHint());
+		expect(composer).toContain(mode.keybindings.getDisplayString("app.model.select", injectedKeyDisplayContext));
 		expect(welcome).toContain(`${formatKeyHint("ctrl+c", injectedKeyDisplayContext)} clear`);
 
 		mode.statusLine.setActionRegistry(
@@ -531,7 +618,7 @@ describe("InteractiveMode.setEditorComponent", () => {
 			() => mode.keybindings,
 		);
 		const status = mode.statusLine.render(500).map(stripRenderControls).join("\n");
-		expect(status).toContain(mode.keybindings.getDisplayString("app.model.select", injectedKeyDisplayContext));
+		expect(status).not.toContain(mode.keybindings.getDisplayString("app.model.select", injectedKeyDisplayContext));
 	});
 
 	it("renders the composer directly below the status line without hook widgets", async () => {
@@ -600,6 +687,19 @@ describe("InteractiveMode.setEditorComponent", () => {
 			);
 			expect(lines.join("\n")).not.toContain("Type your message...");
 		}
+	});
+
+	it("keeps the focused composer visible at constrained terminal height", async () => {
+		vi.spyOn(mode.ui, "start").mockImplementation(() => {});
+		forceTerminalSize(mode, 48, 3);
+		await mode.init();
+		mode.editor.focused = true;
+		mode.editor.setText("keep this focused draft visible");
+
+		const rendered = mode.ui.render(48).map(stripRenderControls);
+		expect(rendered.join("\n")).toContain("keep this focused draft visible");
+		expect(rendered.some(line => line.trimEnd().startsWith("╭"))).toBe(true);
+		expect(rendered.some(line => line.trimEnd().endsWith("╯"))).toBe(true);
 	});
 
 	it("keeps the default prompt prefix while reflecting shell modes in border color", () => {

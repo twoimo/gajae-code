@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
-import * as os from "node:os";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { getConfigRootDir } from "@gajae-code/utils";
 import type { WorkflowHudSummary } from "../skill-state/active-state";
 import { buildUltragoalHudSummary as buildWorkflowUltragoalHudSummary } from "../skill-state/workflow-hud";
 import { renderCliWriteReceipt } from "./cli-write-receipt";
@@ -19,6 +20,7 @@ import {
 	computeCriticVerdictPlanGeneration,
 	computeUltragoalPlanGeneration,
 	countNonOkayTerminalCriticVerdicts,
+	finalAggregateReceiptMissingCriticOkay,
 	findFreshBatchCloseReceipt,
 	findLedgerReceiptEvent,
 	isCleanPauseCriticVerdictShape,
@@ -85,47 +87,6 @@ export type UltragoalGoalStatus =
 	| "review_blocked"
 	| "superseded";
 
-export type UltragoalPipelineMetadataSource = "original_plan_graph" | "legacy_brief_only" | "steering";
-export type UltragoalPipelineOverlapState =
-	| "none"
-	| "open"
-	| "joined_clean"
-	| "blocked_disjoint_continue"
-	| "quarantine_required"
-	| "rebaseline_complete";
-
-export interface UltragoalPipelineTargets extends JsonObject {
-	files: string[];
-	surfaces: string[];
-}
-
-export interface UltragoalPipelineMetadata extends JsonObject {
-	schemaVersion: 1;
-	goalId: string;
-	source: UltragoalPipelineMetadataSource;
-	eligible: boolean;
-	dependsOn: string[];
-	independentOf: string[];
-	targets: UltragoalPipelineTargets;
-	metadataHash: string;
-	overlap: UltragoalPipelineOverlapState;
-	overlapId?: string;
-	priorGoalId?: string;
-	nextGoalId?: string;
-	blockerFootprints?: UltragoalPipelineTargets[];
-	invalidationReason?: string;
-	invalidatedAt?: string;
-}
-
-export interface UltragoalGoalMetadataInput {
-	schemaVersion: 1;
-	goalId: string;
-	source: UltragoalPipelineMetadataSource;
-	dependsOn?: string[];
-	independentOf?: string[];
-	targets?: Partial<UltragoalPipelineTargets>;
-}
-
 export interface UltragoalValidationBatchMetadata extends JsonObject {
 	schemaVersion: 1;
 	batchId: string;
@@ -142,39 +103,6 @@ export interface UltragoalValidationBatchInput {
 	finalGoalId: string;
 }
 
-export interface UltragoalPipelineOverlapHandles extends JsonObject {
-	review: JsonObject;
-	qa: JsonObject;
-	implementation: JsonObject;
-}
-
-export interface UltragoalPipelineOverlapReceipt extends JsonObject {
-	ok: true;
-	event: string;
-	overlap_id: string;
-	prior_goal_id: string;
-	next_goal_id?: string;
-	goal_id?: string;
-	status?: UltragoalPipelineOverlapState;
-	next_goal_status?: UltragoalGoalStatus;
-	goals_path: string;
-	ledger_path: string;
-}
-
-export type UltragoalPipelineLedgerEventName =
-	| "pipeline_overlap_started"
-	| "pipeline_overlap_joined"
-	| "pipeline_overlap_blocked"
-	| "pipeline_overlap_quarantined"
-	| "pipeline_overlap_rebaselined";
-
-export interface UltragoalPipelineLedgerEvent extends UltragoalLedgerEvent {
-	event: UltragoalPipelineLedgerEventName;
-	schemaVersion: 1;
-	overlapId: string;
-	priorGoalId: string;
-	nextGoalId: string;
-}
 export interface UltragoalGoal {
 	id: string;
 	title: string;
@@ -187,7 +115,6 @@ export interface UltragoalGoal {
 	evidence?: string;
 	steering?: Record<string, unknown>;
 	completionVerification?: UltragoalCompletionVerification;
-	pipelineMetadata?: UltragoalPipelineMetadata;
 	validationBatch?: UltragoalValidationBatchMetadata;
 }
 
@@ -322,7 +249,6 @@ export interface UltragoalStatusSummary {
 	nudgeRemaining?: number;
 	nudgeGoalId?: string;
 	nudgeTargetKind?: UltragoalNudgeTargetKind;
-	pipelineOverlap?: JsonObject;
 }
 
 export interface UltragoalCommandResult {
@@ -490,8 +416,7 @@ export async function resolveUltragoalNudgeBudget(cwd: string): Promise<{ budget
 	const projectPath = path.join(gjcRoot(cwd), "settings.json");
 	const project = await readSettingsNudgeBudget(projectPath);
 	if (project !== null) return { budget: project, source: projectPath };
-	const userDir = process.env.GJC_CONFIG_DIR?.trim() || path.join(os.homedir(), ".gjc");
-	const userPath = path.join(userDir, "settings.json");
+	const userPath = path.join(getConfigRootDir(), "settings.json");
 	const user = await readSettingsNudgeBudget(userPath);
 	if (user !== null) return { budget: user, source: userPath };
 	return { budget: DEFAULT_ULTRAGOAL_NUDGE_BUDGET, source: "default" };
@@ -738,65 +663,14 @@ function buildCompletionReceipt(input: {
 export function nonEmptyString(value: unknown): string | null {
 	return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
+
+function exactNonEmptyString(value: unknown): string | null {
+	return typeof value === "string" && value.length > 0 ? value : null;
+}
 export function stringArray(value: unknown): string[] | null {
 	return Array.isArray(value) && value.every(item => typeof item === "string") ? value.map(item => item.trim()) : null;
 }
 
-function normalizePipelineStringArray(value: unknown, fieldName: string): string[] {
-	const items = stringArray(value) ?? [];
-	const filtered = items.filter(item => item.length > 0);
-	if (items.length !== filtered.length) throw new Error(`${fieldName} must contain only non-empty strings`);
-	return filtered;
-}
-
-function normalizePipelinePath(value: string, fieldName: string): string {
-	const raw = value.trim();
-	if (raw.split(/[\\/]+/).includes("..")) throw new Error(`${fieldName} contains unsafe path ${value}`);
-	const normalized = normalizeRepoPath(raw);
-	if (
-		!normalized ||
-		normalized.startsWith("../") ||
-		normalized === ".." ||
-		path.isAbsolute(normalized) ||
-		normalized.includes("\0")
-	) {
-		throw new Error(`${fieldName} contains unsafe path ${value}`);
-	}
-	return normalized;
-}
-
-function normalizePipelineTargets(value: unknown, fieldName: string): UltragoalPipelineTargets {
-	const record = typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : {};
-	const files = normalizePipelineStringArray(record.files, `${fieldName}.files`).map(item =>
-		normalizePipelinePath(item, `${fieldName}.files`),
-	);
-	const surfaces = normalizePipelineStringArray(record.surfaces, `${fieldName}.surfaces`).map(normalizeSurfaceToken);
-	if (new Set(files).size !== files.length) throw new Error(`${fieldName}.files contains duplicate normalized paths`);
-	if (new Set(surfaces).size !== surfaces.length)
-		throw new Error(`${fieldName}.surfaces contains duplicate normalized surfaces`);
-	return { files, surfaces };
-}
-
-function pipelineMetadataHashBasis(metadata: Omit<UltragoalPipelineMetadata, "metadataHash">): JsonObject {
-	return {
-		schemaVersion: metadata.schemaVersion,
-		goalId: metadata.goalId,
-		source: metadata.source,
-		dependsOn: metadata.dependsOn,
-		independentOf: metadata.independentOf,
-		targets: metadata.targets,
-	};
-}
-
-export function hashPipelineMetadata(metadata: Omit<UltragoalPipelineMetadata, "metadataHash">): string {
-	return hashStructuredValue(pipelineMetadataHashBasis(metadata));
-}
-
-function withPipelineMetadataHash(
-	metadata: Omit<UltragoalPipelineMetadata, "metadataHash">,
-): UltragoalPipelineMetadata {
-	return { ...metadata, metadataHash: hashPipelineMetadata(metadata) } as UltragoalPipelineMetadata;
-}
 function validationBatchHashBasis(metadata: Omit<UltragoalValidationBatchMetadata, "metadataHash">): JsonObject {
 	return {
 		schemaVersion: metadata.schemaVersion,
@@ -900,22 +774,12 @@ function normalizeSavedValidationBatch(record: unknown, id: string): UltragoalVa
 	return normalized;
 }
 
-function pipelineMetadataConflictsWithValidationBatch(metadata: UltragoalPipelineMetadata | undefined): boolean {
-	return metadata?.eligible === true || metadata?.source === "original_plan_graph" || metadata?.source === "steering";
-}
-
-export function validateValidationBatchPipelineExclusion(goal: UltragoalGoal): void {
-	if (goal.validationBatch && pipelineMetadataConflictsWithValidationBatch(goal.pipelineMetadata)) {
-		throw new Error(`Goal ${goal.id} cannot combine validationBatch with eligible pipeline metadata`);
-	}
-}
 function requireFreshValidationBatchMetadata(goal: UltragoalGoal): UltragoalValidationBatchMetadata | undefined {
 	const metadata = goal.validationBatch;
 	if (!metadata) return undefined;
 	const { metadataHash, ...basis } = metadata;
 	if (metadataHash !== hashValidationBatch(basis))
 		throw new Error(`Goal ${goal.id} has stale validation batch metadata hash`);
-	validateValidationBatchPipelineExclusion(goal);
 	return metadata;
 }
 
@@ -1048,245 +912,6 @@ function requireValidationBatchSteeringAllowed(
 			`steer ${kind} cannot invalidate validation batch ${metadata.batchId} while member ${blocker.id} has a fresh deferred receipt`,
 		);
 }
-function legacyPipelineMetadata(goalId: string): UltragoalPipelineMetadata {
-	const basis: Omit<UltragoalPipelineMetadata, "metadataHash"> = {
-		schemaVersion: 1,
-		goalId,
-		source: "legacy_brief_only",
-		eligible: false,
-		dependsOn: [],
-		independentOf: [],
-		targets: { files: [], surfaces: [] },
-		overlap: "none",
-		invalidationReason: "missing_pipeline_metadata",
-	};
-	return withPipelineMetadataHash(basis);
-}
-
-function normalizePipelineMetadataRecord(value: unknown, goalIds: ReadonlySet<string>): UltragoalPipelineMetadata {
-	if (typeof value !== "object" || value === null || Array.isArray(value))
-		throw new Error("goal metadata rows must be objects");
-	const record = value as JsonObject;
-	if (record.schemaVersion !== 1) throw new Error("goal metadata schemaVersion must be 1");
-	const goalId = nonEmptyString(record.goalId);
-	if (!goalId || !goalIds.has(goalId)) throw new Error(`goal metadata references unknown goal id ${goalId ?? ""}`);
-	const source = record.source;
-	if (source !== "original_plan_graph" && source !== "legacy_brief_only" && source !== "steering") {
-		throw new Error("goal metadata source must be original_plan_graph, legacy_brief_only, or steering");
-	}
-	const dependsOn = normalizePipelineStringArray(record.dependsOn, `metadata ${goalId}.dependsOn`);
-	const independentOf = normalizePipelineStringArray(record.independentOf, `metadata ${goalId}.independentOf`);
-	if (dependsOn.includes(goalId) || independentOf.includes(goalId))
-		throw new Error(`goal metadata ${goalId} cannot reference itself`);
-	for (const id of [...dependsOn, ...independentOf]) {
-		if (!goalIds.has(id)) throw new Error(`goal metadata ${goalId} references unknown goal id ${id}`);
-	}
-	if (dependsOn.some(id => independentOf.includes(id)))
-		throw new Error(`goal metadata ${goalId} has dependency/independence conflict`);
-	const targets = requireNonEmptyPipelineTargets(record.targets, `metadata ${goalId}.targets`);
-	const basis: Omit<UltragoalPipelineMetadata, "metadataHash"> = {
-		schemaVersion: 1,
-		goalId,
-		source,
-		eligible: false,
-		dependsOn,
-		independentOf,
-		targets,
-		overlap: "none",
-	};
-	return withPipelineMetadataHash(basis);
-}
-
-export function targetsAreDisjoint(left: UltragoalPipelineTargets, right: UltragoalPipelineTargets): boolean {
-	return (
-		left.files.every(file => !right.files.includes(file)) &&
-		left.surfaces.every(surface => !right.surfaces.includes(surface))
-	);
-}
-
-export function targetsOverlap(left: UltragoalPipelineTargets, right: UltragoalPipelineTargets): boolean {
-	return (
-		left.files.some(file => right.files.includes(file)) ||
-		left.surfaces.some(surface => right.surfaces.includes(surface))
-	);
-}
-
-export function requireNonEmptyPipelineTargets(value: unknown, fieldName: string): UltragoalPipelineTargets {
-	const targets = normalizePipelineTargets(value, fieldName);
-	if (targets.files.length === 0 && targets.surfaces.length === 0)
-		throw new Error(`${fieldName} requires files or surfaces`);
-	return targets;
-}
-
-export function collectPipelineBlockerFootprints(result: JsonObject, fieldName: string): UltragoalPipelineTargets[] {
-	const raw = Array.isArray(result.blockers)
-		? result.blockers
-		: Array.isArray(result.blockerFootprints)
-			? result.blockerFootprints
-			: [];
-	return raw.map((item, index) => {
-		const record = requireJsonObjectValue(item, `${fieldName}.blockers[${index}]`);
-		const footprint = typeof record.footprint === "object" && record.footprint !== null ? record.footprint : record;
-		return requireNonEmptyPipelineTargets(footprint, `${fieldName}.blockers[${index}].footprint`);
-	});
-}
-
-function pipelineTargetsCoverPath(targets: UltragoalPipelineTargets, filePath: string): boolean {
-	const normalized = normalizeRepoPath(filePath);
-	return targets.files.some(target => normalized === target || normalized.startsWith(`${target}/`));
-}
-
-export function pipelinePeer(plan: UltragoalPlan, metadata: UltragoalPipelineMetadata): UltragoalGoal | undefined {
-	const peerId = metadata.goalId === metadata.priorGoalId ? metadata.nextGoalId : metadata.priorGoalId;
-	return peerId ? plan.goals.find(goal => goal.id === peerId) : undefined;
-}
-
-export function handleIdsFromValue(value: JsonObject | JsonObject[], fieldName: string): string[] {
-	const records = Array.isArray(value) ? value : [value];
-	const ids = records.map(
-		(record, index) =>
-			nonEmptyString(record.id) ??
-			nonEmptyString(record.handleId) ??
-			nonEmptyString(record.name) ??
-			`${fieldName}-${index}`,
-	);
-	if (ids.some(id => id.length === 0)) throw new Error(`${fieldName} handles require ids`);
-	return ids;
-}
-
-export function resultHandleIds(value: JsonObject, fieldName: string): string[] {
-	const ids = stringArray(value.handleIds) ?? stringArray(value.handles) ?? [];
-	if (ids.length === 0) throw new Error(`${fieldName} requires handleIds`);
-	return ids;
-}
-
-export function requireCoveredHandles(expected: readonly string[], actual: readonly string[], fieldName: string): void {
-	const missing = expected.filter(id => !actual.includes(id));
-	if (missing.length > 0) throw new Error(`${fieldName} is missing handle coverage for ${missing.join(", ")}`);
-}
-
-function validatePipelineEligibility(metadata: UltragoalPipelineMetadata[]): UltragoalPipelineMetadata[] {
-	const byId = new Map(metadata.map(item => [item.goalId, item]));
-	return metadata.map(item => {
-		const invalidationReasons: string[] = [];
-		if (item.source !== "original_plan_graph") invalidationReasons.push("not_original_plan_graph");
-		if (item.targets.files.length === 0 && item.targets.surfaces.length === 0)
-			invalidationReasons.push("empty_targets");
-		for (const otherId of item.independentOf) {
-			const other = byId.get(otherId);
-			if (!other?.independentOf.includes(item.goalId))
-				invalidationReasons.push(`missing_symmetric_independence:${otherId}`);
-			if (other && !targetsAreDisjoint(item.targets, other.targets))
-				invalidationReasons.push(`shared_targets:${otherId}`);
-		}
-		const eligible = invalidationReasons.length === 0;
-		return {
-			...item,
-			eligible,
-			...(eligible ? {} : { invalidationReason: invalidationReasons.join(",") || "ineligible" }),
-		};
-	});
-}
-
-function parseGoalMetadataInput(value: unknown, goalIds: ReadonlySet<string>): UltragoalPipelineMetadata[] {
-	if (!Array.isArray(value)) throw new Error("goal metadata JSON must be an array");
-	const seen = new Set<string>();
-	const metadata = value.map(row => {
-		const item = normalizePipelineMetadataRecord(row, goalIds);
-		if (seen.has(item.goalId)) throw new Error(`duplicate goal metadata for ${item.goalId}`);
-		seen.add(item.goalId);
-		return item;
-	});
-	return validatePipelineEligibility(metadata);
-}
-function normalizeSavedPipelineMetadata(value: unknown, goalId: string): UltragoalPipelineMetadata | undefined {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-	const record = value as JsonObject;
-	const source =
-		record.source === "original_plan_graph" || record.source === "legacy_brief_only" || record.source === "steering"
-			? record.source
-			: "legacy_brief_only";
-	const overlap =
-		record.overlap === "open" ||
-		record.overlap === "joined_clean" ||
-		record.overlap === "blocked_disjoint_continue" ||
-		record.overlap === "quarantine_required" ||
-		record.overlap === "rebaseline_complete"
-			? record.overlap
-			: "none";
-	const basis: Omit<UltragoalPipelineMetadata, "metadataHash"> = {
-		schemaVersion: 1,
-		goalId,
-		source,
-		eligible: record.eligible === true,
-		dependsOn: normalizePipelineStringArray(record.dependsOn, `metadata ${goalId}.dependsOn`),
-		independentOf: normalizePipelineStringArray(record.independentOf, `metadata ${goalId}.independentOf`),
-		targets: normalizePipelineTargets(record.targets, `metadata ${goalId}.targets`),
-		overlap,
-		...(nonEmptyString(record.overlapId) ? { overlapId: nonEmptyString(record.overlapId)! } : {}),
-		...(nonEmptyString(record.priorGoalId) ? { priorGoalId: nonEmptyString(record.priorGoalId)! } : {}),
-		...(nonEmptyString(record.nextGoalId) ? { nextGoalId: nonEmptyString(record.nextGoalId)! } : {}),
-		...(Array.isArray(record.blockerFootprints)
-			? {
-					blockerFootprints: record.blockerFootprints.map((item, index) =>
-						normalizePipelineTargets(item, `metadata ${goalId}.blockerFootprints[${index}]`),
-					),
-				}
-			: {}),
-		...(nonEmptyString(record.invalidationReason)
-			? { invalidationReason: nonEmptyString(record.invalidationReason)! }
-			: {}),
-		...(nonEmptyString(record.invalidatedAt) ? { invalidatedAt: nonEmptyString(record.invalidatedAt)! } : {}),
-	};
-	return {
-		...basis,
-		metadataHash: nonEmptyString(record.metadataHash) ?? hashPipelineMetadata(basis),
-	} as UltragoalPipelineMetadata;
-}
-
-function currentPipelineHash(metadata: UltragoalPipelineMetadata): string {
-	return hashPipelineMetadata(metadata);
-}
-
-export function requireFreshPipelineMetadata(goal: UltragoalGoal): UltragoalPipelineMetadata {
-	const metadata = goal.pipelineMetadata;
-	if (!metadata) throw new Error(`Goal ${goal.id} has no pipeline metadata`);
-	if (metadata.metadataHash !== currentPipelineHash(metadata))
-		throw new Error(`Goal ${goal.id} has stale pipeline metadata hash`);
-	return metadata;
-}
-
-export function openPipelineOverlap(
-	plan: UltragoalPlan,
-): { prior: UltragoalGoal; next: UltragoalGoal; overlapId: string } | null {
-	const openGoals = plan.goals.filter(goal => goal.pipelineMetadata?.overlap === "open");
-	if (openGoals.length === 0) return null;
-	const overlapId = openGoals[0]?.pipelineMetadata?.overlapId;
-	if (!overlapId) return null;
-	const peers = openGoals.filter(goal => goal.pipelineMetadata?.overlapId === overlapId);
-	if (peers.length !== 2) return null;
-	const prior = peers[0];
-	const next = peers[1];
-	if (!prior || !next) return null;
-	return { prior, next, overlapId };
-}
-
-function invalidatePipelineMetadata(goal: UltragoalGoal, reason: string, now: string): void {
-	const basis: Omit<UltragoalPipelineMetadata, "metadataHash"> = {
-		schemaVersion: 1,
-		goalId: goal.id,
-		source: goal.pipelineMetadata?.source ?? "steering",
-		eligible: false,
-		dependsOn: goal.pipelineMetadata?.dependsOn ?? [],
-		independentOf: goal.pipelineMetadata?.independentOf ?? [],
-		targets: goal.pipelineMetadata?.targets ?? { files: [], surfaces: [] },
-		overlap: "none",
-		invalidationReason: reason,
-		invalidatedAt: now,
-	};
-	goal.pipelineMetadata = withPipelineMetadataHash(basis);
-}
-
 function normalizeGoalStatus(value: unknown): UltragoalGoalStatus {
 	switch (value) {
 		case "pending":
@@ -1327,7 +952,6 @@ function normalizePlan(raw: unknown): UltragoalPlan {
 		const title = nonEmptyString(goalRecord.title) ?? id;
 		const objective = nonEmptyString(goalRecord.objective) ?? title;
 		const goalCreatedAt = nonEmptyString(goalRecord.createdAt) ?? createdAt;
-		const pipelineMetadata = normalizeSavedPipelineMetadata(goalRecord.pipelineMetadata, id);
 		const validationBatch = normalizeSavedValidationBatch(goalRecord.validationBatch, id);
 		return {
 			...goalRecord,
@@ -1348,7 +972,6 @@ function normalizePlan(raw: unknown): UltragoalPlan {
 				typeof goalRecord.completionVerification === "object" && goalRecord.completionVerification !== null
 					? (goalRecord.completionVerification as UltragoalCompletionVerification)
 					: undefined,
-			pipelineMetadata,
 			validationBatch,
 		};
 	});
@@ -1411,7 +1034,6 @@ export async function getUltragoalStatus(cwd: string, sessionId?: string | null)
 	if (!plan) return { exists: false, status: "missing", paths, counts, goals: [] };
 	for (const goal of plan.goals) counts[goal.status] += 1;
 	const currentGoal = plan.goals.find(goal => SCHEDULABLE_STATUSES.has(goal.status));
-	const overlap = openPipelineOverlap(plan);
 	let status: UltragoalStatusSummary["status"] = "pending";
 	if (plan.goals.length > 0 && plan.goals.every(goal => TERMINAL_OR_SKIPPED_STATUSES.has(goal.status)))
 		status = "complete";
@@ -1441,16 +1063,6 @@ export async function getUltragoalStatus(cwd: string, sessionId?: string | null)
 		counts,
 		goals: plan.goals,
 		...nudgeFields,
-		...(overlap
-			? {
-					pipelineOverlap: {
-						overlapId: overlap.overlapId,
-						priorGoalId: overlap.prior.id,
-						nextGoalId: overlap.next.id,
-						status: overlap.next.pipelineMetadata?.overlap,
-					},
-				}
-			: {}),
 	};
 }
 export function buildUltragoalHudSummary(
@@ -1525,8 +1137,6 @@ export async function createUltragoalPlan(input: {
 	brief: string;
 	gjcGoalMode?: UltragoalGjcGoalMode;
 	sessionId?: string | null;
-	goalMetadata?: UltragoalGoalMetadataInput[];
-	goalMetadataJson?: string;
 	validationBatches?: UltragoalValidationBatchInput[];
 	validationBatchJson?: string;
 }): Promise<UltragoalPlan> {
@@ -1545,31 +1155,18 @@ export async function createUltragoalPlan(input: {
 		updatedAt: now,
 	}));
 	const goalIds = new Set(goals.map(goal => goal.id));
-	const metadataInput = input.goalMetadataJson
-		? await readStructuredValue(input.cwd, input.goalMetadataJson)
-		: input.goalMetadata;
 	const validationBatchInput = input.validationBatchJson
 		? await readStructuredValue(input.cwd, input.validationBatchJson)
 		: input.validationBatches;
-	if (metadataInput !== undefined && validationBatchInput !== undefined) {
-		const metadataRows = Array.isArray(metadataInput) ? metadataInput : [];
-		const batchRows = Array.isArray(validationBatchInput) ? validationBatchInput : [];
-		if (metadataRows.length > 0 && batchRows.length > 0)
-			throw new Error("validation-batch-json and goal-metadata-json are mutually exclusive");
-	}
-	const metadata = metadataInput === undefined ? [] : parseGoalMetadataInput(metadataInput, goalIds);
 	const validationBatches =
 		validationBatchInput === undefined
 			? []
 			: parseValidationBatchInput(validationBatchInput, goalIds, input.gjcGoalMode ?? "aggregate");
-	const metadataByGoalId = new Map(metadata.map(item => [item.goalId, item]));
 	const validationBatchByGoalId = new Map<string, UltragoalValidationBatchMetadata>();
 	for (const batch of validationBatches)
 		for (const memberId of batch.memberIds) validationBatchByGoalId.set(memberId, batch);
 	for (const goal of goals) {
-		goal.pipelineMetadata = metadataByGoalId.get(goal.id) ?? legacyPipelineMetadata(goal.id);
 		goal.validationBatch = validationBatchByGoalId.get(goal.id);
-		validateValidationBatchPipelineExclusion(goal);
 	}
 	const repositoryBinding = await captureRepositoryBinding(input.cwd, {
 		displayPath: input.cwd,
@@ -1604,41 +1201,6 @@ export interface UltragoalRunCompletionState {
 	hasBlockers: boolean;
 	needsFinalAggregateReceipt: boolean;
 }
-export function requireJsonObjectValue(value: unknown, fieldName: string): JsonObject {
-	if (typeof value !== "object" || value === null || Array.isArray(value))
-		throw new Error(`${fieldName} must be an object`);
-	if (Object.keys(value).length === 0) throw new Error(`${fieldName} must be non-empty`);
-	return value as JsonObject;
-}
-
-export function requireJsonObjectOrArrayValue(value: unknown, fieldName: string): JsonObject | JsonObject[] {
-	if (Array.isArray(value)) {
-		if (value.length === 0) throw new Error(`${fieldName} must be non-empty`);
-		return value.map((item, index) => requireJsonObjectValue(item, `${fieldName}[${index}]`));
-	}
-	return requireJsonObjectValue(value, fieldName);
-}
-
-async function readRequiredJsonObject(cwd: string, value: string, fieldName: string): Promise<JsonObject> {
-	return requireJsonObjectValue(await readStructuredValue(cwd, value), fieldName);
-}
-
-async function readRequiredJsonObjectOrArray(
-	cwd: string,
-	value: string,
-	fieldName: string,
-): Promise<JsonObject | JsonObject[]> {
-	return requireJsonObjectOrArrayValue(await readStructuredValue(cwd, value), fieldName);
-}
-
-import {
-	joinUltragoalPipelineOverlap,
-	rebaselineUltragoalPipelineOverlap,
-	startUltragoalPipelineOverlap,
-} from "./ultragoal-pipeline";
-
-export { joinUltragoalPipelineOverlap, rebaselineUltragoalPipelineOverlap, startUltragoalPipelineOverlap };
-
 export function getUltragoalRunCompletionState(
 	plan: UltragoalPlan,
 	options: { retryFailed?: boolean } = {},
@@ -1767,6 +1329,72 @@ export function nonEmptyStringArray(value: unknown): string[] | null {
 	return strings.length === value.length && strings.length > 0 ? strings : null;
 }
 
+export interface UltragoalQualityGateDiagnostic {
+	path: string;
+	code: string;
+	message: string;
+}
+
+/**
+ * Collects every quality-gate defect in one pass instead of throwing on the first.
+ * Authoring a valid gate is otherwise an edit/retry loop at the most expensive phase
+ * of a run (#3474). The aggregate error message keeps each individual message verbatim
+ * so existing callers and assertions that match on a single message still work, and
+ * `diagnostics` carries the machine-readable stable `path` + `code` pairs.
+ */
+export class UltragoalQualityGateError extends Error {
+	readonly diagnostics: readonly UltragoalQualityGateDiagnostic[];
+	constructor(diagnostics: readonly UltragoalQualityGateDiagnostic[]) {
+		super(diagnostics.map(diagnostic => diagnostic.message).join("\n"));
+		this.name = "UltragoalQualityGateError";
+		this.diagnostics = diagnostics;
+	}
+}
+
+class QualityGateDiagnostics {
+	private readonly collected: UltragoalQualityGateDiagnostic[] = [];
+
+	/**
+	 * Runs one independent check. A thrown error is recorded and swallowed so later
+	 * checks still run; unrelated defects therefore surface together.
+	 */
+	check(path: string, code: string, run: () => void): boolean {
+		try {
+			run();
+			return true;
+		} catch (error) {
+			this.add(path, code, error instanceof Error ? error.message : String(error));
+			return false;
+		}
+	}
+
+	async checkAsync(path: string, code: string, run: () => Promise<void>): Promise<boolean> {
+		try {
+			await run();
+			return true;
+		} catch (error) {
+			this.add(path, code, error instanceof Error ? error.message : String(error));
+			return false;
+		}
+	}
+
+	add(path: string, code: string, message: string): void {
+		this.collected.push({ path, code, message });
+	}
+
+	get empty(): boolean {
+		return this.collected.length === 0;
+	}
+
+	get diagnostics(): readonly UltragoalQualityGateDiagnostic[] {
+		return this.collected;
+	}
+
+	throwIfAny(): void {
+		if (this.collected.length > 0) throw new UltragoalQualityGateError(this.collected);
+	}
+}
+
 function requireNonEmptyString(value: unknown, fieldName: string): void {
 	if (typeof value !== "string" || value.trim().length === 0) {
 		throw new Error(`qualityGate ${fieldName} must be a non-empty string`);
@@ -1866,12 +1494,20 @@ export function requireResolvedLinks(ids: string[], map: Map<string, JsonObject>
 		if (!map.has(id)) throw new Error(`qualityGate ${fieldName} references unknown id ${id}`);
 	}
 }
-function successfulLinkedRows(ids: string[], map: Map<string, JsonObject>, fieldName: string): JsonObject[] {
+function successfulLinkedRows(
+	ids: string[],
+	map: Map<string, JsonObject>,
+	fieldName: string,
+	expectedContractRef: string,
+): JsonObject[] {
 	const rows: JsonObject[] = [];
 	for (const id of ids) {
 		const row = map.get(id);
 		if (!row) throw new Error(`qualityGate ${fieldName} references unknown id ${id}`);
 		requireSuccessfulRowOutcome(row, `${fieldName}.${id}`);
+		if (requiredStringField(row, "contractRef", `${fieldName}.${id}`) !== expectedContractRef) {
+			throw new Error(`qualityGate ${fieldName}.${id}.contractRef must match ${expectedContractRef}`);
+		}
 		rows.push(row);
 	}
 	return rows;
@@ -1918,6 +1554,7 @@ export interface UltragoalChangeSet extends JsonObject {
 	paths: UltragoalChangeSetPath[];
 	rawDiffStat?: string;
 	rawDiff?: string;
+	captureIncomplete?: boolean;
 	trusted: true;
 }
 
@@ -1936,8 +1573,8 @@ export function normalizeRepoPath(value: string): string {
 	return value.replaceAll("\\\\", "/").replace(/^\.\//, "");
 }
 
-function isToolsIndexPath(value: string): boolean {
-	return normalizeRepoPath(value) === TOOLS_INDEX_PATH;
+export function normalizeChangeSetPath(value: string): string {
+	return value.replace(/^\.\//, "");
 }
 
 export function categorizeComputerChangePath(value: string): UltragoalChangeCategory {
@@ -1950,6 +1587,7 @@ export function categorizeComputerChangePath(value: string): UltragoalChangeCate
 	)
 		return "tool";
 	if (
+		normalized === TOOLS_INDEX_PATH ||
 		normalized === "packages/coding-agent/src/tools/renderers.ts" ||
 		normalized === "packages/coding-agent/src/config/settings-schema.ts"
 	)
@@ -1965,76 +1603,11 @@ export function categorizeComputerChangePath(value: string): UltragoalChangeCate
 }
 
 function isComputerControlSurfaceCategory(category: UltragoalChangeCategory): boolean {
-	// The computer-use red-team suite is conditional, not universal (see the
-	// ultragoal SKILL): require it only when the change actually touches
-	// computer-control source — the computer tool (`tool`), its behavior-bearing
-	// settings/renderer wiring (`settings-registry`), or computer Rust (`code`).
-	// A bare regeneration of the SHARED native binding (`generated-binding`:
-	// packages/natives/native/index.{d.ts,js}) is NOT by itself a computer-use
-	// change: that file is generated from Rust, so any real computer-use behavior
-	// change must also touch one of the categories above and will still trigger
-	// the suite. Treating aggregate binding or registration files as a computer
-	// surface forced the suite on unrelated changes, which the SKILL explicitly
-	// warns against, so they are excluded here.
+	// Shared behavior registries are intentionally conservative: a path-only or
+	// uninspectable change cannot prove that computer controls were untouched.
+	// Generated bindings remain excluded because their behavior-bearing Rust
+	// source is captured separately.
 	return category === "code" || category === "tool" || category === "settings-registry";
-}
-
-function isComputerSpecificToolsIndexDiff(diff: string | undefined, targetPath: string): boolean {
-	if (!diff || !isToolsIndexPath(targetPath)) return false;
-	let inTargetFile = false;
-	for (const line of diff.split("\n")) {
-		if (line.startsWith("diff --git ")) {
-			const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-			inTargetFile = !!match && (isToolsIndexPath(match[1]!) || isToolsIndexPath(match[2]!));
-			continue;
-		}
-		if (!inTargetFile || line.startsWith("+++") || line.startsWith("---")) continue;
-		if (!line.startsWith("+") && !line.startsWith("-")) continue;
-		const changedLine = line.slice(1);
-		if (
-			/\bComputerTool\b/.test(changedLine) ||
-			/\bisComputerCallable\b/.test(changedLine) ||
-			/\bisComputerLoadablePlatform\b/.test(changedLine) ||
-			/["']computer["']/.test(changedLine) ||
-			/["']\.\/computer["']/.test(changedLine) ||
-			/\bcomputer\s*:/.test(changedLine)
-		) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/** Settings registry file that holds ALL settings, most of them unrelated to computer control. */
-const SETTINGS_SCHEMA_PATH = "packages/coding-agent/src/config/settings-schema.ts";
-
-export function isSettingsSchemaPath(value: string): boolean {
-	return normalizeRepoPath(value) === SETTINGS_SCHEMA_PATH;
-}
-
-/**
- * The settings registry holds every setting (themes, tool output sizes, retry
- * knobs, …), so a bare `settings-schema.ts` edit is NOT by itself a computer
- * change. Mirror {@link isComputerSpecificToolsIndexDiff}: only treat it as a
- * computer-control surface when the diff actually adds/removes a `computer.*`
- * setting key. When no diff is available, callers fall back to the conservative
- * (fail-closed) categorization instead of this narrowing.
- */
-function isComputerSpecificSettingsDiff(diff: string | undefined, targetPath: string): boolean {
-	if (!diff || !isSettingsSchemaPath(targetPath)) return false;
-	let inTargetFile = false;
-	for (const line of diff.split("\n")) {
-		if (line.startsWith("diff --git ")) {
-			const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
-			inTargetFile = !!match && (isSettingsSchemaPath(match[1]!) || isSettingsSchemaPath(match[2]!));
-			continue;
-		}
-		if (!inTargetFile || line.startsWith("+++") || line.startsWith("---")) continue;
-		if (!line.startsWith("+") && !line.startsWith("-")) continue;
-		const changedLine = line.slice(1);
-		if (/["']computer\./.test(changedLine)) return true;
-	}
-	return false;
 }
 
 function isComputerControlSurfaceChangePath(row: UltragoalChangeSetPath): boolean {
@@ -2045,26 +1618,8 @@ function isComputerControlSurfaceChangePath(row: UltragoalChangeSetPath): boolea
 
 function trustedChangeSetRequiresComputerSuite(changeSet: UltragoalChangeSet | undefined): boolean {
 	if (!changeSet?.trusted) return false;
-	return changeSet.paths.some(row => {
-		if (isComputerControlSurfaceChangePath(row)) {
-			// The settings registry mixes computer and non-computer settings. Narrow it
-			// with the diff so unrelated settings edits do not force the computer suite;
-			// fall back to the conservative categorization when no diff is available.
-			const touchesSettingsSchema =
-				isSettingsSchemaPath(row.path) || (row.oldPath ? isSettingsSchemaPath(row.oldPath) : false);
-			if (touchesSettingsSchema && changeSet.rawDiff !== undefined) {
-				return (
-					isComputerSpecificSettingsDiff(changeSet.rawDiff, row.path) ||
-					(row.oldPath ? isComputerSpecificSettingsDiff(changeSet.rawDiff, row.oldPath) : false)
-				);
-			}
-			return true;
-		}
-		return (
-			isComputerSpecificToolsIndexDiff(changeSet.rawDiff, row.path) ||
-			(row.oldPath ? isComputerSpecificToolsIndexDiff(changeSet.rawDiff, row.oldPath) : false)
-		);
-	});
+	if (changeSet.captureIncomplete) return true;
+	return changeSet.paths.some(isComputerControlSurfaceChangePath);
 }
 
 function requiresComputerRedTeamSuite(executorQa: JsonObject, changeSet: UltragoalChangeSet | undefined): boolean {
@@ -2171,27 +1726,46 @@ export function hasTypedVerifiedReceipt(value: unknown): boolean {
 	return Boolean(type && id && (status === "verified" || status === "passed"));
 }
 
-export async function hasExistingNonEmptyArtifact(cwd: string, value: unknown): Promise<boolean> {
+async function resolveExistingArtifactPathUnderCwd(
+	cwd: string,
+	value: unknown,
+	fieldName: string,
+): Promise<string | null> {
 	const artifactPath = nonEmptyString(value);
-	if (!artifactPath) return false;
-	const resolved = path.resolve(cwd, artifactPath);
+	if (!artifactPath) return null;
+	const lexicalRoot = path.resolve(cwd);
+	const lexical = path.resolve(lexicalRoot, artifactPath);
+	const lexicalRelative = path.relative(lexicalRoot, lexical);
+	if (lexicalRelative === ".." || lexicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(lexicalRelative)) {
+		throw new Error(`qualityGate ${fieldName} artifact path must resolve under the repository cwd`);
+	}
 	try {
-		const file = Bun.file(resolved);
-		return (await file.exists()) && file.size > 0;
+		const [root, resolved] = await Promise.all([fs.realpath(lexicalRoot), fs.realpath(lexical)]);
+		const relative = path.relative(root, resolved);
+		if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+			throw new Error(`qualityGate ${fieldName} artifact path must not escape the repository cwd through symlinks`);
+		}
+		if (!(await fs.stat(resolved)).isFile()) {
+			throw new Error(`qualityGate ${fieldName} artifact path must reference a regular file`);
+		}
+		return resolved;
 	} catch (error) {
-		if (isEnoent(error)) return false;
+		if (isEnoent(error)) return null;
 		throw error;
 	}
 }
 
+export async function hasExistingNonEmptyArtifact(cwd: string, value: unknown): Promise<boolean> {
+	const resolved = await resolveExistingArtifactPathUnderCwd(cwd, value, "artifact");
+	if (!resolved) return false;
+	return (await fs.stat(resolved)).size > 0;
+}
+
 export async function readArtifactBytes(cwd: string, row: JsonObject, fieldName: string): Promise<Buffer | null> {
-	const artifactPath = nonEmptyString(row.path);
-	if (!artifactPath) return null;
-	const resolved = path.resolve(cwd, artifactPath);
+	const resolved = await resolveExistingArtifactPathUnderCwd(cwd, row.path, fieldName);
+	if (!resolved) return null;
 	try {
-		const file = Bun.file(resolved);
-		if (!(await file.exists())) return null;
-		return Buffer.from(await file.arrayBuffer());
+		return Buffer.from(await Bun.file(resolved).arrayBuffer());
 	} catch (error) {
 		if (isEnoent(error)) return null;
 		throw new Error(`qualityGate ${fieldName} artifact could not be read: ${String(error)}`);
@@ -2200,6 +1774,7 @@ export async function readArtifactBytes(cwd: string, row: JsonObject, fieldName:
 
 import {
 	readCliReplayRecord,
+	resolveCliReplayCommand,
 	validateArtifactProof,
 	validateCliReplay,
 	validateLiveSurfaceProofPresence,
@@ -2211,6 +1786,7 @@ import {
 
 export type { ReplayProcessHandle } from "./ultragoal-evidence";
 export {
+	resolveCliReplayCommand,
 	validateArtifactProof,
 	validateCliReplay,
 	validateLiveSurfaceProofPresence,
@@ -2256,6 +1832,16 @@ async function validateSurfaceEvidence(
 		}
 		const artifactIds = requireStringLinks(row.artifactRefs, `${fieldName}.artifactRefs`);
 		requireResolvedLinks(artifactIds, artifactRefs, `${fieldName}.artifactRefs`);
+		if (!isLiveSurfaceFamily(family)) {
+			for (const artifactId of artifactIds) {
+				const artifact = artifactRefs.get(artifactId)!;
+				if (!(await hasExistingNonEmptyArtifact(cwd, artifact.path))) {
+					throw new Error(
+						`qualityGate executorQa.artifactRefs.${artifactId} non-live surface evidence requires an existing non-empty file`,
+					);
+				}
+			}
+		}
 		await validateLiveSurfaceProofPresence(cwd, family, artifactIds, artifactRefs);
 		validateSurfaceArtifactCompatibility(surface, artifactIds, artifactRefs, `${fieldName}.artifactRefs`);
 		await validateSurfaceStructuralRequirement(cwd, family, artifactIds, artifactRefs, `${fieldName}.artifactRefs`);
@@ -2408,18 +1994,19 @@ async function validateMandatoryComputerAdversarialCases(
 	}
 }
 
-function validateContractCoverage(
+async function validateContractCoverage(
+	cwd: string,
 	executorQa: JsonObject,
 	surfaceEvidence: Map<string, JsonObject>,
 	adversarialCases: Map<string, JsonObject>,
 	artifactRefs: Map<string, JsonObject>,
-): JsonObject[] {
+): Promise<JsonObject[]> {
 	const rows = requireObjectArray(executorQa.contractCoverage, "executorQa.contractCoverage");
 	buildRowIdMap(rows, "executorQa.contractCoverage");
 	let hasSuccessfulContractCoverage = false;
 	for (const [index, row] of rows.entries()) {
 		const fieldName = `executorQa.contractCoverage[${index}]`;
-		requiredStringField(row, "contractRef", fieldName);
+		const contractRef = requiredStringField(row, "contractRef", fieldName);
 		const status = optionalStatusField(row, fieldName);
 		if (status === NOT_APPLICABLE_STATUS) {
 			requiredStringField(row, "reason", fieldName);
@@ -2438,21 +2025,57 @@ function validateContractCoverage(
 			);
 		}
 		let successfulProofLinks = 0;
-		if (surfaceIds)
-			successfulProofLinks += successfulLinkedRows(
+		let successfulSurfaceProofLinks = 0;
+		if (surfaceIds) {
+			successfulSurfaceProofLinks = successfulLinkedRows(
 				surfaceIds,
 				surfaceEvidence,
 				`${fieldName}.surfaceEvidenceRefs`,
+				contractRef,
 			).length;
+			successfulProofLinks += successfulSurfaceProofLinks;
+		}
 		if (adversarialIds) {
-			successfulProofLinks += successfulLinkedRows(
+			const successfulAdversarialRows = successfulLinkedRows(
 				adversarialIds,
 				adversarialCases,
 				`${fieldName}.adversarialCaseRefs`,
-			).length;
+				contractRef,
+			);
+			for (const adversarialRow of successfulAdversarialRows) {
+				const caseArtifactIds = requireStringLinks(
+					adversarialRow.artifactRefs,
+					`${fieldName}.adversarialCaseRefs.artifactRefs`,
+				);
+				for (const artifactId of caseArtifactIds) {
+					const artifact = artifactRefs.get(artifactId)!;
+					if (!(await hasExistingNonEmptyArtifact(cwd, artifact.path))) {
+						throw new Error(
+							`qualityGate executorQa.artifactRefs.${artifactId} adversarial coverage requires an existing non-empty file`,
+						);
+					}
+					await validateArtifactProof(cwd, artifact, `executorQa.artifactRefs.${artifactId}`, {
+						surfaceFamily: "native",
+						live: false,
+					});
+				}
+			}
+			successfulProofLinks += successfulAdversarialRows.length;
 		}
 		if (artifactIds) {
 			requireResolvedLinks(artifactIds, artifactRefs, `${fieldName}.artifactRefs`);
+			for (const artifactId of artifactIds) {
+				const artifact = artifactRefs.get(artifactId)!;
+				if (!(await hasExistingNonEmptyArtifact(cwd, artifact.path))) {
+					throw new Error(
+						`qualityGate executorQa.artifactRefs.${artifactId} artifact-only coverage requires an existing non-empty file`,
+					);
+				}
+				await validateArtifactProof(cwd, artifact, `executorQa.artifactRefs.${artifactId}`, {
+					surfaceFamily: "native",
+					live: false,
+				});
+			}
 			successfulProofLinks += artifactIds.length;
 		}
 		if (successfulProofLinks === 0) {
@@ -2475,7 +2098,13 @@ async function validateExecutorQaRedTeamEvidenceInternal(
 	const artifactRefs = await validateArtifactRefs(cwd, executorQa);
 	const surfaceEvidence = await validateSurfaceEvidence(cwd, executorQa, artifactRefs);
 	const adversarialCases = validateAdversarialCases(executorQa, artifactRefs);
-	const contractCoverage = validateContractCoverage(executorQa, surfaceEvidence, adversarialCases, artifactRefs);
+	const contractCoverage = await validateContractCoverage(
+		cwd,
+		executorQa,
+		surfaceEvidence,
+		adversarialCases,
+		artifactRefs,
+	);
 	if (requiresComputerRedTeamSuite(executorQa, options.changeSet)) {
 		await validateMandatoryComputerAdversarialCases(cwd, contractCoverage, adversarialCases, artifactRefs);
 	}
@@ -2506,16 +2135,17 @@ function canonicalChangeSetRows(value: unknown, fieldName: string): UltragoalCha
 		if (typeof row !== "object" || row === null || Array.isArray(row))
 			throw new Error(`${fieldName}[${index}] must be an object`);
 		const record = row as JsonObject;
-		const pathValue = nonEmptyString(record.path);
+		requireAllowedRecordKeys(record, ["path", "status", "oldPath"], `${fieldName}[${index}]`);
+		const pathValue = exactNonEmptyString(record.path);
 		if (!pathValue) throw new Error(`${fieldName}[${index}].path is required`);
 		if ("goalId" in record) throw new Error(`${fieldName}[${index}] must not contain goalId attribution`);
 		const status = nonEmptyString(record.status);
 		if (!status) throw new Error(`${fieldName}[${index}].status is required`);
-		const oldPath = nonEmptyString(record.oldPath);
+		const oldPath = exactNonEmptyString(record.oldPath);
 		return {
-			path: normalizeRepoPath(pathValue),
+			path: normalizeChangeSetPath(pathValue),
 			status: status as UltragoalChangeStatus,
-			...(oldPath ? { oldPath: normalizeRepoPath(oldPath) } : {}),
+			...(oldPath ? { oldPath: normalizeChangeSetPath(oldPath) } : {}),
 		};
 	});
 }
@@ -2529,15 +2159,37 @@ function requireChangeSetCoverage(
 	declared: readonly UltragoalChangeSetPath[],
 	fieldName: string,
 ): void {
-	if (!expected) return;
-	const declaredExactKeys = new Set(declared.map(row => `${row.oldPath ?? ""}\u0000${row.path}\u0000${row.status}`));
-	const declaredPathKeys = new Set(declared.map(row => `${row.oldPath ?? ""}\u0000${row.path}`));
-	for (const row of expected.paths) {
-		const pathKey = `${row.oldPath ?? ""}\u0000${row.path}`;
-		const exactKey = `${pathKey}\u0000${row.status}`;
-		const covered = row.status === "unknown" ? declaredPathKeys.has(pathKey) : declaredExactKeys.has(exactKey);
-		if (!covered) throw new Error(`${fieldName} does not cover computed checkpoint change-set path ${row.path}`);
+	if (!expected) throw new Error(`${fieldName} requires an authoritative computed checkpoint change set`);
+	if (expected.captureIncomplete)
+		throw new Error(`${fieldName} requires a complete authoritative checkpoint change set`);
+	const expectedExactRows = expected.paths.map(row => `${row.oldPath ?? ""}\u0000${row.path}\u0000${row.status}`);
+	const declaredExactRows = declared.map(row => `${row.oldPath ?? ""}\u0000${row.path}\u0000${row.status}`);
+	const declaredExactKeys = new Set(declaredExactRows);
+	for (const [index, row] of expected.paths.entries()) {
+		if (!declaredExactKeys.has(expectedExactRows[index]!)) {
+			throw new Error(`${fieldName} does not cover computed checkpoint change-set path ${row.path}`);
+		}
 	}
+	if (
+		declaredExactRows.length !== expectedExactRows.length ||
+		declaredExactRows.some((key, index) => key !== expectedExactRows[index])
+	) {
+		throw new Error(`${fieldName} must exactly match the computed checkpoint change set`);
+	}
+}
+
+function requireExactRecordKeys(record: JsonObject, expectedKeys: readonly string[], fieldName: string): void {
+	const actual = Object.keys(record).sort();
+	const expected = [...expectedKeys].sort();
+	if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+		throw new Error(`${fieldName} keys must exactly match durable validationBatch memberIds`);
+	}
+}
+
+function requireAllowedRecordKeys(record: JsonObject, allowedKeys: readonly string[], fieldName: string): void {
+	const allowed = new Set(allowedKeys);
+	const unsupported = Object.keys(record).filter(key => !allowed.has(key));
+	if (unsupported.length > 0) throw new Error(`${fieldName} contains unsupported keys: ${unsupported.join(", ")}`);
 }
 
 function requireValidationBatchTuple(
@@ -2561,10 +2213,219 @@ function requireValidationBatchTuple(
 	}
 }
 
+const DEFERRABLE_REVIEW_LANES = new Set(["architectReview", "executorQa"]);
+const DECLARABLE_DEFERRED_LANES: Record<string, string> = {
+	targetedVerification: "targetedVerification",
+	aiSlopCleaner: "aiSlopCleaner",
+	iteration: "iteration",
+};
+
+/**
+ * Declaration-vs-evidence check. Per-subgoal enforcement is relaxed: the agent
+ * chooses which verification lanes to run and declares them in `ranLanes`. The
+ * runtime does not dictate that set, but it fails closed when the declaration and
+ * the submitted evidence disagree in either direction, so a declaration can never
+ * be cheaper than the proof behind it.
+ */
+function validateDeferredLaneDeclaration(deferred: JsonObject, fieldName: string): void {
+	const declared = stringArray(deferred.ranLanes)?.filter(lane => lane.length > 0);
+	// `ranLanes` is optional for compatibility with gates that only carry the
+	// mandatory targeted-verification lane; an explicit empty array is a claim
+	// that nothing ran and is rejected, because targetedVerification is required.
+	if (declared === undefined) return;
+	const declaredSet = new Set(declared);
+	if (declaredSet.size !== declared.length) throw new Error(`${fieldName}.ranLanes must not repeat a lane`);
+	for (const lane of declaredSet) {
+		if (DEFERRABLE_REVIEW_LANES.has(lane)) {
+			throw new Error(
+				`${fieldName}.ranLanes cannot declare ${lane}: a deferred gate structurally cannot carry review-lane evidence, so it is deferred to the boundary`,
+			);
+		}
+		const evidenceKey = DECLARABLE_DEFERRED_LANES[lane];
+		if (!evidenceKey) throw new Error(`${fieldName}.ranLanes contains unknown lane ${lane}`);
+		const laneRecord = qualityGateObject(deferred[evidenceKey]);
+		if (!laneRecord || !nonEmptyString(laneRecord.evidence)) {
+			throw new Error(`${fieldName}.ranLanes declares ${lane} but ${fieldName}.${evidenceKey}.evidence is missing`);
+		}
+	}
+	if (!declaredSet.has("targetedVerification")) {
+		throw new Error(`${fieldName}.ranLanes must declare targetedVerification`);
+	}
+	for (const [lane, evidenceKey] of Object.entries(DECLARABLE_DEFERRED_LANES)) {
+		if (declaredSet.has(lane)) continue;
+		if (qualityGateObject(deferred[evidenceKey])) {
+			throw new Error(`${fieldName}.${evidenceKey} is present but ${lane} is not declared in ${fieldName}.ranLanes`);
+		}
+	}
+}
+
+/**
+ * Agent-friendly deferred-gate hydration: the runtime already stores the durable
+ * batch tuple and computes the cumulative change set itself, so a deferred gate
+ * only has to prove what the runtime cannot know — that targeted verification ran.
+ * Every mechanical field (`kind`, the batch tuple, `deferredLanes`, and the whole
+ * `changeSet` block including `paths` and `changeSetHash`) is auto-filled when
+ * omitted. Explicitly supplied values are never overwritten, so a wrong
+ * declaration still fails closed.
+ */
+function hydrateDeferredGateDefaults(
+	gate: JsonObject,
+	goal: UltragoalGoal,
+	changeSet: UltragoalChangeSet | undefined,
+): JsonObject {
+	const deferred = qualityGateObject(gate.deferredToBatch);
+	if (!deferred) return gate;
+	const metadata = goal.validationBatch;
+	// The final member must carry the full strict gate; never help it defer.
+	if (metadata && goal.id === metadata.finalGoalId) return gate;
+	const hydrated: JsonObject = { ...deferred };
+	if (hydrated.kind === undefined) hydrated.kind = "validation-batch-deferred";
+	if (metadata) {
+		if (hydrated.schemaVersion === undefined) hydrated.schemaVersion = metadata.schemaVersion;
+		if (hydrated.batchId === undefined) hydrated.batchId = metadata.batchId;
+		if (hydrated.memberIds === undefined) hydrated.memberIds = [...metadata.memberIds];
+		if (hydrated.finalGoalId === undefined) hydrated.finalGoalId = metadata.finalGoalId;
+		if (hydrated.metadataHash === undefined) hydrated.metadataHash = metadata.metadataHash;
+	}
+	if (hydrated.deferredLanes === undefined) hydrated.deferredLanes = ["architectReview", "executorQa"];
+	const computedRows = (changeSet?.paths ?? []).map(row => ({
+		path: row.path,
+		status: row.status,
+		...(row.oldPath ? { oldPath: row.oldPath } : {}),
+	}));
+	const computedByPath = new Map(computedRows.map(row => [row.path, row]));
+	const declared = qualityGateObject(hydrated.changeSet);
+	if (hydrated.changeSet !== undefined && !declared) return { ...gate, deferredToBatch: hydrated };
+	const changeSetRecord: JsonObject = declared ? { ...declared } : {};
+	if (changeSetRecord.memberGoalId === undefined) changeSetRecord.memberGoalId = goal.id;
+	if (changeSetRecord.cumulativeFromBase === undefined) changeSetRecord.cumulativeFromBase = true;
+	if (changeSetRecord.paths === undefined) {
+		changeSetRecord.paths = computedRows;
+	} else if (Array.isArray(changeSetRecord.paths)) {
+		// Accept plain-string rows and rows without a status; resolve the status
+		// from the computed change set instead of demanding git trivia.
+		changeSetRecord.paths = changeSetRecord.paths.map(row => {
+			const record = typeof row === "string" ? { path: row } : qualityGateObject(row);
+			if (!record) return row;
+			const pathValue = exactNonEmptyString(record.path);
+			if (!pathValue || nonEmptyString(record.status)) return record;
+			const computed = computedByPath.get(normalizeChangeSetPath(pathValue));
+			return {
+				...record,
+				status: computed?.status ?? "unknown",
+				...(computed?.oldPath && record.oldPath === undefined ? { oldPath: computed.oldPath } : {}),
+			};
+		});
+	}
+	if (changeSetRecord.changeSetHash === undefined) {
+		try {
+			changeSetRecord.changeSetHash = changeSetHashForPaths(
+				canonicalChangeSetRows(changeSetRecord.paths, "deferredToBatch.changeSet.paths"),
+			);
+		} catch {
+			// Malformed rows: leave the hash unset so validation reports the row defect.
+		}
+	}
+	hydrated.changeSet = changeSetRecord;
+	return { ...gate, deferredToBatch: hydrated };
+}
+
+/**
+ * Agent-friendly batch-close hydration, mirroring `hydrateDeferredGateDefaults`:
+ * every `validationBatchClose` field except `coverageEvidence` is derivable from
+ * durable state (batch metadata, member receipts) and the computed cumulative
+ * change set, so it is auto-filled when omitted. Supplied values are never
+ * overwritten and still fail closed when wrong. The minimal close is the full
+ * strict gate plus `{"validationBatchClose":{"coverageEvidence":"..."}}`.
+ */
+function hydrateBatchCloseDefaults(input: {
+	gate: JsonObject;
+	plan: UltragoalPlan;
+	goal: UltragoalGoal;
+	ledger: readonly UltragoalLedgerEvent[];
+	changeSet?: UltragoalChangeSet;
+}): JsonObject {
+	const metadata = input.goal.validationBatch;
+	if (!metadata || input.goal.id !== metadata.finalGoalId) return input.gate;
+	const requested = qualityGateObject(input.gate.validationBatchClose);
+	if (!requested) return input.gate;
+	// The replacement-close kind has its own dedicated hydrator.
+	if (requested.kind === "review-blocker-replacement-close") return input.gate;
+	const close: JsonObject = { ...requested };
+	if (close.schemaVersion === undefined) close.schemaVersion = 1;
+	if (close.kind === undefined) close.kind = "validation-batch-close";
+	if (close.batchId === undefined) close.batchId = metadata.batchId;
+	if (close.finalGoalId === undefined) close.finalGoalId = metadata.finalGoalId;
+	if (close.memberIds === undefined) close.memberIds = [...metadata.memberIds];
+	const derivedMetadataHashes: Record<string, string> = {};
+	const derivedChangeSetHashes: Record<string, string> = {};
+	const derivedReceipts: JsonObject[] = [];
+	for (const memberId of metadata.memberIds) {
+		const member = input.plan.goals.find(goal => goal.id === memberId);
+		if (member?.validationBatch) derivedMetadataHashes[memberId] = member.validationBatch.metadataHash;
+		if (!member || memberId === input.goal.id) continue;
+		try {
+			const receipt = requireDeferredMemberReceiptFresh(
+				input.plan,
+				input.ledger,
+				member,
+				"validationBatchClose hydration",
+			);
+			derivedChangeSetHashes[memberId] = receipt.validationBatch.changeSetHash;
+			derivedReceipts.push({
+				goalId: memberId,
+				receiptId: receipt.receiptId,
+				checkpointLedgerEventId: receipt.checkpointLedgerEventId,
+				qualityGateHash: receipt.qualityGateHash,
+				changeSetHash: receipt.validationBatch.changeSetHash,
+				role: "deferred-member",
+			});
+		} catch {
+			// Member not fresh/complete: omit it so validation reports the real defect.
+		}
+	}
+	if (close.memberMetadataHashes === undefined) close.memberMetadataHashes = derivedMetadataHashes;
+	if (close.memberReceipts === undefined) close.memberReceipts = derivedReceipts;
+	const requestedUnion = qualityGateObject(close.unionChangeSet);
+	if (close.unionChangeSet !== undefined && !requestedUnion) {
+		return { ...input.gate, validationBatchClose: close };
+	}
+	const union: JsonObject = requestedUnion ? { ...requestedUnion } : {};
+	if (union.source === undefined) union.source = "validation-batch";
+	if (union.paths === undefined) {
+		union.paths = (input.changeSet?.paths ?? []).map(row => ({
+			path: row.path,
+			status: row.status,
+			...(row.oldPath ? { oldPath: row.oldPath } : {}),
+		}));
+	}
+	try {
+		const unionRows = canonicalChangeSetRows(union.paths, "validationBatchClose.unionChangeSet.paths");
+		const suppliedChangeSetHashes = qualityGateObject(union.memberChangeSetHashes);
+		const derivedMemberChangeSetHashes: Record<string, unknown> = {
+			...derivedChangeSetHashes,
+			[metadata.finalGoalId]: changeSetHashForPaths(unionRows),
+		};
+		if (union.memberChangeSetHashes === undefined) {
+			union.memberChangeSetHashes = derivedMemberChangeSetHashes;
+		}
+		if (union.unionHash === undefined) {
+			union.unionHash = hashStructuredValue({
+				memberChangeSetHashes: suppliedChangeSetHashes ?? derivedMemberChangeSetHashes,
+				paths: unionRows.map(row => ({ path: row.path, status: row.status, oldPath: row.oldPath })),
+			});
+		}
+	} catch {
+		// Malformed rows: leave derived hashes unset so validation reports the row defect.
+	}
+	close.unionChangeSet = union;
+	return { ...input.gate, validationBatchClose: close };
+}
+
 function validateDeferredCompletionQualityGate(
 	gate: JsonObject,
 	goal: UltragoalGoal,
-	metadata: UltragoalValidationBatchMetadata,
+	metadata: UltragoalValidationBatchMetadata | undefined,
 	changeSet?: UltragoalChangeSet,
 ): void {
 	const allowedKeys = new Set(["deferredToBatch"]);
@@ -2573,39 +2434,151 @@ function validateDeferredCompletionQualityGate(
 		throw new Error(`deferred qualityGate contains unsupported keys: ${unsupportedKeys.join(", ")}`);
 	const deferred = qualityGateObject(gate.deferredToBatch);
 	if (!deferred) throw new Error("deferred qualityGate requires deferredToBatch object");
+	requireAllowedRecordKeys(
+		deferred,
+		[
+			"schemaVersion",
+			"kind",
+			"batchId",
+			"memberIds",
+			"finalGoalId",
+			"metadataHash",
+			"deferredLanes",
+			"ranLanes",
+			"targetedVerification",
+			"aiSlopCleaner",
+			"iteration",
+			"changeSet",
+		],
+		"deferredToBatch",
+	);
 	if (deferred.kind !== "validation-batch-deferred")
 		throw new Error("deferredToBatch.kind must be validation-batch-deferred");
-	requireValidationBatchTuple(metadata, deferred, "deferredToBatch");
-	if (goal.id === metadata.finalGoalId)
-		throw new Error("final validation batch goal cannot use deferredToBatch quality gate");
+	if (metadata) {
+		requireValidationBatchTuple(metadata, deferred, "deferredToBatch");
+		if (goal.id === metadata.finalGoalId)
+			throw new Error("final validation batch goal cannot use deferredToBatch quality gate");
+	}
 	const deferredLanes = stringArray(deferred.deferredLanes)?.filter(Boolean).sort();
 	if (deferredLanes?.join(",") !== "architectReview,executorQa")
-		throw new Error("deferredToBatch.deferredLanes must be architectReview and executorQa");
+		throw new Error(
+			"deferredToBatch.deferredLanes must be architectReview and executorQa (or omitted; the runtime fills it)",
+		);
 	const targeted = qualityGateObject(deferred.targetedVerification);
 	if (!targeted || targeted.status !== PASSED_STATUS || !nonEmptyStringArray(targeted.commands))
 		throw new Error("deferredToBatch.targetedVerification must pass with non-empty commands");
 	requireNonEmptyString(targeted.evidence, "deferredToBatch.targetedVerification.evidence");
+	// The ai-slop-cleaner pass and a full verification rerun are no longer
+	// mandatory per subgoal; they are boundary duties. When either is supplied it
+	// must still be internally consistent and blocker-free.
 	const cleaner = qualityGateObject(deferred.aiSlopCleaner);
-	if (!cleaner || cleaner.status !== PASSED_STATUS) throw new Error("deferredToBatch.aiSlopCleaner must pass");
-	requireNonEmptyString(cleaner.evidence, "deferredToBatch.aiSlopCleaner.evidence");
+	if (cleaner) {
+		if (cleaner.status !== PASSED_STATUS) throw new Error("deferredToBatch.aiSlopCleaner must pass when present");
+		requireNonEmptyString(cleaner.evidence, "deferredToBatch.aiSlopCleaner.evidence");
+	}
 	const iteration = qualityGateObject(deferred.iteration);
-	if (!iteration || iteration.status !== PASSED_STATUS || iteration.fullRerun !== true)
-		throw new Error("deferredToBatch.iteration must pass with fullRerun true");
-	if (!nonEmptyStringArray(iteration.rerunCommands))
-		throw new Error("deferredToBatch.iteration.rerunCommands must be non-empty");
-	requireNonEmptyString(iteration.evidence, "deferredToBatch.iteration.evidence");
-	requireEmptyBlockers(iteration.blockers, "deferredToBatch.iteration.blockers");
+	if (iteration) {
+		if (iteration.status !== PASSED_STATUS) throw new Error("deferredToBatch.iteration must pass when present");
+		if (!nonEmptyStringArray(iteration.rerunCommands))
+			throw new Error("deferredToBatch.iteration.rerunCommands must be non-empty");
+		requireNonEmptyString(iteration.evidence, "deferredToBatch.iteration.evidence");
+		requireEmptyBlockers(iteration.blockers, "deferredToBatch.iteration.blockers");
+	}
+	validateDeferredLaneDeclaration(deferred, "deferredToBatch");
 	const declaredChangeSet = qualityGateObject(deferred.changeSet);
 	if (!declaredChangeSet) throw new Error("deferredToBatch.changeSet is required");
+	requireAllowedRecordKeys(
+		declaredChangeSet,
+		["memberGoalId", "cumulativeFromBase", "paths", "changeSetHash"],
+		"deferredToBatch.changeSet",
+	);
 	if (declaredChangeSet.memberGoalId !== goal.id)
-		throw new Error("deferredToBatch.changeSet.memberGoalId must label the checkpointed goal");
+		throw new Error(
+			`deferredToBatch.changeSet.memberGoalId must label the checkpointed goal ${goal.id} (or be omitted; the runtime fills it)`,
+		);
 	if (declaredChangeSet.cumulativeFromBase !== true)
-		throw new Error("deferredToBatch.changeSet.cumulativeFromBase must be true");
+		throw new Error("deferredToBatch.changeSet.cumulativeFromBase must be true (or omitted; the runtime fills it)");
 	const paths = canonicalChangeSetRows(declaredChangeSet.paths, "deferredToBatch.changeSet.paths");
 	requireChangeSetCoverage(changeSet, paths, "deferredToBatch.changeSet.paths");
 	if (declaredChangeSet.changeSetHash !== changeSetHashForPaths(paths))
-		throw new Error("deferredToBatch.changeSet.changeSetHash does not match declared paths");
+		throw new Error(
+			"deferredToBatch.changeSet.changeSetHash does not match declared paths; omit changeSetHash and the runtime computes it",
+		);
 }
+const COHORT_LANE_KEYS = ["cleaner", "architect", "qa"] as const;
+
+/**
+ * Frozen-source-hash review cohort (#3473). One boundary generation runs at most one
+ * cleaner, one architect, and one QA lane, every lane verdict is bound to the same
+ * immutable source hash, and findings must be joined before any repair starts. Later
+ * generations are delta-only. Cohort state rides the existing `iteration` gate key so
+ * no new top-level quality-gate key is introduced.
+ */
+function validateReviewCohort(gate: JsonObject, iteration: JsonObject): void {
+	const cohort = qualityGateObject(iteration.reviewCohort);
+	if (!cohort) throw new Error("qualityGate iteration.reviewCohort is required at the review boundary");
+	const generation = cohort.reviewGeneration;
+	if (typeof generation !== "number" || !Number.isInteger(generation) || generation < 1)
+		throw new Error("iteration.reviewCohort.reviewGeneration must be an integer >= 1");
+	const sourceHash = nonEmptyString(cohort.sourceHash);
+	if (!sourceHash) throw new Error("iteration.reviewCohort.sourceHash is required");
+	if (cohort.joined !== true)
+		throw new Error("iteration.reviewCohort.joined must be true: all lane findings must join before checkpoint");
+	const lanes = qualityGateObject(cohort.lanes);
+	if (!lanes) throw new Error("iteration.reviewCohort.lanes is required");
+	const unsupportedLanes = Object.keys(lanes).filter(key => !(COHORT_LANE_KEYS as readonly string[]).includes(key));
+	if (unsupportedLanes.length > 0)
+		throw new Error(`iteration.reviewCohort.lanes contains unsupported lanes: ${unsupportedLanes.join(", ")}`);
+	for (const lane of COHORT_LANE_KEYS) {
+		if (Array.isArray(lanes[lane]))
+			throw new Error(`iteration.reviewCohort.lanes.${lane} must be one lane per generation, not a list`);
+		const record = qualityGateObject(lanes[lane]);
+		if (!record) throw new Error(`iteration.reviewCohort.lanes.${lane} is required`);
+		const laneHash = nonEmptyString(record.sourceHash);
+		if (!laneHash) throw new Error(`iteration.reviewCohort.lanes.${lane}.sourceHash is required`);
+		if (laneHash !== sourceHash)
+			throw new Error(
+				`iteration.reviewCohort.lanes.${lane}.sourceHash does not match the frozen cohort sourceHash: every lane must inspect the same immutable source`,
+			);
+		if (record.status !== "CLEAR" && record.status !== PASSED_STATUS)
+			throw new Error(`iteration.reviewCohort.lanes.${lane}.status must be CLEAR or passed`);
+		requireNonEmptyString(record.evidence, `iteration.reviewCohort.lanes.${lane}.evidence`);
+		requireEmptyBlockers(record.blockers, `iteration.reviewCohort.lanes.${lane}.blockers`);
+	}
+	// Generation 1 is the full cohort review; every later generation exists only
+	// because one consolidated blocker batch produced it, so its scope is the delta.
+	if (generation > 1) {
+		if (cohort.deltaOnly !== true)
+			throw new Error("iteration.reviewCohort.deltaOnly must be true for reviewGeneration > 1");
+		requireNonEmptyString(cohort.priorGenerationSourceHash, "iteration.reviewCohort.priorGenerationSourceHash");
+		if (nonEmptyString(cohort.priorGenerationSourceHash) === sourceHash)
+			throw new Error(
+				"iteration.reviewCohort.priorGenerationSourceHash must differ from sourceHash: a new generation requires a new frozen source",
+			);
+		const deltaPaths = stringArray(cohort.deltaPaths)?.filter(path => path.length > 0);
+		if (!deltaPaths || deltaPaths.length === 0)
+			throw new Error("iteration.reviewCohort.deltaPaths must be non-empty for reviewGeneration > 1");
+		const expansion = qualityGateObject(cohort.scopeExpansion);
+		if (expansion) {
+			requireNonEmptyString(expansion.severity, "iteration.reviewCohort.scopeExpansion.severity");
+			requireNonEmptyString(expansion.novelty, "iteration.reviewCohort.scopeExpansion.novelty");
+			requireNonEmptyString(expansion.justification, "iteration.reviewCohort.scopeExpansion.justification");
+		}
+	} else if (cohort.deltaOnly === true) {
+		throw new Error("iteration.reviewCohort.deltaOnly cannot be true for the first reviewGeneration");
+	}
+	// The terminal critic is one verdict on the final joined generation, never a
+	// per-lane or per-generation vote.
+	const critic = qualityGateObject(gate.criticReview);
+	if (critic) {
+		const criticHash = nonEmptyString(critic.sourceHash);
+		if (criticHash && criticHash !== sourceHash)
+			throw new Error(
+				"criticReview.sourceHash must match the final joined cohort sourceHash: the terminal critic runs once on the terminal generation",
+			);
+	}
+}
+
 async function validateCompletionQualityGate(
 	cwd: string,
 	gate: JsonObject,
@@ -2622,8 +2595,26 @@ async function validateCompletionQualityGate(
 			? chooseReceiptKind(options.plan, options.ledger, options.goal, "complete")
 			: undefined;
 	const isFinalAggregate = receiptKind === "final-aggregate";
+	// Every independent defect is collected instead of thrown, so one validate run
+	// reports the whole list rather than forcing an edit/retry loop per field (#3474).
+	const found = new QualityGateDiagnostics();
 	if (batchMode && options.goal && options.goal.id !== batchMode.finalGoalId) {
-		validateDeferredCompletionQualityGate(gate, options.goal, batchMode, options.changeSet);
+		found.check("deferredToBatch", "deferred_gate_invalid", () => {
+			validateDeferredCompletionQualityGate(gate, options.goal!, batchMode, options.changeSet);
+		});
+		found.throwIfAny();
+		return;
+	}
+	// Boundary-by-default: in aggregate mode every checkpoint before the run's
+	// final boundary may present the lightweight deferred gate, so heavyweight
+	// architect/QA review runs once per boundary instead of once per story. The
+	// boundary is derived from `chooseReceiptKind` rather than from synthesized
+	// durable batch metadata, which would restale/deadlock on appended goals.
+	if (!batchMode && options.goal && receiptKind === "per-goal" && qualityGateObject(gate.deferredToBatch)) {
+		found.check("deferredToBatch", "deferred_gate_invalid", () => {
+			validateDeferredCompletionQualityGate(gate, options.goal!, undefined, options.changeSet);
+		});
+		found.throwIfAny();
 		return;
 	}
 	if (batchMode && options.goal && options.goal.id === batchMode.finalGoalId) {
@@ -2636,13 +2627,22 @@ async function validateCompletionQualityGate(
 		]);
 		const unsupportedKeys = Object.keys(gate).filter(key => !allowedKeys.has(key));
 		if (unsupportedKeys.length > 0)
-			throw new Error(`qualityGate contains unsupported keys: ${unsupportedKeys.join(", ")}`);
+			found.add(
+				"qualityGate",
+				"unsupported_keys",
+				`qualityGate contains unsupported keys: ${unsupportedKeys.join(", ")}`,
+			);
 		if (!qualityGateObject(gate.validationBatchClose))
-			throw new Error("final validation batch goal requires validationBatchClose");
+			found.add(
+				"validationBatchClose",
+				"missing_validation_batch_close",
+				"final validation batch goal requires validationBatchClose",
+			);
 	}
-	const codeReview = qualityGateObject(gate.codeReview);
-	if (codeReview) {
-		throw new Error(
+	if (qualityGateObject(gate.codeReview)) {
+		found.add(
+			"codeReview",
+			"legacy_code_review_gate",
 			"checkpoint --status complete requires architect review approval through architectReview, executorQa, and iteration quality-gate evidence; legacy codeReview-only gates are not sufficient",
 		);
 	}
@@ -2653,13 +2653,23 @@ async function validateCompletionQualityGate(
 	);
 	const unsupportedKeys = Object.keys(gate).filter(key => !allowedKeys.has(key));
 	if (unsupportedKeys.length > 0) {
-		throw new Error(`qualityGate contains unsupported keys: ${unsupportedKeys.join(", ")}`);
+		found.add(
+			"qualityGate",
+			"unsupported_keys",
+			`qualityGate contains unsupported keys: ${unsupportedKeys.join(", ")}`,
+		);
 	}
 	const architectReview = qualityGateObject(gate.architectReview);
 	const executorQa = qualityGateObject(gate.executorQa);
 	const iteration = qualityGateObject(gate.iteration);
 	if (!architectReview || !executorQa || !iteration) {
-		throw new Error("qualityGate requires architectReview, executorQa, and iteration objects");
+		found.add(
+			"qualityGate",
+			"missing_required_sections",
+			"qualityGate requires architectReview, executorQa, and iteration objects",
+		);
+		found.throwIfAny();
+		return;
 	}
 	if (isFinalAggregate) {
 		if (
@@ -2667,18 +2677,28 @@ async function validateCompletionQualityGate(
 			terminalCriticCeilingReached(options.ledger) &&
 			!terminalCriticGateOverridden(options.ledger)
 		) {
-			throw new Error(
+			found.add(
+				"criticReview",
+				"terminal_critic_ceiling",
 				"checkpoint --status complete blocked: terminal-critic ceiling reached; requires human/leader gjc ultragoal record-critic-gate-override before completion",
 			);
 		}
 		const criticReview = qualityGateObject(gate.criticReview);
 		if (criticReview?.verdict !== "OKAY") {
-			throw new Error(
+			found.add(
+				"criticReview.verdict",
+				"critic_verdict_not_okay",
 				"checkpoint --status complete (final aggregate) requires criticReview with verdict OKAY, non-empty evidence, and empty blockers",
 			);
 		}
-		requireNonEmptyString(criticReview.evidence, "criticReview.evidence");
-		requireEmptyBlockers(criticReview.blockers, "criticReview.blockers");
+		if (criticReview) {
+			found.check("criticReview.evidence", "missing_evidence", () =>
+				requireNonEmptyString(criticReview.evidence, "criticReview.evidence"),
+			);
+			found.check("criticReview.blockers", "non_empty_blockers", () =>
+				requireEmptyBlockers(criticReview.blockers, "criticReview.blockers"),
+			);
+		}
 	}
 	if (
 		architectReview.architectureStatus !== CLEAN_ARCHITECT_STATUS ||
@@ -2686,39 +2706,75 @@ async function validateCompletionQualityGate(
 		architectReview.codeStatus !== CLEAN_ARCHITECT_STATUS ||
 		architectReview.recommendation !== APPROVE_RECOMMENDATION
 	) {
-		throw new Error(
+		found.add(
+			"architectReview",
+			"architect_not_clear",
 			"checkpoint --status complete requires architect review approval: architectReview architecture/product/code must be CLEAR and recommendation must be APPROVE",
 		);
 	}
 	if (!nonEmptyStringArray(architectReview.commands)) {
-		throw new Error("qualityGate architectReview.commands must be a non-empty string array");
+		found.add(
+			"architectReview.commands",
+			"missing_command_array",
+			"qualityGate architectReview.commands must be a non-empty string array",
+		);
 	}
-	requireNonEmptyString(architectReview.evidence, "architectReview.evidence");
-	requireEmptyBlockers(architectReview.blockers, "architectReview.blockers");
+	found.check("architectReview.evidence", "missing_evidence", () =>
+		requireNonEmptyString(architectReview.evidence, "architectReview.evidence"),
+	);
+	found.check("architectReview.blockers", "non_empty_blockers", () =>
+		requireEmptyBlockers(architectReview.blockers, "architectReview.blockers"),
+	);
 	if (
 		executorQa.status !== PASSED_STATUS ||
 		executorQa.e2eStatus !== PASSED_STATUS ||
 		executorQa.redTeamStatus !== PASSED_STATUS
 	) {
-		throw new Error("qualityGate executorQa status, e2eStatus, and redTeamStatus must be passed");
+		found.add(
+			"executorQa",
+			"executor_qa_not_passed",
+			"qualityGate executorQa status, e2eStatus, and redTeamStatus must be passed",
+		);
 	}
 	if (!nonEmptyStringArray(executorQa.e2eCommands) || !nonEmptyStringArray(executorQa.redTeamCommands)) {
-		throw new Error("qualityGate executorQa e2eCommands and redTeamCommands must be non-empty string arrays");
+		found.add(
+			"executorQa.e2eCommands",
+			"missing_command_array",
+			"qualityGate executorQa e2eCommands and redTeamCommands must be non-empty string arrays",
+		);
 	}
-	requireNonEmptyString(executorQa.evidence, "executorQa.evidence");
-	requireEmptyBlockers(executorQa.blockers, "executorQa.blockers");
-	await validateExecutorQaRedTeamEvidence(cwd, executorQa, { changeSet: options.changeSet });
+	found.check("executorQa.evidence", "missing_evidence", () =>
+		requireNonEmptyString(executorQa.evidence, "executorQa.evidence"),
+	);
+	found.check("executorQa.blockers", "non_empty_blockers", () =>
+		requireEmptyBlockers(executorQa.blockers, "executorQa.blockers"),
+	);
+	await found.checkAsync("executorQa", "executor_qa_evidence_invalid", () =>
+		validateExecutorQaRedTeamEvidence(cwd, executorQa, { changeSet: options.changeSet }),
+	);
 	if (iteration.status !== PASSED_STATUS || iteration.fullRerun !== true) {
-		throw new Error("qualityGate iteration must be passed with fullRerun true");
+		found.add("iteration", "iteration_not_passed", "qualityGate iteration must be passed with fullRerun true");
 	}
 	if (!nonEmptyStringArray(iteration.rerunCommands)) {
-		throw new Error("qualityGate iteration.rerunCommands must be a non-empty string array");
+		found.add(
+			"iteration.rerunCommands",
+			"missing_command_array",
+			"qualityGate iteration.rerunCommands must be a non-empty string array",
+		);
 	}
-	requireNonEmptyString(iteration.evidence, "iteration.evidence");
-	requireEmptyBlockers(iteration.blockers, "iteration.blockers");
+	found.check("iteration.evidence", "missing_evidence", () =>
+		requireNonEmptyString(iteration.evidence, "iteration.evidence"),
+	);
+	found.check("iteration.blockers", "non_empty_blockers", () =>
+		requireEmptyBlockers(iteration.blockers, "iteration.blockers"),
+	);
+	found.check("iteration.reviewCohort", "review_cohort_invalid", () => validateReviewCohort(gate, iteration));
 	if (batchMode && options.goal && options.plan && options.ledger) {
-		validateBatchCloseQualityGate(gate, options.plan, batchMode, options.ledger, options.changeSet);
+		found.check("validationBatchClose", "batch_close_invalid", () =>
+			validateBatchCloseQualityGate(gate, options.plan!, batchMode, options.ledger!, options.changeSet),
+		);
 	}
+	found.throwIfAny();
 }
 
 function validateBatchCloseQualityGate(
@@ -2730,6 +2786,21 @@ function validateBatchCloseQualityGate(
 ): void {
 	const close = qualityGateObject(gate.validationBatchClose);
 	if (!close) throw new Error("validationBatchClose is required");
+	requireAllowedRecordKeys(
+		close,
+		[
+			"schemaVersion",
+			"kind",
+			"batchId",
+			"finalGoalId",
+			"memberIds",
+			"memberMetadataHashes",
+			"memberReceipts",
+			"unionChangeSet",
+			"coverageEvidence",
+		],
+		"validationBatchClose",
+	);
 	if (close.schemaVersion !== 1 || close.kind !== "validation-batch-close")
 		throw new Error("validationBatchClose.kind must be validation-batch-close");
 	if (close.batchId !== metadata.batchId || close.finalGoalId !== metadata.finalGoalId)
@@ -2756,6 +2827,12 @@ function validateBatchCloseQualityGate(
 		if (memberId !== metadata.finalGoalId && member.status !== "complete")
 			throw new Error(`validationBatchClose cannot close before ${memberId} is complete`);
 	}
+	requireExactRecordKeys(memberMetadataHashes, metadata.memberIds, "validationBatchClose.memberMetadataHashes");
+	requireExactRecordKeys(
+		memberChangeSetHashes,
+		metadata.memberIds,
+		"validationBatchClose.unionChangeSet.memberChangeSetHashes",
+	);
 	if (receiptRows.length !== nonFinalIds.length)
 		throw new Error("validationBatchClose.memberReceipts must list every non-final member exactly once");
 	for (const row of receiptRows) {
@@ -2765,6 +2842,11 @@ function validateBatchCloseQualityGate(
 		const memberId = nonEmptyString(record.goalId);
 		if (!memberId || !nonFinalIds.includes(memberId))
 			throw new Error("validationBatchClose.memberReceipts contains invalid member goalId");
+		requireAllowedRecordKeys(
+			record,
+			["goalId", "receiptId", "checkpointLedgerEventId", "qualityGateHash", "changeSetHash", "role"],
+			`validationBatchClose.memberReceipts.${memberId}`,
+		);
 		if (seenReceipts.has(memberId))
 			throw new Error(`validationBatchClose.memberReceipts contains duplicate member ${memberId}`);
 		seenReceipts.add(memberId);
@@ -2789,6 +2871,11 @@ function validateBatchCloseQualityGate(
 	const union = qualityGateObject(close.unionChangeSet);
 	if (union?.source !== "validation-batch")
 		throw new Error("validationBatchClose.unionChangeSet.source must be validation-batch");
+	requireAllowedRecordKeys(
+		union,
+		["source", "memberChangeSetHashes", "paths", "unionHash"],
+		"validationBatchClose.unionChangeSet",
+	);
 	const unionPaths = canonicalChangeSetRows(union.paths, "validationBatchClose.unionChangeSet.paths");
 	requireChangeSetCoverage(changeSet, unionPaths, "validationBatchClose.unionChangeSet.paths");
 	const finalHash = changeSetHashForPaths(unionPaths);
@@ -2874,8 +2961,11 @@ function hydrateReviewedBatchReplacementClose(input: {
 	const aggregateGoal = aggregateGoals.find(goal => {
 		const receipt = goal.completionVerification!;
 		const event = findLedgerReceiptEvent(input.ledger, receipt);
+		const eventReceipt = event?.completionVerification as UltragoalCompletionVerification | undefined;
 		return (
 			event !== null &&
+			eventReceipt !== undefined &&
+			hashStructuredValue(eventReceipt) === hashStructuredValue(receipt) &&
 			hashStructuredValue(event.qualityGateJson) === receipt.qualityGateHash &&
 			goal.updatedAt === receipt.verifiedAt &&
 			receipt.basis.relevantGoalIdsBeforeCheckpoint.length === historicalRequiredGoalIds.length &&
@@ -2914,7 +3004,11 @@ function hydrateReviewedBatchReplacementClose(input: {
 			role: "deferred-member",
 		});
 	}
-	const paths = input.changeSet.paths.map(row => ({ ...row }));
+	const paths = input.changeSet.paths.map(row => ({
+		path: row.path,
+		status: row.status,
+		...(row.oldPath ? { oldPath: row.oldPath } : {}),
+	}));
 	memberChangeSetHashes[input.goal.id] = changeSetHashForPaths(paths);
 	const unionHash = hashStructuredValue({
 		memberChangeSetHashes,
@@ -2940,6 +3034,253 @@ function hydrateReviewedBatchReplacementClose(input: {
 		},
 	};
 }
+/**
+ * Scaffold a schema-shaped quality-gate template for selected surfaces (#3474).
+ * The template is intentionally incomplete for live artifact proofs so `quality-gate
+ * validate` can report remaining evidence gaps in one pass after the author fills paths.
+ */
+export function buildQualityGateInitTemplate(surfaces: readonly string[]): JsonObject {
+	const normalized = surfaces.length > 0 ? surfaces.map(surface => surface.trim()).filter(Boolean) : ["web"];
+	const unique: string[] = [];
+	for (const surface of normalized) {
+		if (!unique.includes(surface)) unique.push(surface);
+	}
+
+	const artifactRefs: JsonObject[] = [
+		{
+			id: "adversarial-report",
+			kind: "failure-mode-test",
+			path: "artifacts/adversarial-report.txt",
+			description: "Adversarial boundary and failure-mode test output",
+			inlineEvidence:
+				"Adversarial boundary cases exercised invalid input, missing state, and repeated submission without violating the contract.",
+		},
+	];
+	const surfaceEvidence: JsonObject[] = [];
+	const contractCoverage: JsonObject[] = [];
+	const adversarialCases: JsonObject[] = [
+		{
+			id: "case-invalid-input",
+			contractRef: "approved-plan:goal",
+			scenario: "Submit invalid or boundary input through the user-facing surface",
+			expectedBehavior: "The implementation rejects or handles the case according to the approved contract",
+			verdict: "passed",
+			artifactRefs: ["adversarial-report"],
+		},
+	];
+
+	unique.forEach((surface, index) => {
+		const surfaceId = `surface-${index + 1}`;
+		const family = surface.toLowerCase();
+		const linked: string[] = [];
+		if (family.includes("web") || family.includes("gui")) {
+			const browserId = `browser-run-${index + 1}`;
+			const shotId = `gui-screenshot-${index + 1}`;
+			linked.push(browserId, shotId);
+			artifactRefs.push(
+				{
+					id: browserId,
+					kind: "browser-automation",
+					path: `artifacts/${browserId}.json`,
+					description: "Browser automation transcript for the approved user-facing flow",
+					inlineEvidence:
+						"Browser automation executed the approved flow, asserted the expected visible result, and captured the final DOM state.",
+				},
+				{
+					id: shotId,
+					kind: "screenshot",
+					path: `artifacts/${shotId}.png`,
+					description: "Screenshot evidence for the GUI/web surface verdict",
+					inlineEvidence:
+						"Screenshot review confirmed the approved screen state, including the success message and absence of regression indicators.",
+				},
+			);
+		} else if (family.includes("cli")) {
+			const replayId = `cli-replay-${index + 1}`;
+			linked.push(replayId);
+			artifactRefs.push({
+				id: replayId,
+				kind: "cli-replay",
+				path: `artifacts/${replayId}.json`,
+				description: "CLI argv replay transcript for the approved command surface",
+				inlineEvidence:
+					"CLI replay executed the allowlisted command and verified recorded stdout against the approved contract.",
+			});
+		} else if (family.includes("api") || family.includes("package")) {
+			const reportId = `api-report-${index + 1}`;
+			linked.push(reportId);
+			artifactRefs.push({
+				id: reportId,
+				kind: "test-report",
+				path: `artifacts/${reportId}.xml`,
+				description: "API/package black-box test report",
+				inlineEvidence:
+					"API/package suite covered happy path, auth failure, and contract-breaking payloads with non-empty report output.",
+			});
+		} else {
+			const evidenceId = `surface-evidence-${index + 1}`;
+			linked.push(evidenceId);
+			artifactRefs.push({
+				id: evidenceId,
+				kind: "transcript",
+				path: `artifacts/${evidenceId}.txt`,
+				description: `Evidence transcript for surface ${surface}`,
+				inlineEvidence: `Surface ${surface} was exercised against the approved contract with recorded transcript evidence.`,
+			});
+		}
+
+		surfaceEvidence.push({
+			id: surfaceId,
+			surface: family.includes("web") || family.includes("gui") ? "gui/web" : surface,
+			contractRef: "approved-plan:goal",
+			invocation: `Exercise surface ${surface} against the approved contract`,
+			verdict: "passed",
+			artifactRefs: linked,
+		});
+		contractCoverage.push({
+			id: `contract-${index + 1}`,
+			contractRef: "approved-plan:goal",
+			obligation: `The completed story satisfies the approved contract on surface ${surface}`,
+			status: "covered",
+			surfaceEvidenceRefs: [surfaceId],
+			adversarialCaseRefs: ["case-invalid-input"],
+		});
+	});
+
+	return {
+		architectReview: {
+			architectureStatus: "CLEAR",
+			productStatus: "CLEAR",
+			codeStatus: "CLEAR",
+			recommendation: "APPROVE",
+			evidence: "architect reviewed architecture, product behavior, and code changes",
+			commands: ["architect-review"],
+			blockers: [],
+		},
+		executorQa: {
+			status: "passed",
+			e2eStatus: "passed",
+			redTeamStatus: "passed",
+			evidence: "executor built and ran e2e plus red-team QA suite",
+			e2eCommands: ["bun test:e2e"],
+			redTeamCommands: ["bun test:red-team"],
+			artifactRefs,
+			contractCoverage,
+			surfaceEvidence,
+			adversarialCases,
+			blockers: [],
+		},
+		criticReview: {
+			verdict: "OKAY",
+			evidence: "critic approved final aggregate",
+			blockers: [],
+		},
+		iteration: {
+			status: "passed",
+			evidence: "no verification findings remain after steering iterations",
+			fullRerun: true,
+			reviewCohort: {
+				reviewGeneration: 1,
+				sourceHash: "sha256:replace-with-frozen-source-hash",
+				joined: true,
+				lanes: {
+					cleaner: {
+						status: "passed",
+						sourceHash: "sha256:replace-with-frozen-source-hash",
+						evidence: "cleaner clean",
+						blockers: [],
+					},
+					architect: {
+						status: "CLEAR",
+						sourceHash: "sha256:replace-with-frozen-source-hash",
+						evidence: "architect clear",
+						blockers: [],
+					},
+					qa: {
+						status: "passed",
+						sourceHash: "sha256:replace-with-frozen-source-hash",
+						evidence: "qa passed",
+						blockers: [],
+					},
+				},
+			},
+			rerunCommands: ["bun test:e2e", "bun test:red-team"],
+			blockers: [],
+		},
+	};
+}
+
+/**
+ * Read-only quality-gate validation (#3474). Applies exactly the same rules as
+ * `checkpoint --status complete` — including deferred-vs-boundary gate selection and
+ * artifact existence checks — but never touches `goals.json`, `ledger.jsonl`, or goal
+ * state, and reports every diagnostic in one run instead of the first failure.
+ */
+export async function validateUltragoalQualityGateReadOnly(input: {
+	cwd: string;
+	qualityGateJson: string;
+	goalId?: string;
+	sessionId?: string | null;
+}): Promise<{ valid: boolean; errors: readonly UltragoalQualityGateDiagnostic[] }> {
+	const sessionId = input.sessionId?.trim() || currentUltragoalSessionId(input.cwd);
+	const plan = await readUltragoalPlan(input.cwd, sessionId);
+	const goal = input.goalId
+		? plan?.goals.find(item => item.id === input.goalId)
+		: plan?.goals.find(item => SCHEDULABLE_STATUSES.has(item.status));
+	if (input.goalId && !goal) {
+		return {
+			valid: false,
+			errors: [{ path: "goalId", code: "unknown_goal", message: `Unknown ultragoal goal ${input.goalId}` }],
+		};
+	}
+	const gate = qualityGateObject(await readStructuredValue(input.cwd, input.qualityGateJson));
+	if (!gate) {
+		return {
+			valid: false,
+			errors: [{ path: "qualityGate", code: "not_an_object", message: "qualityGate must be a JSON object" }],
+		};
+	}
+	const ledger = plan ? await readUltragoalLedger(input.cwd, sessionId) : undefined;
+	const changeSet = await computeCheckpointChangeSet(input.cwd);
+	try {
+		const validationBatch = goal ? requireFreshValidationBatchMetadata(goal) : undefined;
+		let hydratedGate =
+			validationBatch && plan && goal && ledger
+				? hydrateReviewedBatchReplacementClose({
+						gate,
+						plan,
+						goal,
+						metadata: validationBatch,
+						ledger,
+						changeSet,
+					})
+				: gate;
+		if (goal) hydratedGate = hydrateDeferredGateDefaults(hydratedGate, goal, changeSet);
+		if (goal && plan && ledger) {
+			hydratedGate = hydrateBatchCloseDefaults({ gate: hydratedGate, plan, goal, ledger, changeSet });
+		}
+		await validateCompletionQualityGate(input.cwd, hydratedGate, {
+			changeSet,
+			plan: plan ?? undefined,
+			goal,
+			ledger,
+		});
+		return { valid: true, errors: [] };
+	} catch (error) {
+		if (error instanceof UltragoalQualityGateError) return { valid: false, errors: error.diagnostics };
+		return {
+			valid: false,
+			errors: [
+				{
+					path: "qualityGate",
+					code: "validation_failed",
+					message: error instanceof Error ? error.message : String(error),
+				},
+			],
+		};
+	}
+}
+
 async function readRequiredCompletionQualityGate(
 	cwd: string,
 	value: string | undefined,
@@ -2970,53 +3311,25 @@ async function readRequiredCompletionQualityGate(
 					changeSet: options.changeSet,
 				})
 			: gateObject;
-	await validateCompletionQualityGate(cwd, hydratedGate, {
+	let completionGate = options.goal
+		? hydrateDeferredGateDefaults(hydratedGate, options.goal, options.changeSet)
+		: hydratedGate;
+	if (options.goal && options.plan && options.ledger) {
+		completionGate = hydrateBatchCloseDefaults({
+			gate: completionGate,
+			plan: options.plan,
+			goal: options.goal,
+			ledger: options.ledger,
+			changeSet: options.changeSet,
+		});
+	}
+	await validateCompletionQualityGate(cwd, completionGate, {
 		changeSet: options.changeSet,
 		plan: options.plan,
 		goal: options.goal,
 		ledger: options.ledger,
 	});
-	return hydratedGate;
-}
-
-function validatePipelineCheckpointSafety(
-	plan: UltragoalPlan,
-	goal: UltragoalGoal,
-	changeSet?: UltragoalChangeSet,
-): void {
-	const metadata = goal.pipelineMetadata;
-	if (!metadata) return;
-	validateValidationBatchPipelineExclusion(goal);
-	requireFreshPipelineMetadata(goal);
-	if (metadata.overlap === "open") {
-		throw new Error(
-			`Cannot complete ${goal.id} while pipeline overlap ${metadata.overlapId ?? ""} is open; join or quarantine first.`,
-		);
-	}
-	if (metadata.overlap === "quarantine_required") {
-		throw new Error(
-			`Cannot complete ${goal.id} while pipeline overlap ${metadata.overlapId ?? ""} requires rebaseline.`,
-		);
-	}
-	if (metadata.goalId === metadata.priorGoalId && metadata.overlap !== "none" && metadata.overlap !== "joined_clean") {
-		throw new Error(
-			`Cannot complete ${goal.id} without a clean join for pipeline overlap ${metadata.overlapId ?? ""}.`,
-		);
-	}
-	const peer = pipelinePeer(plan, metadata);
-	if (changeSet && metadata.overlap !== "none") {
-		const peerTargets = peer?.pipelineMetadata?.targets;
-		for (const row of changeSet.paths) {
-			const ownedByGoal = pipelineTargetsCoverPath(metadata.targets, row.path);
-			const ownedByPeer = peerTargets ? pipelineTargetsCoverPath(peerTargets, row.path) : false;
-			if (ownedByGoal && ownedByPeer)
-				throw new Error(`Cannot complete ${goal.id} with shared pipeline change-set path ${row.path}.`);
-			if (!ownedByGoal && !ownedByPeer)
-				throw new Error(`Cannot complete ${goal.id} with unattributable pipeline change-set path ${row.path}.`);
-			if (!ownedByGoal && ownedByPeer)
-				throw new Error(`Cannot complete ${goal.id} with next-goal pipeline change-set path ${row.path}.`);
-		}
-	}
+	return completionGate;
 }
 
 function validateCompleteCheckpointTargetGoal(goal: UltragoalGoal): void {
@@ -3091,8 +3404,13 @@ export async function checkpointUltragoalGoal(input: {
 	// receipt, the replay is a genuine re-verification: it must run the full
 	// quality gate and mint a fresh receipt, otherwise a completed goal with a
 	// context-staled receipt can never be repaired (different evidence is
-	// rejected on complete goals by design). A mutated goal row keeps the
-	// fail-loud tamper handling in the idempotent branch below.
+	// rejected on complete goals by design). A final-aggregate receipt whose
+	// recorded checkpoint gate lacks a clean criticReview OKAY is likewise
+	// repair-eligible: it is not "stale", but the completion guard rejects it
+	// forever (active_missing_critic_verdict), so a no-op replay would leave
+	// the run permanently unable to complete even after the terminal critic
+	// records OKAY. A mutated goal row keeps the fail-loud tamper handling in
+	// the idempotent branch below.
 	const staleCompleteReceiptReplay =
 		input.status === "complete" &&
 		goal.status === "complete" &&
@@ -3100,13 +3418,14 @@ export async function checkpointUltragoalGoal(input: {
 		Boolean(matchingIdempotentEvent) &&
 		(!goal.completionVerification ||
 			(goal.completionVerification.verifiedAt === goal.updatedAt &&
-				validateReceiptFreshBase({
+				(validateReceiptFreshBase({
 					plan,
 					ledger: ledgerBefore,
 					goal,
 					receipt: goal.completionVerification,
 					receiptKind: goal.completionVerification.receiptKind,
-				}) !== null));
+				}) !== null ||
+					finalAggregateReceiptMissingCriticOkay(ledgerBefore, goal.completionVerification))));
 	if (
 		goal.status === input.status &&
 		goal.evidence === evidence &&
@@ -3155,9 +3474,8 @@ export async function checkpointUltragoalGoal(input: {
 		return plan;
 	}
 	const changeSet = input.status === "complete" ? await computeCheckpointChangeSet(input.cwd) : undefined;
-	if (input.status === "complete") {
-		validatePipelineCheckpointSafety(plan, goal, changeSet);
-		if (!staleCompleteReceiptReplay) validateCompleteCheckpointTargetGoal(goal);
+	if (input.status === "complete" && !staleCompleteReceiptReplay) {
+		validateCompleteCheckpointTargetGoal(goal);
 	}
 	const qualityGateJson =
 		input.status === "complete"
@@ -3414,7 +3732,6 @@ async function addUltragoalSubgoalToPlan(input: {
 		createdAt: now,
 		updatedAt: now,
 		steering: { kind, evidence, rationale },
-		pipelineMetadata: legacyPipelineMetadata(nextId),
 	});
 	input.plan.updatedAt = now;
 	await writePlan(input.cwd, input.plan);
@@ -3465,7 +3782,6 @@ async function splitUltragoalSubgoal(input: {
 	target.evidence = evidence;
 	target.updatedAt = now;
 	target.steering = { kind, evidence, rationale, replacementGoalIds };
-	invalidatePipelineMetadata(target, "split_subgoal_superseded", now);
 	clearValidationBatchForBatch(input.plan, target.validationBatch);
 	const replacementGoals = replacements.map(
 		(replacement, index): UltragoalGoal => ({
@@ -3476,7 +3792,6 @@ async function splitUltragoalSubgoal(input: {
 			createdAt: now,
 			updatedAt: now,
 			steering: { kind: "split_replacement", sourceGoalId: target.id, evidence, rationale },
-			pipelineMetadata: legacyPipelineMetadata(replacementGoalIds[index]!),
 		}),
 	);
 	const targetIndex = input.plan.goals.findIndex(goal => goal.id === target.id);
@@ -3575,7 +3890,6 @@ async function revisePendingUltragoalWording(input: {
 	const now = new Date().toISOString();
 	goal.updatedAt = now;
 	goal.steering = { kind, evidence, rationale, changedFields };
-	invalidatePipelineMetadata(goal, "revised_pending_wording", now);
 	clearValidationBatchForBatch(input.plan, goal.validationBatch);
 	input.plan.updatedAt = now;
 	await writePlan(input.cwd, input.plan);
@@ -3652,9 +3966,33 @@ export async function recordUltragoalReviewBlockers(input: {
 	title: string;
 	objective: string;
 	evidence: string;
-}): Promise<UltragoalPlan> {
+}): Promise<{ plan: UltragoalPlan; blockerGoalId: string }> {
 	const objective = input.objective.trim();
 	if (!objective) throw new Error("record-review-blockers --objective is required");
+	// Pre-check on the persisted plan BEFORE any mutation (#3613): dedup and cap are
+	// evaluated against the durable state so a dedup-hit is a pure idempotent return
+	// (no checkpoint, no writePlan, no appendLedger) and a cap-hit throws before any
+	// partial write corrupts goals.json/ledger. Read-check-then-write on this snapshot.
+	const prePlan = await readUltragoalPlan(input.cwd);
+	if (!prePlan) throw new Error("No ultragoal plan found. Run `gjc ultragoal create-goals --brief ...` first.");
+	// Dedup BEFORE the budget check: an identical-objective open review_blocker already
+	// descending from this blocked goal is returned idempotently — mirroring
+	// recordReviewFindingGoals' findOpenReviewBlockerGoal path and the checkpoint #645
+	// dedup discipline. Identity = review_blocker kind + trimmed objective +
+	// same blockedGoalId + non-resolved status.
+	const existing = findOpenReviewBlockerGoal(prePlan, objective);
+	if (existing && existing.steering?.kind === "review_blocker" && existing.steering.blockedGoalId === input.goalId) {
+		return { plan: prePlan, blockerGoalId: existing.id };
+	}
+	// Bounded cap: count unresolved descents off this blocked goal BEFORE any mutation.
+	// Resolved (complete/superseded) ancestors never count, so legitimate multi-generation
+	// review is not falsely capped. Descents 1..3 may exist; creating the 4th triggers the
+	// deterministic terminal human handoff. Durable across replay/restart/concurrency:
+	// recomputed from the persisted plan snapshot each call.
+	const unresolvedDescents = countUnresolvedReviewBlockerDescents(prePlan, input.goalId);
+	if (unresolvedDescents >= MAX_REVIEW_BLOCKER_DESCENTS)
+		throw new UltragoalReviewBlockerRecursionCapError(input.goalId, unresolvedDescents);
+	// Only now transition the blocked goal to review_blocked and record the new descent.
 	const plan = await checkpointUltragoalGoal({
 		cwd: input.cwd,
 		goalId: input.goalId,
@@ -3664,7 +4002,7 @@ export async function recordUltragoalReviewBlockers(input: {
 	const persistedPlan = await readUltragoalPlan(input.cwd);
 	if (persistedPlan?.state_revision !== undefined) plan.state_revision = persistedPlan.state_revision;
 	const now = new Date().toISOString();
-	const nextId = `G${String(plan.goals.length + 1).padStart(3, "0")}`;
+	const nextId = nextUltragoalGoalId(plan);
 	plan.goals.push({
 		id: nextId,
 		title: input.title.trim() || "Resolve final code-review blockers",
@@ -3677,7 +4015,7 @@ export async function recordUltragoalReviewBlockers(input: {
 	plan.updatedAt = now;
 	await writePlan(input.cwd, plan);
 	await appendLedger(input.cwd, { event: "review_blockers_recorded", goalId: input.goalId, blockerGoalId: nextId });
-	return plan;
+	return { plan, blockerGoalId: nextId };
 }
 
 export type UltragoalBlockerClassification = "human_blocked" | "resolvable";
@@ -3880,34 +4218,60 @@ async function readOptionalExecutorQa(cwd: string, value: string | undefined): P
 }
 
 import {
+	ciDevChangedPathRows,
 	computeCheckpointChangeSet,
+	mergeChangeSetPaths,
 	parseGitNameStatus,
+	parseGitUntrackedPaths,
 	parseUnifiedDiffPaths,
 	resolveGitBase,
 	spawnText,
 } from "./ultragoal-change-set";
 
-export { computeCheckpointChangeSet, parseGitNameStatus, parseUnifiedDiffPaths, resolveGitBase, spawnText };
+export {
+	ciDevChangedPathRows,
+	computeCheckpointChangeSet,
+	mergeChangeSetPaths,
+	parseGitNameStatus,
+	parseGitUntrackedPaths,
+	parseUnifiedDiffPaths,
+	resolveGitBase,
+	spawnText,
+};
 
 function changeSetFromReviewSource(source: JsonObject): UltragoalChangeSet | undefined {
 	const kind = nonEmptyString(source.kind);
-	if (kind === "spec") return { source: "review-spec", paths: [], trusted: true };
-	if (kind === "pr" && typeof source.diff === "string")
+	if (kind === "spec") {
+		const codeSource = qualityGateObject(source.codeSource);
+		return codeSource ? changeSetFromReviewSource(codeSource) : undefined;
+	}
+	if (kind === "pr" && typeof source.diff === "string") {
+		const paths = parseUnifiedDiffPaths(source.diff);
 		return {
 			source: "review-pr",
-			paths: parseUnifiedDiffPaths(source.diff),
+			paths,
 			rawDiffStat: source.diff,
 			rawDiff: source.diff,
+			captureIncomplete: true,
 			trusted: true,
 		};
+	}
 	const local = qualityGateObject(source.local);
-	if (kind === "pr" && local) return changeSetFromReviewSource(local);
+	if (kind === "pr" && local) {
+		const localChangeSet = changeSetFromReviewSource(local);
+		return localChangeSet ? { ...localChangeSet, captureIncomplete: true } : undefined;
+	}
 	if (kind === "worktree")
 		return {
 			source: "review-worktree",
-			paths: parseGitNameStatus(String(source.nameStatus ?? source.status ?? "")),
-			rawDiffStat: String(source.diffStat ?? ""),
-			rawDiff: String(source.diff ?? ""),
+			paths: mergeChangeSetPaths([
+				parseGitNameStatus(String(source.nameStatus ?? source.status ?? "")),
+				parseGitUntrackedPaths(String(source.untracked ?? "")),
+				ciDevChangedPathRows(),
+			]),
+			rawDiffStat: typeof source.diffStat === "string" ? source.diffStat : undefined,
+			rawDiff: typeof source.diff === "string" ? source.diff : undefined,
+			captureIncomplete: source.captureIncomplete === true,
 			trusted: true,
 		};
 	if (kind === "branch" || kind === "pr-fallback")
@@ -3915,9 +4279,10 @@ function changeSetFromReviewSource(source: JsonObject): UltragoalChangeSet | und
 			source: "review-branch",
 			baseRef: nonEmptyString(source.base) ?? undefined,
 			headRef: "HEAD",
-			paths: parseGitNameStatus(String(source.nameStatus ?? "")),
-			rawDiffStat: String(source.diffStat ?? ""),
-			rawDiff: String(source.diff ?? ""),
+			paths: mergeChangeSetPaths([parseGitNameStatus(String(source.nameStatus ?? "")), ciDevChangedPathRows()]),
+			rawDiffStat: typeof source.diffStat === "string" ? source.diffStat : undefined,
+			rawDiff: typeof source.diff === "string" ? source.diff : undefined,
+			captureIncomplete: source.captureIncomplete === true,
 			trusted: true,
 		};
 	return undefined;
@@ -3925,35 +4290,52 @@ function changeSetFromReviewSource(source: JsonObject): UltragoalChangeSet | und
 
 async function localDiffSource(cwd: string, sourceKind: string, branch?: string): Promise<JsonObject> {
 	if (sourceKind === "worktree") {
-		const [status, diffStat, unstaged, staged, unstagedDiff, stagedDiff] = await Promise.all([
+		const [status, diffStat, unstaged, staged, untracked, unstagedDiff, stagedDiff] = await Promise.all([
 			spawnText(["git", "status", "--short"], { cwd, timeoutMs: 5000 }),
 			spawnText(["git", "diff", "--stat"], { cwd, timeoutMs: 5000 }),
-			spawnText(["git", "diff", "--name-status"], { cwd, timeoutMs: 5000 }),
-			spawnText(["git", "diff", "--cached", "--name-status"], { cwd, timeoutMs: 5000 }),
+			spawnText(["git", "diff", "--name-status", "-z"], { cwd, timeoutMs: 5000 }),
+			spawnText(["git", "diff", "--cached", "--name-status", "-z"], { cwd, timeoutMs: 5000 }),
+			spawnText(["git", "ls-files", "--others", "--exclude-standard", "-z"], { cwd, timeoutMs: 5000 }),
 			spawnText(["git", "diff"], { cwd, timeoutMs: 5000 }),
 			spawnText(["git", "diff", "--cached"], { cwd, timeoutMs: 5000 }),
 		]);
 		return {
 			kind: "worktree",
-			status: status.stdout,
-			diffStat: diffStat.stdout,
-			diff: [unstagedDiff.stdout, stagedDiff.stdout].filter(Boolean).join("\n"),
-			nameStatus: `${unstaged.stdout}\n${staged.stdout}`,
+			...(status.ok ? { status: status.stdout } : {}),
+			...(diffStat.ok ? { diffStat: diffStat.stdout } : {}),
+			...(unstagedDiff.ok && stagedDiff.ok
+				? { diff: [unstagedDiff.stdout, stagedDiff.stdout].filter(Boolean).join("\n") }
+				: {}),
+			nameStatus: [unstaged.ok ? unstaged.stdout : "", staged.ok ? staged.stdout : ""].join(""),
+			...(untracked.ok ? { untracked: untracked.stdout } : {}),
+			captureIncomplete:
+				!status.ok ||
+				!diffStat.ok ||
+				!unstaged.ok ||
+				!staged.ok ||
+				!untracked.ok ||
+				!unstagedDiff.ok ||
+				!stagedDiff.ok,
 		};
+	}
+	if (branch) {
+		const branchExists = await spawnText(["git", "rev-parse", "--verify", branch], { cwd, timeoutMs: 3000 });
+		if (!branchExists.ok) throw new Error(`review branch ${branch} does not resolve`);
 	}
 	const base = await resolveGitBase(cwd, branch);
 	const [diffStat, nameStatus, diff] = await Promise.all([
 		spawnText(["git", "diff", "--stat", `${base}...HEAD`], { cwd, timeoutMs: 5000 }),
-		spawnText(["git", "diff", "--name-status", `${base}...HEAD`], { cwd, timeoutMs: 5000 }),
+		spawnText(["git", "diff", "--name-status", "-z", `${base}...HEAD`], { cwd, timeoutMs: 5000 }),
 		spawnText(["git", "diff", `${base}...HEAD`], { cwd, timeoutMs: 5000 }),
 	]);
 	return {
 		kind: sourceKind,
 		base,
 		branch,
-		diffStat: diffStat.stdout,
-		diff: diff.stdout,
-		nameStatus: nameStatus.stdout,
+		...(diffStat.ok ? { diffStat: diffStat.stdout } : {}),
+		...(diff.ok ? { diff: diff.stdout } : {}),
+		nameStatus: nameStatus.ok ? nameStatus.stdout : "",
+		captureIncomplete: !diffStat.ok || !nameStatus.ok || !diff.ok,
 	};
 }
 
@@ -3964,9 +4346,15 @@ async function resolveReviewSource(
 ): Promise<{ contractStrength: UltragoalReviewContractStrength; source: JsonObject }> {
 	if (specPath) {
 		const absolute = path.resolve(cwd, specPath);
+		const codeReviewSource = await resolveReviewSource(cwd, args, undefined);
 		return {
 			contractStrength: "strong",
-			source: { kind: "spec", path: specPath, contract: await Bun.file(absolute).text() },
+			source: {
+				kind: "spec",
+				path: specPath,
+				contract: await Bun.file(absolute).text(),
+				codeSource: codeReviewSource.source,
+			},
 		};
 	}
 	const pr = flagValue(args, "--pr");
@@ -4015,6 +4403,57 @@ function findOpenReviewBlockerGoal(plan: UltragoalPlan, message: string): Ultrag
 			goal.objective.trim() === objective &&
 			!RESOLVED_REVIEW_BLOCKER_STATUSES.has(goal.status),
 	);
+}
+
+/**
+ * Maximum unresolved review_blocker descents chained off a single blocked goal.
+ * Descents 1..3 may exist; an attempt to create the 4th triggers the deterministic
+ * terminal {@link UltragoalReviewBlockerRecursionCapError} handoff (#3613).
+ */
+const MAX_REVIEW_BLOCKER_DESCENTS = 3;
+
+/**
+ * Typed terminal handoff thrown when {@link recordUltragoalReviewBlockers} would
+ * exceed {@link MAX_REVIEW_BLOCKER_DESCENTS} unresolved review_blocker descents
+ * off a single blocked goal (#3613). Never silently marks unresolved technical
+ * findings complete; the operator/leader must pause and escalate.
+ */
+export class UltragoalReviewBlockerRecursionCapError extends Error {
+	readonly code = "review_blocker_recursion_cap" as const;
+	readonly blockedGoalId: string;
+	readonly unresolvedDescents: number;
+	readonly cap: number;
+	constructor(blockedGoalId: string, unresolvedDescents: number, cap = MAX_REVIEW_BLOCKER_DESCENTS) {
+		super(
+			`review_blocker_recursion_cap: goal ${blockedGoalId} already has ${unresolvedDescents} unresolved review_blocker descents (cap=${cap}). ` +
+				"Record a human pause/escalation or resolve existing blockers before recording more. " +
+				"Unresolved technical findings are never auto-completed.",
+		);
+		this.name = "UltragoalReviewBlockerRecursionCapError";
+		this.blockedGoalId = blockedGoalId;
+		this.unresolvedDescents = unresolvedDescents;
+		this.cap = cap;
+	}
+}
+
+/**
+ * Count unresolved review_blocker descents off a single blocked goal. A descent
+ * counts iff `steering.kind === "review_blocker"` AND
+ * `steering.blockedGoalId === goalId` AND status is not resolved
+ * (complete/superseded). Resolved ancestors never count, so legitimate
+ * multi-generation review is not falsely capped (#3613). Durable across
+ * replay/restart/concurrency: computed from the persisted plan snapshot each call.
+ */
+function countUnresolvedReviewBlockerDescents(plan: UltragoalPlan, goalId: string): number {
+	return plan.goals.reduce((count, goal) => {
+		if (
+			goal.steering?.kind === "review_blocker" &&
+			goal.steering.blockedGoalId === goalId &&
+			!RESOLVED_REVIEW_BLOCKER_STATUSES.has(goal.status)
+		)
+			return count + 1;
+		return count;
+	}, 0);
 }
 
 async function recordReviewFindingGoals(cwd: string, findings: readonly UltragoalReviewFinding[]): Promise<string[]> {
@@ -4111,6 +4550,18 @@ function flagValue(args: readonly string[], flag: string): string | undefined {
 	return args[index + 1];
 }
 
+function flagValues(args: readonly string[], flag: string): string[] {
+	const values: string[] = [];
+	for (let index = 0; index < args.length; index += 1) {
+		if (args[index] !== flag) continue;
+		const value = args[index + 1];
+		if (value === undefined || value.startsWith("-")) continue;
+		values.push(value);
+		index += 1;
+	}
+	return values;
+}
+
 function hasFlag(args: readonly string[], flag: string): boolean {
 	return args.includes(flag);
 }
@@ -4138,17 +4589,9 @@ const FLAGS_WITH_VALUES = new Set([
 	"--replacements-json",
 	"--order-json",
 	"--classification",
-	"--goal-metadata-json",
 	"--validation-batch-json",
-	"--prior-goal-id",
-	"--next-goal-id",
-	"--review-handles-json",
-	"--qa-handles-json",
-	"--implementation-handle-json",
-	"--overlap-id",
-	"--review-result-json",
-	"--qa-result-json",
-	"--target-state-json",
+	"--out",
+	"--surface",
 ]);
 
 function isHelpArg(arg: string): boolean {
@@ -4278,6 +4721,28 @@ function renderUltragoalHelp(args: readonly string[]): string | null {
 		].join("\n");
 	}
 
+	if (subject === "quality-gate") {
+		return [
+			"Run native GJC Ultragoal workflow commands",
+			"",
+			"USAGE",
+			"  $ gjc ultragoal quality-gate init [--surface <name> ...] --out <path>",
+			"  $ gjc ultragoal quality-gate validate --quality-gate-json <json-or-path> [--goal-id <id>] [--json]",
+			"",
+			"FLAGS",
+			"      --surface=<value>            Surface to scaffold (repeatable; default web)",
+			"      --out=<value>                Output path for quality-gate init",
+			"      --quality-gate-json=<value>  JSON string or path for quality-gate validate",
+			"      --goal-id=<value>            Optional durable goal id for rule-identical validation",
+			"      --json                       Machine-readable output",
+			"",
+			"EXAMPLES",
+			"  $ gjc ultragoal quality-gate init --surface web --surface api --out ./quality-gate.json",
+			"  $ gjc ultragoal quality-gate validate --quality-gate-json ./quality-gate.json --json",
+			"",
+		].join("\n");
+	}
+
 	return [
 		"Run native GJC Ultragoal workflow commands",
 		"",
@@ -4295,12 +4760,11 @@ function renderUltragoalHelp(args: readonly string[]): string | null {
 		"  classify-blocker",
 		"  record-critic-verdict",
 		"  record-critic-gate-override",
+		"  quality-gate init",
+		"  quality-gate validate",
 
-		"  start-pipeline-overlap",
-		"  join-pipeline-overlap",
-		"  rebaseline-pipeline-overlap",
 		"",
-		"Run `gjc ultragoal checkpoint --help`, `gjc ultragoal review --help`, `gjc ultragoal classify-blocker --help`, `gjc ultragoal record-critic-verdict --help`, or `gjc ultragoal record-critic-gate-override --help` for command-specific requirements.",
+		"Run `gjc ultragoal checkpoint --help`, `gjc ultragoal review --help`, `gjc ultragoal classify-blocker --help`, `gjc ultragoal record-critic-verdict --help`, or `gjc ultragoal record-critic-gate-override --help`, or `gjc ultragoal quality-gate --help` for command-specific requirements.",
 		"",
 	].join("\n");
 }
@@ -4629,18 +5093,11 @@ async function dispatchUltragoalCommand(args: string[], cwd: string): Promise<Ul
 				return { status: 0, stdout: renderStatus(await getUltragoalStatus(cwd, sessionId), json) };
 			case "create":
 			case "create-goals": {
-				if (
-					flagValue(args, "--goal-metadata-json") !== undefined &&
-					flagValue(args, "--validation-batch-json") !== undefined
-				) {
-					throw new Error("--validation-batch-json and --goal-metadata-json are mutually exclusive");
-				}
 				const mode = flagValue(args, "--gjc-goal-mode") === "per-story" ? "per-story" : "aggregate";
 				const plan = await createUltragoalPlan({
 					cwd,
 					brief: await readBrief(cwd, args),
 					gjcGoalMode: mode,
-					goalMetadataJson: flagValue(args, "--goal-metadata-json"),
 					validationBatchJson: flagValue(args, "--validation-batch-json"),
 				});
 				return {
@@ -4682,6 +5139,58 @@ async function dispatchUltragoalCommand(args: string[], cwd: string): Promise<Ul
 					stdout: renderCheckpointContinuation(result, status, json, cwd),
 				};
 			}
+			case "quality-gate": {
+				const positional = args.filter(arg => !arg.startsWith("-"));
+				const subcommand = positional[1];
+				if (subcommand === "init") {
+					const out = flagValue(args, "--out");
+					if (!out?.trim()) {
+						return { status: 1, stderr: "quality-gate init requires --out <path>\n" };
+					}
+					const surfaces = flagValues(args, "--surface");
+					const template = buildQualityGateInitTemplate(surfaces);
+					const resolved = path.resolve(cwd, out);
+					await Bun.write(resolved, `${JSON.stringify(template, null, 2)}\n`);
+					if (json) {
+						return {
+							status: 0,
+							stdout: `${JSON.stringify({ ok: true, out: resolved, surfaces: surfaces.length > 0 ? surfaces : ["web"] }, null, 2)}\n`,
+						};
+					}
+					return {
+						status: 0,
+						stdout: `Wrote quality-gate template to ${resolved}\n`,
+					};
+				}
+				if (subcommand !== "validate") {
+					return {
+						status: 1,
+						stderr: `Unknown gjc ultragoal quality-gate subcommand: ${subcommand ?? "(missing)"}; supported: init, validate\n`,
+					};
+				}
+				const qualityGateJson = flagValue(args, "--quality-gate-json");
+				if (!qualityGateJson?.trim()) {
+					return { status: 1, stderr: "quality-gate validate requires --quality-gate-json\n" };
+				}
+				const result = await validateUltragoalQualityGateReadOnly({
+					cwd,
+					qualityGateJson,
+					goalId: flagValue(args, "--goal-id"),
+				});
+				if (json) {
+					return {
+						status: result.valid ? 0 : 1,
+						stdout: `${JSON.stringify({ valid: result.valid, errors: result.errors }, null, 2)}\n`,
+					};
+				}
+				if (result.valid) return { status: 0, stdout: "quality gate is valid.\n" };
+				return {
+					status: 1,
+					stderr: `${result.errors.length} quality-gate error(s):\n${result.errors
+						.map(diagnostic => `  ${diagnostic.path} [${diagnostic.code}]: ${diagnostic.message}`)
+						.join("\n")}\n`,
+				};
+			}
 			case "review": {
 				const result = await runUltragoalReview(cwd, args);
 				return {
@@ -4699,20 +5208,19 @@ async function dispatchUltragoalCommand(args: string[], cwd: string): Promise<Ul
 				};
 			}
 			case "record-review-blockers": {
-				const plan = await recordUltragoalReviewBlockers({
+				const { blockerGoalId } = await recordUltragoalReviewBlockers({
 					cwd,
 					goalId: flagValue(args, "--goal-id") ?? "",
 					title: flagValue(args, "--title") ?? "Resolve final code-review blockers",
 					objective: flagValue(args, "--objective") ?? "",
 					evidence: flagValue(args, "--evidence") ?? "",
 				});
-				const goal = plan.goals.at(-1);
 				return {
 					status: 0,
 					stdout: json
 						? renderCliWriteReceipt({
 								ok: true,
-								goal_id: goal?.id,
+								goal_id: blockerGoalId,
 								goals_path: getUltragoalPaths(cwd, currentUltragoalSessionId(cwd)).goalsPath,
 							})
 						: "Recorded review blockers.\n",
@@ -4781,65 +5289,6 @@ async function dispatchUltragoalCommand(args: string[], cwd: string): Promise<Ul
 						: `Recorded terminal critic gate override event-id=${String(event.eventId)}.\n`,
 				};
 			}
-			case "start-pipeline-overlap": {
-				const receipt = await startUltragoalPipelineOverlap({
-					cwd,
-					priorGoalId: flagValue(args, "--prior-goal-id") ?? "",
-					nextGoalId: flagValue(args, "--next-goal-id") ?? "",
-					reviewHandles: await readRequiredJsonObjectOrArray(
-						cwd,
-						flagValue(args, "--review-handles-json") ?? "",
-						"review handles",
-					),
-					qaHandles: await readRequiredJsonObjectOrArray(
-						cwd,
-						flagValue(args, "--qa-handles-json") ?? "",
-						"QA handles",
-					),
-					implementationHandle: await readRequiredJsonObject(
-						cwd,
-						flagValue(args, "--implementation-handle-json") ?? "",
-						"implementation handle",
-					),
-				});
-				return {
-					status: 0,
-					stdout: json ? renderCliWriteReceipt(receipt) : `Started pipeline overlap ${receipt.overlap_id}.\n`,
-				};
-			}
-			case "join-pipeline-overlap": {
-				const receipt = await joinUltragoalPipelineOverlap({
-					cwd,
-					overlapId: flagValue(args, "--overlap-id") ?? "",
-					reviewResult: await readRequiredJsonObject(
-						cwd,
-						flagValue(args, "--review-result-json") ?? "",
-						"review result",
-					),
-					qaResult: await readRequiredJsonObject(cwd, flagValue(args, "--qa-result-json") ?? "", "QA result"),
-				});
-				return {
-					status: 0,
-					stdout: json ? renderCliWriteReceipt(receipt) : `Joined pipeline overlap ${receipt.overlap_id}.\n`,
-				};
-			}
-			case "rebaseline-pipeline-overlap": {
-				const receipt = await rebaselineUltragoalPipelineOverlap({
-					cwd,
-					overlapId: flagValue(args, "--overlap-id") ?? "",
-					goalId: flagValue(args, "--goal-id") ?? "",
-					evidence: flagValue(args, "--evidence") ?? "",
-					targetState: await readRequiredJsonObject(
-						cwd,
-						flagValue(args, "--target-state-json") ?? "",
-						"target state",
-					),
-				});
-				return {
-					status: 0,
-					stdout: json ? renderCliWriteReceipt(receipt) : `Rebaselined pipeline overlap ${receipt.overlap_id}.\n`,
-				};
-			}
 			default:
 				return { status: 1, stderr: `Unknown gjc ultragoal command: ${command}\n` };
 		}
@@ -4860,9 +5309,6 @@ const RECONCILE_COMMANDS = new Set([
 	"classify-blocker",
 	"record-critic-verdict",
 	"record-critic-gate-override",
-	"start-pipeline-overlap",
-	"join-pipeline-overlap",
-	"rebaseline-pipeline-overlap",
 ]);
 
 /**
@@ -4899,7 +5345,6 @@ async function reconcileUltragoalState(cwd: string): Promise<void> {
 		if (summary.nudgeRemaining !== undefined) payload.nudge_remaining = summary.nudgeRemaining;
 		if (summary.nudgeGoalId !== undefined) payload.nudge_goal_id = summary.nudgeGoalId;
 		if (summary.nudgeTargetKind !== undefined) payload.nudge_target_kind = summary.nudgeTargetKind;
-		if (summary.pipelineOverlap) payload.pipeline_overlap = summary.pipelineOverlap;
 		const ledgerText = await Bun.file(summary.paths.ledgerPath)
 			.text()
 			.catch(() => "");

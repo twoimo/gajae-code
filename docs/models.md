@@ -182,7 +182,7 @@ The same presets are available inside the TUI:
 /provider add --preset alibaba-token-plan
 ```
 
-Presets only write `models.yml` entries that reference documented environment variable names (`MINIMAX_CODE_API_KEY`, `MINIMAX_CODE_CN_API_KEY`, `ZAI_API_KEY`, or `ALIBABA_TOKEN_PLAN_API_KEY`); they do not store or validate real credentials. The GLM preset aliases (`glm`, `zai`, `z-ai`) write an OpenAI-compatible custom provider named `glm-proxy` and do not replace the first-class `zai` provider. The Alibaba Token Plan preset (aliases: alibaba, token-plan) writes an OpenAI-compatible custom provider named alibaba-token-plan with per-model API routing (qwen3.8-max-preview uses openai-responses; glm-5.2 and deepseek-v4-pro use openai-completions).
+Presets only write `models.yml` entries that reference documented environment variable names (`MINIMAX_CODE_API_KEY`, `MINIMAX_CODE_CN_API_KEY`, `ZAI_API_KEY`, or `ALIBABA_TOKEN_PLAN_API_KEY`); they do not store or validate real credentials. The GLM preset aliases (`glm`, `zai`, `z-ai`) write an OpenAI-compatible custom provider named `glm-proxy` and do not replace the first-class `zai` provider. The Alibaba Token Plan preset (aliases: alibaba, token-plan) writes an OpenAI-compatible custom provider named alibaba-token-plan with per-model API routing (qwen3.8-max-preview uses openai-responses; glm-5.2, deepseek-v4-pro, and deepseek-v4-flash-0731 use openai-completions).
 
 ## Model profiles (`--mpreset`)
 
@@ -229,13 +229,14 @@ Cancellation discards provisional output and emits exactly one cancelled `agent_
 
 Built-in profiles are grouped by provider mix and tier:
 
-- `codex-{eco,medium,pro}` — GPT-5.6 Sol/Terra/Luna role mixes tuned by tier and reasoning effort
+- `codex-{eco,medium,pro}` — GPT-5.6 Sol/Terra/Luna role mixes tuned by tier and reasoning effort; `lunamaxxing` — OpenAI Codex Luna-only profile with maximum reasoning on delegated roles
 - `opencodego` — single OpenCode Go preset (Kimi default, DeepSeek executor/architect, Qwen planner, MiMo critic)
 - `claude-opus` — Anthropic OAuth preset centered on `claude-opus-5`
 - Single-provider tiers: `glm-{eco,medium,pro}`, `kimi-coding-plan-{eco,medium,pro}`, `mimo-{eco,medium,pro}`, `grok-{eco,medium,pro}`, `cursor-{eco,medium,pro}`, `minimax-{eco,medium,pro}`
+- Alibaba Token Plan: `alibaba-token-plan-balanced` preserves the established Qwen/DeepSeek V4 Pro/GLM mix; `alibaba-token-plan-pro` raises execution and independent criticism with DeepSeek V4 Flash 0731 max and GLM xhigh; `alibaba-token-plan-qwenmaxxing` stays Qwen-only; `alibaba-token-plan-qwen-deepseek` keeps Qwen 3.8 Max (`qwen-3.8-max`) on the expensive default (high)/architect (xhigh)/critic (xhigh) roles and spends DeepSeek V4 Flash 0731 on the cheap planner (max) and executor (high) roles; `alibaba-token-plan-glm-deepseek` does the same with GLM 5.2 (`glm-5.2`) as the expensive model
 - Combos: `opus-codex`, `codex-opencodego`, and `fable-opus-codex`
 
-The `eco`, `medium`, and `pro` Codex profile mappings are current product judgments: Eco assigns Terra low/Luna low/Luna high/Terra xhigh/Terra high to default/executor/planner/critic/architect; Medium assigns Sol low/Terra low/Terra high/Sol xhigh/Sol high; and Pro assigns Sol medium/Terra medium/Sol high/Sol max/Sol xhigh. `opus-codex` retains the Medium Codex executor, critic, and architect roles but uses `anthropic/claude-sonnet-5` for planner; `codex-opencodego` retains the Medium Codex default and architect roles; and `fable-opus-codex` uses the Pro Codex executor and architect roles with `anthropic/claude-opus-5:medium` for planner. The descriptive repeated local exact-edit evidence informs only selected executor-style TypeScript tasks; it does not evaluate or prove default, planner, architect, or critic performance. See [GPT-5.6 Codex preset benchmark](./gpt-5.6-codex-preset-benchmark.md). Effort suffixes are clamped to each model's supported thinking range at preview and activation time. Single-provider tiers pin each provider's current flagship (`zai/glm-5.2`, `kimi-code/kimi-k2.7-code`, `xiaomi/mimo-v2.5-pro`, `xai/grok-4.3`, `cursor/composer-1.5`, `minimax-code/minimax-m3`). User-defined profiles override built-ins by exact profile name.
+The `eco`, `medium`, and `pro` Codex profile mappings are current product judgments: Eco assigns Terra low/Luna low/Luna high/Terra xhigh/Terra high to default/executor/planner/critic/architect; Medium assigns Sol low/Terra low/Terra high/Sol xhigh/Sol high; Pro assigns Sol medium/Terra medium/Sol high/Sol max/Sol xhigh; and LunaMaxxing assigns Luna medium/Luna xhigh/Luna max/Luna max/Luna max. `opus-codex` retains the Medium Codex executor, critic, and architect roles but uses `anthropic/claude-sonnet-5` for planner; `codex-opencodego` retains the Medium Codex default and architect roles; and `fable-opus-codex` uses the Pro Codex executor and architect roles with `anthropic/claude-opus-5:medium` for planner. The descriptive repeated local exact-edit evidence informs only selected executor-style TypeScript tasks; it does not evaluate or prove default, planner, architect, or critic performance. See [GPT-5.6 Codex preset benchmark](./gpt-5.6-codex-preset-benchmark.md). The Alibaba Pro role evidence and its limits are recorded separately in [Alibaba Token Plan Pro profile benchmark](./alibaba-token-plan-pro-profile-benchmark.md). Cursor Eco uses Composer 2.5 for every role; Medium keeps standard Composer for default/planning and spends the Fast premium on execution, criticism, and architecture; Pro uses Composer 2.5 Fast throughout. Composer does not expose a strength value through the current Cursor RPC, so these profiles use exact model IDs without inert generic effort suffixes. See [Cursor Composer profile tiers](./cursor-composer-profile-tiers.md). Effort suffixes are clamped to each model's supported thinking range at preview and activation time. Single-provider tiers pin each provider's current flagship (`zai/glm-5.2`, `kimi-code/kimi-k2.7-code`, `xiaomi/mimo-v2.5-pro`, `xai/grok-4.3`, `cursor/composer-2.5`, `minimax-code/minimax-m3`). User-defined profiles override built-ins by exact profile name.
 
 
 Use `gjc --mpreset <name>` to activate a profile for the current session only. Activation hard-blocks when any provider listed in `required_providers` lacks credentials. Add `--default` to persist the selected profile as `modelProfile.default` in `config.yml`, so it applies at startup:
@@ -310,6 +311,16 @@ providers:
 
 Use provider-level `headers` for proxy-required headers. Keep the provider `api` set to `openai-completions` when the proxy exposes Chat Completions-compatible `/v1/chat/completions` semantics. `auth: apiKey` sends the resolved token as bearer auth; use `auth: none` only for trusted local/no-auth endpoints.
 
+`auth` selects the transport scheme only; it never supplies a credential. A provider that declares `models:` must therefore also declare where its key comes from, and `models.yml` validation rejects the config before model discovery otherwise:
+
+| Intent | Required keys |
+| --- | --- |
+| Authenticated proxy (recommended) | `auth: apiKey` (default) + `apiKeyEnv: MY_TOKEN` |
+| Authenticated proxy, key inline | `auth: apiKey` (default) + `apiKey: sk-…` (less safe; stored in plaintext) |
+| Genuinely unauthenticated endpoint | `auth: none`, no key |
+
+Omitting both `apiKey` and `apiKeyEnv` while leaving `auth` at its `apiKey` default fails with `Provider <name>: custom models need a credential source, but none is configured.` — the fix is to add one of the rows above, not to change `api` or `baseUrl`.
+
 `input` is the model modality list GJC uses to decide whether image content is forwarded. When a custom model omits `input`, GJC defaults to `[text]` (unless a bundled model with the same id contributes a reference). Vision-capable upstream models therefore need an explicit `input: [text, image]`; otherwise `read`/tool images are stripped before the request and replaced with `[image omitted: model does not support vision]`, even if the remote model can see images.
 
 ```yaml
@@ -380,7 +391,7 @@ modelBindings:
 Required:
 
 - `baseUrl`
-- `apiKey` unless `auth: none`
+- A credential source: `apiKeyEnv` or `apiKey`. `auth` selects the scheme, not the credential, so `auth: apiKey` (the default) still needs one of them. Exempt: `auth: none`, and `api: bedrock-converse-stream`, which resolves AWS credentials from its own chain.
 - `api` at provider level or each model
 
 ### Override-only provider (`models` missing or empty)

@@ -1,9 +1,16 @@
 import * as crypto from "node:crypto";
 import * as path from "node:path";
 import {
+	type ChatDaemonCommandBindInput,
+	type ChatDaemonCommandOutcome,
+	serveChatDaemonCommandsOnce,
+} from "./chat-daemon-command-channel";
+import {
 	acquireChatDaemonOwnership,
 	type ChatDaemonKind,
+	chatDaemonGeneration,
 	clearChatDaemonControlRequest,
+	hasSafeChatDaemonStateShape,
 	readChatDaemonControlRequest,
 	readChatDaemonState,
 	releaseChatDaemonOwnership,
@@ -11,16 +18,19 @@ import {
 } from "./chat-daemon-control";
 import { type ChatDaemonRuntimeConfig, ChatDaemonRuntime as DefaultChatDaemonRuntime } from "./chat-daemon-runtime";
 import {
-	isDiscordConfigured,
-	isSlackConfigured,
+	isDiscordComplete,
+	isSlackComplete,
 	loadNotificationConfigFile,
 	notificationConfigFromFile,
+	resolveNotificationProvider,
 } from "./config";
 
 export interface ChatDaemonRuntimeHandle {
 	start(): Promise<void>;
 	stop(): Promise<void>;
 	transportHealthy?(): boolean;
+	/** Executes operator commands that must run inside the owning daemon. */
+	bindExistingRoot?(request: ChatDaemonCommandBindInput): Promise<ChatDaemonCommandOutcome>;
 }
 
 export interface RunChatDaemonInternalDeps {
@@ -60,27 +70,13 @@ async function loadConfig(agentDir: string, kind: ChatDaemonKind): Promise<ChatD
 	const config = notificationConfigFromFile(loaded.value);
 	if (!config.enabled) return undefined;
 	if (kind === "discord") {
-		if (
-			!isDiscordConfigured({
-				...config,
-				sessionScope: "all",
-				idleTimeoutMs: 60_000,
-				rich: { enabled: true },
-				richDraft: { enabled: false },
-				toolActivity: { enabled: true },
-				topics: { nameTemplate: undefined },
-				btw: { enabled: true },
-				streaming: { enabled: true },
-			})
-		) {
+		const resolution = resolveNotificationProvider(config, "discord");
+		if (!resolution.desiredEnabled) return undefined;
+		if (resolution.quarantined) throw new Error("Discord notification configuration needs repair");
+		if (!resolution.configured || !isDiscordComplete(config)) {
 			throw new Error("Discord notifications are enabled but configuration is incomplete");
 		}
-		const discord = config.discord as {
-			botToken: string;
-			applicationId: string;
-			guildId: string;
-			parentChannelId: string;
-		};
+		const discord = config.discord;
 		const { botToken, applicationId, guildId, parentChannelId } = discord;
 		const identity = crypto
 			.createHash("sha256")
@@ -95,28 +91,13 @@ async function loadConfig(agentDir: string, kind: ChatDaemonKind): Promise<ChatD
 			presentation: { redact: config.redact, verbosity: config.verbosity },
 		};
 	}
-	if (
-		!isSlackConfigured({
-			...config,
-			sessionScope: "all",
-			idleTimeoutMs: 60_000,
-			rich: { enabled: true },
-			richDraft: { enabled: false },
-			toolActivity: { enabled: true },
-			topics: { nameTemplate: undefined },
-			btw: { enabled: true },
-			streaming: { enabled: true },
-		})
-	) {
+	const resolution = resolveNotificationProvider(config, "slack");
+	if (!resolution.desiredEnabled) return undefined;
+	if (resolution.quarantined) throw new Error("Slack notification configuration needs repair");
+	if (!resolution.configured || !isSlackComplete(config)) {
 		throw new Error("Slack notifications are enabled but configuration is incomplete");
 	}
-	const slack = config.slack as {
-		botToken: string;
-		appToken: string;
-		workspaceId: string;
-		channelId: string;
-		authorizedUserId?: string;
-	};
+	const slack = config.slack;
 	const { botToken, appToken, workspaceId, channelId, authorizedUserId } = slack;
 	const identity = crypto
 		.createHash("sha256")
@@ -184,7 +165,7 @@ export async function runChatDaemonInternal(
 
 	let incarnation: string | undefined;
 	let runtime: ChatDaemonRuntimeHandle | undefined;
-	let interval: ReturnType<typeof setInterval> | undefined;
+	let interval: NodeJS.Timeout | number | undefined;
 	let stopping = false;
 	let terminalError: unknown;
 	let runtimeStop: Promise<void> | undefined;
@@ -240,11 +221,44 @@ export async function runChatDaemonInternal(
 				}
 			})();
 		}, 5_000);
+		const ownedIncarnation = incarnation;
+		const stillOwner = async (): Promise<boolean> => {
+			const current = await readChatDaemonState(agentDir, kind);
+			return (
+				hasSafeChatDaemonStateShape(current) &&
+				current.kind === kind &&
+				current.ownerId === ownerId &&
+				current.pid === daemonPid &&
+				current.incarnation === ownedIncarnation &&
+				current.generation === chatDaemonGeneration(kind) &&
+				current.stoppedAt === undefined
+			);
+		};
+		const bindExistingRoot = activeRuntime.bindExistingRoot?.bind(activeRuntime);
 		while (!stopping) {
 			const request = await readChatDaemonControlRequest(agentDir, kind);
 			if (request?.ownerId === ownerId && request.incarnation === incarnation) {
 				await clearChatDaemonControlRequest(agentDir, kind, request.requestId);
 				break;
+			}
+			// Operator commands are served in place: unlike a lifecycle request they
+			// must never end this loop. A serving failure degrades to the caller's
+			// timeout rather than terminating a healthy transport.
+			if (bindExistingRoot) {
+				try {
+					await serveChatDaemonCommandsOnce({
+						agentDir,
+						kind,
+						ownerId,
+						pid: daemonPid,
+						incarnation: ownedIncarnation,
+						generation: chatDaemonGeneration(kind),
+						handler: { bindExistingRoot },
+						verifyOwnership: stillOwner,
+					});
+				} catch {
+					// Retried on the next poll; the submitter observes a timeout.
+				}
 			}
 			await new Promise(resolve => setTimeout(resolve, 100));
 		}

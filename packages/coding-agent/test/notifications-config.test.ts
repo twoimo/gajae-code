@@ -15,27 +15,33 @@ import {
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "../src/extensibility/extensions";
 import { createAgentSession } from "../src/sdk";
 import { brokerOwnerForTest } from "../src/sdk/broker/ensure";
+import { processIncarnation } from "../src/sdk/broker/process-incarnation";
 import {
 	buildRedactedAction,
 	completionNotifyDisabledByEnv,
 	getNotificationConfig,
-	isDiscordConfigured,
-	isGloballyConfigured,
-	isNotificationHostEligible,
-	isNotificationStreamingEnabled,
-	isSessionNotificationsEnabled,
-	isSlackConfigured,
-	isTelegramConfigured,
+	hasAnyEffectivelyEnabledProvider,
+	isGenericNotificationHostEligible,
+	isGenericNotificationSessionEnabled,
+	isProviderEffectivelyEnabled,
 	maskToken,
 	type NotificationConfig,
 	type RedactableAction,
+	resolveGenericNotificationStreamPolicy,
+	resolveNotificationProvider,
 	sessionTag,
-	shouldRegisterNotificationsExtension,
+	shouldRegisterGenericNotificationsExtension,
 	telegramActivationIdentity,
 	tokenFingerprint,
 } from "../src/sdk/bus/config";
 import { createNotificationsExtension } from "../src/sdk/bus/index";
-import { daemonPaths, ensureTelegramDaemonRunning, renewDaemonHeartbeat } from "../src/sdk/bus/telegram-daemon";
+import {
+	DAEMON_GENERATION,
+	DAEMON_VERSION,
+	daemonPaths,
+	ensureTelegramDaemonRunning,
+	renewDaemonHeartbeat,
+} from "../src/sdk/bus/telegram-daemon";
 import {
 	createLightweightDaemonSettings,
 	loadLightweightDaemonSettings,
@@ -74,6 +80,7 @@ const BASE_CFG: NotificationConfig = {
 	redact: false,
 	verbosity: "lean",
 	sessionScope: "all",
+	sound: "all",
 	rich: {
 		enabled: true,
 	},
@@ -81,7 +88,7 @@ const BASE_CFG: NotificationConfig = {
 		enabled: false,
 	},
 	toolActivity: {
-		enabled: true,
+		enabled: false,
 	},
 	streaming: {
 		enabled: true,
@@ -106,6 +113,36 @@ const PRIMARY_GLOBAL_CFG: NotificationConfig = {
 	sessionScope: "primary",
 };
 const tempDirs: string[] = [];
+
+function genericNotificationStreamingEnabled(input: {
+	cfg: NotificationConfig;
+	env: NodeJS.ProcessEnv;
+	genericSessionEnabled?: boolean;
+}): boolean {
+	return resolveGenericNotificationStreamPolicy({
+		cfg: input.cfg,
+		env: input.env,
+		genericSessionEnabled: input.genericSessionEnabled ?? true,
+	}).enabled;
+}
+
+function telegramEffectivelyEnabled(cfg: NotificationConfig): boolean {
+	return isProviderEffectivelyEnabled(cfg, "telegram");
+}
+
+function discordEffectivelyEnabled(input: Pick<NotificationConfig, "enabled" | "discord">): boolean {
+	return isProviderEffectivelyEnabled(
+		{ ...BASE_CFG, enabled: input.enabled, discord: { ...BASE_CFG.discord, ...input.discord } },
+		"discord",
+	);
+}
+
+function slackEffectivelyEnabled(input: Pick<NotificationConfig, "enabled" | "slack">): boolean {
+	return isProviderEffectivelyEnabled(
+		{ ...BASE_CFG, enabled: input.enabled, slack: { ...BASE_CFG.slack, ...input.slack } },
+		"slack",
+	);
+}
 const MALFORMED_NOTIFICATION_LEAVES: ReadonlyArray<readonly [SettingPath, unknown]> = [
 	["notifications.enabled", "invalid"],
 	["notifications.telegram.botToken", 42],
@@ -116,6 +153,7 @@ const MALFORMED_NOTIFICATION_LEAVES: ReadonlyArray<readonly [SettingPath, unknow
 	["notifications.telegram.richDraft.enabled", "invalid"],
 	["notifications.telegram.toolActivity.enabled", "invalid"],
 	["notifications.telegram.streaming.enabled", "invalid"],
+	["notifications.telegram.sound", "invalid"],
 	["notifications.telegram.topics.nameTemplate", 42],
 	["notifications.discord.botToken", 42],
 	["notifications.discord.applicationId", 42],
@@ -171,6 +209,66 @@ describe("notifications config", () => {
 	test("getNotificationConfig reads defaults", () => {
 		expect(getNotificationConfig(Settings.isolated())).toEqual(BASE_CFG);
 	});
+	test("keeps completeness, quarantine, desired intent, and effectiveness independent", () => {
+		const optionalMalformed = getNotificationConfig(
+			Settings.isolated({
+				"notifications.enabled": true,
+				"notifications.telegram.enabled": true,
+				"notifications.telegram.botToken": "1234567890:configured-token-value",
+				"notifications.telegram.chatId": "1001",
+				"notifications.telegram.rich.enabled": "invalid",
+			}),
+		);
+		const quarantined = resolveNotificationProvider(optionalMalformed, "telegram");
+		expect(quarantined).toMatchObject({
+			configured: true,
+			quarantined: true,
+			desiredEnabled: true,
+			desiredSource: "explicit",
+			effectiveEnabled: false,
+		});
+		expect(quarantined.issues).toContainEqual({
+			path: "notifications.telegram.rich.enabled",
+			code: "wrong_type",
+		});
+
+		const incomplete = resolveNotificationProvider(
+			getNotificationConfig(Settings.isolated({ "notifications.telegram.enabled": true })),
+			"telegram",
+		);
+		expect(incomplete).toMatchObject({
+			configured: false,
+			quarantined: false,
+			desiredEnabled: true,
+			desiredSource: "explicit",
+			effectiveEnabled: false,
+		});
+		expect(incomplete.issues).toEqual(
+			expect.arrayContaining([
+				{ path: "notifications.telegram.botToken", code: "missing" },
+				{ path: "notifications.telegram.chatId", code: "missing" },
+			]),
+		);
+
+		const malformedIntent = resolveNotificationProvider(
+			getNotificationConfig(
+				Settings.isolated({
+					"notifications.enabled": true,
+					"notifications.telegram.enabled": "invalid",
+					"notifications.telegram.botToken": "1234567890:configured-token-value",
+					"notifications.telegram.chatId": "1001",
+				}),
+			),
+			"telegram",
+		);
+		expect(malformedIntent).toMatchObject({
+			configured: true,
+			quarantined: true,
+			desiredEnabled: false,
+			desiredSource: "explicit",
+			effectiveEnabled: false,
+		});
+	});
 
 	test("getNotificationConfig reads populated settings", () => {
 		const settings = Settings.isolated({
@@ -179,6 +277,7 @@ describe("notifications config", () => {
 			"notifications.telegram.chatId": "chat-1",
 			"notifications.telegram.btw.enabled": true,
 			"notifications.telegram.streaming.enabled": false,
+			"notifications.telegram.sound": "none",
 			"notifications.discord.botToken": "discord-token",
 			"notifications.discord.applicationId": "discord-app",
 			"notifications.discord.guildId": "discord-guild",
@@ -212,6 +311,7 @@ describe("notifications config", () => {
 			redact: true,
 			verbosity: "lean",
 			sessionScope: "all",
+			sound: "none",
 			btw: {
 				enabled: true,
 			},
@@ -222,7 +322,7 @@ describe("notifications config", () => {
 				enabled: false,
 			},
 			toolActivity: {
-				enabled: true,
+				enabled: false,
 			},
 			streaming: {
 				enabled: false,
@@ -232,6 +332,34 @@ describe("notifications config", () => {
 			},
 			idleTimeoutMs: 1234,
 		});
+	});
+
+	test("getNotificationConfig preserves an explicit tool-activity opt-in", () => {
+		const settings = Settings.isolated({
+			"notifications.telegram.toolActivity.enabled": true,
+		});
+
+		expect(getNotificationConfig(settings).toolActivity.enabled).toBe(true);
+	});
+	test("generated schema advertises tool activity as opt-in", async () => {
+		const schema = JSON.parse(
+			await Bun.file(path.join(import.meta.dir, "../../../schemas/config.schema.json")).text(),
+		) as {
+			properties: {
+				notifications: {
+					properties: {
+						telegram: {
+							properties: {
+								toolActivity: { properties: { enabled: { default?: unknown } } };
+							};
+						};
+					};
+				};
+			};
+		};
+		expect(
+			schema.properties.notifications.properties.telegram.properties.toolActivity.properties.enabled.default,
+		).toBe(false);
 	});
 
 	test("getNotificationConfig validates and projects durable Telegram activation markers", () => {
@@ -364,7 +492,7 @@ describe("notifications config", () => {
 			emptyLightweight.getNotificationSettingsSnapshot(),
 		);
 	});
-	test("streaming defaults and malformed values have full and lightweight parity", () => {
+	test("streaming defaults and malformed values have full and lightweight quarantine parity", () => {
 		const settings = Settings.isolated();
 		const lightweight = createLightweightDaemonSettings({
 			agentDir: "/tmp/gjc-notification-streaming-default",
@@ -373,13 +501,19 @@ describe("notifications config", () => {
 		expect(settings.getNotificationSettingsSnapshot().telegram.streaming.enabled).toBe(true);
 		expect(lightweight.getNotificationSettingsSnapshot().telegram.streaming.enabled).toBe(true);
 
-		for (const rawConfig of [
-			{ notifications: { telegram: { streaming: true } } },
-			{ notifications: { telegram: { streaming: { enabled: "invalid" } } } },
-		]) {
-			expect(() =>
-				createLightweightDaemonSettings({ agentDir: "/tmp/gjc-notification-streaming-invalid", rawConfig }),
-			).toThrow("gjc_notify_daemon_invalid_configuration");
+		for (const [rawConfig, pathName] of [
+			[{ notifications: { telegram: { streaming: true } } }, "notifications.telegram.streaming"],
+			[
+				{ notifications: { telegram: { streaming: { enabled: "invalid" } } } },
+				"notifications.telegram.streaming.enabled",
+			],
+		] as const) {
+			const snapshot = createLightweightDaemonSettings({
+				agentDir: "/tmp/gjc-notification-streaming-invalid",
+				rawConfig,
+			}).getNotificationSettingsSnapshot();
+			expect(snapshot.telegram.streaming.enabled).toBe(true);
+			expect((snapshot.providerIssues?.telegram ?? []).some(issue => issue.path === pathName)).toBe(true);
 		}
 	});
 
@@ -403,43 +537,61 @@ describe("notifications config", () => {
 			},
 		};
 
-		expect(isNotificationStreamingEnabled({ cfg: activeTelegram, env: {} })).toBe(true);
-		expect(isNotificationStreamingEnabled({ cfg: inactiveTelegram, env: {} })).toBe(false);
-		expect(isNotificationStreamingEnabled({ cfg: blockedTelegram, env: {} })).toBe(false);
-		expect(isNotificationStreamingEnabled({ cfg: genericOnly, env: {} })).toBe(false);
-		expect(isNotificationStreamingEnabled({ cfg: genericOnly, env: { GJC_NOTIFICATIONS_STREAM: "1" } })).toBe(true);
+		expect(genericNotificationStreamingEnabled({ cfg: activeTelegram, env: {} })).toBe(true);
+		expect(genericNotificationStreamingEnabled({ cfg: inactiveTelegram, env: {} })).toBe(false);
+		expect(genericNotificationStreamingEnabled({ cfg: blockedTelegram, env: {} })).toBe(false);
+		expect(genericNotificationStreamingEnabled({ cfg: genericOnly, env: {} })).toBe(false);
+		expect(genericNotificationStreamingEnabled({ cfg: genericOnly, env: { GJC_NOTIFICATIONS_STREAM: "1" } })).toBe(
+			true,
+		);
 		for (const value of ["0", "off", "false"]) {
-			expect(isNotificationStreamingEnabled({ cfg: activeTelegram, env: { GJC_NOTIFICATIONS_STREAM: value } })).toBe(
-				false,
-			);
+			expect(
+				genericNotificationStreamingEnabled({ cfg: activeTelegram, env: { GJC_NOTIFICATIONS_STREAM: value } }),
+			).toBe(false);
 		}
 		expect(
-			isNotificationStreamingEnabled({ cfg: activeTelegram, env: { GJC_NOTIFICATIONS_STREAM: "unknown" } }),
+			genericNotificationStreamingEnabled({ cfg: activeTelegram, env: { GJC_NOTIFICATIONS_STREAM: "unknown" } }),
 		).toBe(true);
 	});
-	test("full Settings and lightweight daemon reject the same malformed notification leaves", () => {
+	test("full Settings and lightweight daemon share global fail-closed and provider quarantine semantics", () => {
 		for (const [pathName, value] of MALFORMED_NOTIFICATION_LEAVES) {
 			const rawConfig = notificationRawConfigAtPath(pathName, value);
-
-			expect(() => Settings.isolated({ [pathName]: value }).getNotificationSettingsSnapshot()).toThrow(
-				"gjc_notify_daemon_invalid_configuration",
-			);
-			expect(() =>
-				createLightweightDaemonSettings({
-					agentDir: "/tmp/gjc-notification-malformed-parity",
-					rawConfig,
-				}).getNotificationSettingsSnapshot(),
-			).toThrow("gjc_notify_daemon_invalid_configuration");
+			const provider = pathName.split(".")[1];
+			if (provider !== "telegram" && provider !== "discord" && provider !== "slack") {
+				expect(() => Settings.isolated({ [pathName]: value }).getNotificationSettingsSnapshot()).toThrow(
+					"gjc_notify_daemon_invalid_configuration",
+				);
+				expect(() =>
+					createLightweightDaemonSettings({
+						agentDir: "/tmp/gjc-notification-malformed-parity",
+						rawConfig,
+					}).getNotificationSettingsSnapshot(),
+				).toThrow("gjc_notify_daemon_invalid_configuration");
+				continue;
+			}
+			const full = Settings.isolated({ [pathName]: value }).getNotificationSettingsSnapshot();
+			const lightweight = createLightweightDaemonSettings({
+				agentDir: "/tmp/gjc-notification-malformed-parity",
+				rawConfig,
+			}).getNotificationSettingsSnapshot();
+			expect(full).toEqual(lightweight);
+			expect((full.providerIssues?.[provider] ?? []).some(issue => issue.path === pathName)).toBe(true);
 		}
 	});
-	test("full Settings loaded from config.yml fails closed for malformed notification settings", async () => {
+	test("full Settings loaded from config.yml fails closed globally and quarantines provider-local state", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-btw-settings-"));
 		tempDirs.push(root);
-
-		const rawConfigs: unknown[] = [
+		const globalRawConfigs: unknown[] = [
 			true,
 			null,
 			{ notifications: true },
+			{ notifications: { daemon: true } },
+			...MALFORMED_NOTIFICATION_LEAVES.filter(([pathName]) => {
+				const provider = pathName.split(".")[1];
+				return provider !== "telegram" && provider !== "discord" && provider !== "slack";
+			}).map(([pathName, value]) => notificationRawConfigAtPath(pathName, value)),
+		];
+		const providerRawConfigs: unknown[] = [
 			{ notifications: { telegram: [] } },
 			{ notifications: { telegram: { btw: true } } },
 			{ notifications: { telegram: { activation: true } } },
@@ -450,14 +602,15 @@ describe("notifications config", () => {
 			{ notifications: { telegram: { topics: true } } },
 			{ notifications: { discord: [] } },
 			{ notifications: { slack: [] } },
-			{ notifications: { daemon: true } },
-			...MALFORMED_NOTIFICATION_LEAVES.map(([pathName, value]) => notificationRawConfigAtPath(pathName, value)),
+			...MALFORMED_NOTIFICATION_LEAVES.filter(([pathName]) => {
+				const provider = pathName.split(".")[1];
+				return provider === "telegram" || provider === "discord" || provider === "slack";
+			}).map(([pathName, value]) => notificationRawConfigAtPath(pathName, value)),
 		];
-		for (const [index, rawConfig] of rawConfigs.entries()) {
-			const agentDir = path.join(root, `agent-${index}`);
+		for (const [index, rawConfig] of globalRawConfigs.entries()) {
+			const agentDir = path.join(root, `global-${index}`);
 			fs.mkdirSync(agentDir, { recursive: true });
 			fs.writeFileSync(path.join(agentDir, "config.yml"), `${JSON.stringify(rawConfig)}\n`);
-
 			const settings = await Settings.loadForScope({ cwd: root, agentDir });
 			try {
 				expect(() => settings.getNotificationSettingsSnapshot()).toThrow("gjc_notify_daemon_invalid_configuration");
@@ -476,6 +629,7 @@ describe("notifications config", () => {
 					await expect(
 						runDaemonInternal(["--agent-dir", agentDir, "--owner-id", "owner"], {
 							SettingsImpl: { init: async () => settings },
+							loadInstallationHostId: async () => "test-host",
 							DaemonImpl: UnexpectedDaemon,
 						}),
 					).rejects.toThrow("gjc_notify_daemon_invalid_configuration");
@@ -486,7 +640,47 @@ describe("notifications config", () => {
 				settings.getStorage()?.close();
 			}
 		}
+		for (const [index, rawConfig] of providerRawConfigs.entries()) {
+			const agentDir = path.join(root, `provider-${index}`);
+			fs.mkdirSync(agentDir, { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "config.yml"), `${JSON.stringify(rawConfig)}\n`);
+			const settings = await Settings.loadForScope({ cwd: root, agentDir });
+			try {
+				const full = settings.getNotificationSettingsSnapshot();
+				const lightweight = createLightweightDaemonSettings({
+					agentDir,
+					rawConfig,
+				}).getNotificationSettingsSnapshot();
+				expect(full).toEqual(lightweight);
+				expect(Object.values(full.providerIssues ?? {}).flat().length).toBeGreaterThan(0);
+			} finally {
+				await settings.flush();
+				settings.getStorage()?.close();
+			}
+		}
 	}, 30_000);
+	test("Settings keeps malformed notification leaves fail-closed with a relative agent directory", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notification-relative-agent-dir-"));
+		tempDirs.push(root);
+		const agentDir = path.join(root, "agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(agentDir, "config.yml"),
+			`${JSON.stringify({ notifications: { enabled: "invalid" } })}\n`,
+		);
+
+		const settings = await Settings.loadForScope({
+			cwd: root,
+			agentDir: path.relative(process.cwd(), agentDir),
+		});
+		try {
+			expect(() => settings.getNotificationSettingsSnapshot()).toThrow("gjc_notify_daemon_invalid_configuration");
+			await settings.flush();
+			expect(() => settings.getNotificationSettingsSnapshot()).toThrow("gjc_notify_daemon_invalid_configuration");
+		} finally {
+			settings.getStorage()?.close();
+		}
+	});
 	test("Settings revalidates malformed notification config after direct repairs only", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notification-direct-repair-"));
 		tempDirs.push(root);
@@ -904,39 +1098,108 @@ describe("notifications config", () => {
 			settings.getStorage()?.close();
 		}
 	});
-	test("full Settings rejects invalid or inaccessible config.yml like lightweight loading", async () => {
+	test("full Settings recovers defaults from invalid YAML while notifications remain fail-closed", async () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-btw-settings-load-"));
 		tempDirs.push(root);
-
-		const fixtures =
-			process.platform === "win32"
-				? (["notifications: [\n"] as const)
-				: (["notifications: [\n", "directory"] as const);
-		for (const [index, fixture] of fixtures.entries()) {
-			const agentDir = path.join(root, `agent-${index}`);
-			const configPath = path.join(agentDir, "config.yml");
-			fs.mkdirSync(agentDir, { recursive: true });
-			if (fixture === "directory") {
-				fs.mkdirSync(configPath);
-			} else {
-				fs.writeFileSync(configPath, fixture);
-			}
-
-			await expect(Settings.loadForScope({ cwd: root, agentDir })).rejects.toThrow();
-			await expect(loadLightweightDaemonSettings(agentDir)).rejects.toThrow();
+		const agentDir = path.join(root, "invalid-yaml");
+		const configPath = path.join(agentDir, "config.yml");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.writeFileSync(configPath, "notifications: [\n");
+		resetSettingsForTest();
+		const initialized = await Settings.init({ cwd: root, agentDir });
+		try {
+			expect(initialized.get("theme.dark")).toBe("red-claw");
+			expect(() => initialized.getNotificationSettingsSnapshot()).toThrow("gjc_notify_daemon_invalid_configuration");
+		} finally {
+			resetSettingsForTest();
 		}
 
-		const agentDir = path.join(root, "missing-config");
-		fs.mkdirSync(agentDir, { recursive: true });
 		const settings = await Settings.loadForScope({ cwd: root, agentDir });
 		try {
-			expect(settings.getNotificationSettingsSnapshot().telegram.btw.enabled).toBe(true);
-			expect(
-				(await loadLightweightDaemonSettings(agentDir)).getNotificationSettingsSnapshot().telegram.btw.enabled,
-			).toBe(true);
+			expect(settings.get("theme.dark")).toBe("red-claw");
+			expect(() => settings.getNotificationSettingsSnapshot()).toThrow("gjc_notify_daemon_invalid_configuration");
+			await expect(loadLightweightDaemonSettings(agentDir)).rejects.toThrow();
 		} finally {
 			settings.getStorage()?.close();
 		}
+
+		fs.writeFileSync(configPath, `${JSON.stringify({ notifications: { enabled: true } })}\n`);
+		const repaired = await Settings.loadForScope({ cwd: root, agentDir });
+		try {
+			expect(repaired.getNotificationSettingsSnapshot()).toMatchObject({ enabled: true });
+			expect(repaired.getNotificationSettingsSnapshot()).toEqual(
+				(await loadLightweightDaemonSettings(agentDir)).getNotificationSettingsSnapshot(),
+			);
+		} finally {
+			repaired.getStorage()?.close();
+		}
+
+		if (process.platform !== "win32") {
+			const inaccessibleAgentDir = path.join(root, "directory");
+			fs.mkdirSync(path.join(inaccessibleAgentDir, "config.yml"), { recursive: true });
+			await expect(Settings.loadForScope({ cwd: root, agentDir: inaccessibleAgentDir })).rejects.toThrow();
+			await expect(loadLightweightDaemonSettings(inaccessibleAgentDir)).rejects.toThrow();
+		}
+
+		const missingAgentDir = path.join(root, "missing-config");
+		fs.mkdirSync(missingAgentDir, { recursive: true });
+		const missingSettings = await Settings.loadForScope({ cwd: root, agentDir: missingAgentDir });
+		try {
+			expect(missingSettings.getNotificationSettingsSnapshot().telegram.btw.enabled).toBe(true);
+			expect(
+				(await loadLightweightDaemonSettings(missingAgentDir)).getNotificationSettingsSnapshot().telegram.btw
+					.enabled,
+			).toBe(true);
+		} finally {
+			missingSettings.getStorage()?.close();
+		}
+	});
+	test("recovered YAML syntax is read-only until config.yml is repaired", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-settings-syntax-recovery-"));
+		tempDirs.push(root);
+		const agentDir = path.join(root, "agent");
+		const configPath = path.join(agentDir, "config.yml");
+		const malformed = "notifications: [\n";
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.writeFileSync(configPath, malformed);
+
+		const settings = await Settings.loadForScope({ cwd: root, agentDir });
+		try {
+			expect(settings.getSchemaReport()).toEqual({
+				valid: false,
+				issues: [
+					{
+						path: "config.yml",
+						kind: "invalid",
+						detail: "Configuration YAML syntax is invalid; repair config.yml before changing settings.",
+					},
+				],
+			});
+			expect(() => settings.set("theme.dark", "blue-crab")).toThrow("Repair config.yml");
+			expect(() => settings.unset("theme.dark")).toThrow("Repair config.yml");
+			await expect(
+				settings.commitAtomicBatch([{ path: "theme.dark", op: "set", value: "blue-crab" }]),
+			).rejects.toThrow("Repair config.yml");
+			await expect(
+				settings.commitAtomicBatchWithCurrent(() => [{ path: "theme.dark", op: "set", value: "blue-crab" }]),
+			).rejects.toThrow("Repair config.yml");
+			expect(settings.get("theme.dark")).toBe("red-claw");
+			await settings.flush();
+			expect(fs.readFileSync(configPath, "utf8")).toBe(malformed);
+
+			fs.writeFileSync(configPath, "theme:\n  dark: blue-crab\n");
+			await settings.flush();
+			expect(settings.getSchemaReport()).toEqual({ issues: [], valid: true });
+			settings.set("theme.dark", "red-claw");
+			await settings.flushOrThrow();
+			expect(YAML.parse(fs.readFileSync(configPath, "utf8"))).toMatchObject({ theme: { dark: "red-claw" } });
+		} finally {
+			settings.getStorage()?.close();
+		}
+
+		const isolated = Settings.isolated();
+		isolated.set("theme.dark", "blue-crab");
+		expect(isolated.get("theme.dark")).toBe("blue-crab");
 	});
 
 	test("project notification settings are ignored without leaking credentials", async () => {
@@ -1017,17 +1280,17 @@ describe("notifications config", () => {
 		expect(settings.get("notifications.bellOnAsk")).toBe(false);
 	});
 
-	test("isGloballyConfigured requires a complete non-blank adapter", () => {
-		expect(isGloballyConfigured(GLOBAL_CFG)).toBe(true);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, enabled: false })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, botToken: undefined })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, botToken: "" })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, chatId: undefined })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, chatId: "" })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, botToken: " " })).toBe(false);
-		expect(isGloballyConfigured({ ...GLOBAL_CFG, chatId: "\t" })).toBe(false);
+	test("hasAnyEffectivelyEnabledProvider requires a complete non-blank adapter", () => {
+		expect(hasAnyEffectivelyEnabledProvider(GLOBAL_CFG)).toBe(true);
+		expect(hasAnyEffectivelyEnabledProvider({ ...GLOBAL_CFG, enabled: false })).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider({ ...GLOBAL_CFG, botToken: undefined })).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider({ ...GLOBAL_CFG, botToken: "" })).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider({ ...GLOBAL_CFG, chatId: undefined })).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider({ ...GLOBAL_CFG, chatId: "" })).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider({ ...GLOBAL_CFG, botToken: " " })).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider({ ...GLOBAL_CFG, chatId: "\t" })).toBe(false);
 		expect(
-			isGloballyConfigured({
+			hasAnyEffectivelyEnabledProvider({
 				...BASE_CFG,
 				enabled: true,
 				botToken: " ",
@@ -1057,24 +1320,29 @@ describe("notifications config", () => {
 			},
 		};
 
-		expect(isDiscordConfigured(discord)).toBe(true);
-		expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, guildId: " " } })).toBe(false);
-		expect(isDiscordConfigured({ ...discord, discord: { ...discord.discord, parentChannelId: undefined } })).toBe(
-			false,
-		);
-		expect(isSlackConfigured(slack)).toBe(true);
-		expect(isSlackConfigured({ ...slack, slack: { ...slack.slack, appToken: "\t" } })).toBe(false);
-		expect(isSlackConfigured({ ...slack, slack: { ...slack.slack, workspaceId: undefined } })).toBe(false);
-		expect(isGloballyConfigured(discord)).toBe(true);
-		expect(isGloballyConfigured(slack)).toBe(true);
-		expect(isGloballyConfigured({ ...discord, enabled: false })).toBe(false);
-		expect(isGloballyConfigured({ ...discord, discord: { botToken: "discord-token" } })).toBe(false);
-		expect(isGloballyConfigured({ ...slack, slack: { botToken: "slack-token", appToken: "slack-app-token" } })).toBe(
-			false,
-		);
+		expect(discordEffectivelyEnabled({ enabled: true, discord: discord.discord })).toBe(true);
+		expect(discordEffectivelyEnabled({ enabled: false, discord: discord.discord })).toBe(false);
+		expect(discordEffectivelyEnabled({ enabled: true, discord: { ...discord.discord, guildId: " " } })).toBe(false);
+		expect(
+			discordEffectivelyEnabled({ enabled: true, discord: { ...discord.discord, parentChannelId: undefined } }),
+		).toBe(false);
+		expect(slackEffectivelyEnabled({ enabled: true, slack: slack.slack })).toBe(true);
+		expect(slackEffectivelyEnabled({ enabled: false, slack: slack.slack })).toBe(false);
+		expect(slackEffectivelyEnabled({ enabled: true, slack: { ...slack.slack, appToken: "\t" } })).toBe(false);
+		expect(slackEffectivelyEnabled({ enabled: true, slack: { ...slack.slack, workspaceId: undefined } })).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider(discord)).toBe(true);
+		expect(hasAnyEffectivelyEnabledProvider(slack)).toBe(true);
+		expect(hasAnyEffectivelyEnabledProvider({ ...discord, enabled: false })).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider({ ...discord, discord: { botToken: "discord-token" } })).toBe(false);
+		expect(
+			hasAnyEffectivelyEnabledProvider({
+				...slack,
+				slack: { botToken: "slack-token", appToken: "slack-app-token" },
+			}),
+		).toBe(false);
 	});
 
-	test("isTelegramConfigured rejects blank Telegram credentials even when another adapter is configured", () => {
+	test("telegramEffectivelyEnabled rejects blank Telegram credentials even when another adapter is configured", () => {
 		const mixedAdapterCfg: NotificationConfig = {
 			...BASE_CFG,
 			enabled: true,
@@ -1083,13 +1351,13 @@ describe("notifications config", () => {
 			discord: { botToken: "discord-token", applicationId: "app", guildId: "guild", parentChannelId: "parent" },
 		};
 
-		expect(isGloballyConfigured(mixedAdapterCfg)).toBe(true);
-		expect(isTelegramConfigured(mixedAdapterCfg)).toBe(false);
+		expect(hasAnyEffectivelyEnabledProvider(mixedAdapterCfg)).toBe(true);
+		expect(telegramEffectivelyEnabled(mixedAdapterCfg)).toBe(false);
 	});
 
-	test("isSessionNotificationsEnabled applies precedence", () => {
+	test("isGenericNotificationSessionEnabled applies precedence", () => {
 		expect(
-			isSessionNotificationsEnabled({
+			isGenericNotificationSessionEnabled({
 				cfg: GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "0", GJC_NOTIFICATIONS_TOKEN: "token" },
 				sessionDisabled: false,
@@ -1097,7 +1365,7 @@ describe("notifications config", () => {
 		).toBe(false);
 
 		expect(
-			isSessionNotificationsEnabled({
+			isGenericNotificationSessionEnabled({
 				cfg: GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "1" },
 				sessionDisabled: true,
@@ -1105,20 +1373,24 @@ describe("notifications config", () => {
 		).toBe(false);
 
 		expect(
-			isSessionNotificationsEnabled({ cfg: BASE_CFG, env: { GJC_NOTIFICATIONS: "1" }, sessionDisabled: false }),
+			isGenericNotificationSessionEnabled({
+				cfg: BASE_CFG,
+				env: { GJC_NOTIFICATIONS: "1" },
+				sessionDisabled: false,
+			}),
 		).toBe(true);
 		expect(
-			isSessionNotificationsEnabled({
+			isGenericNotificationSessionEnabled({
 				cfg: BASE_CFG,
 				env: { GJC_NOTIFICATIONS_TOKEN: "legacy-token" },
 				sessionDisabled: false,
 			}),
 		).toBe(true);
 
-		expect(isSessionNotificationsEnabled({ cfg: GLOBAL_CFG, env: {}, sessionDisabled: false })).toBe(true);
-		expect(isSessionNotificationsEnabled({ cfg: BASE_CFG, env: {}, sessionDisabled: false })).toBe(false);
+		expect(isGenericNotificationSessionEnabled({ cfg: GLOBAL_CFG, env: {}, sessionDisabled: false })).toBe(true);
+		expect(isGenericNotificationSessionEnabled({ cfg: BASE_CFG, env: {}, sessionDisabled: false })).toBe(false);
 		expect(
-			isSessionNotificationsEnabled({
+			isGenericNotificationSessionEnabled({
 				cfg: PRIMARY_GLOBAL_CFG,
 				env: {},
 				sessionDisabled: false,
@@ -1126,7 +1398,7 @@ describe("notifications config", () => {
 			}),
 		).toBe(false);
 		expect(
-			isSessionNotificationsEnabled({
+			isGenericNotificationSessionEnabled({
 				cfg: PRIMARY_GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "1" },
 				sessionDisabled: false,
@@ -1135,49 +1407,54 @@ describe("notifications config", () => {
 		).toBe(true);
 	});
 
-	test("shouldRegisterNotificationsExtension applies registration precedence", () => {
+	test("shouldRegisterGenericNotificationsExtension applies registration precedence", () => {
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "0", GJC_NOTIFICATIONS_TOKEN: "token" },
 			}),
 		).toBe(false);
-		expect(shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: { GJC_NOTIFICATIONS: "1" } })).toBe(true);
+		expect(shouldRegisterGenericNotificationsExtension({ cfg: BASE_CFG, env: { GJC_NOTIFICATIONS: "1" } })).toBe(
+			true,
+		);
 		expect(
-			shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: { GJC_NOTIFICATIONS_TOKEN: "legacy-token" } }),
+			shouldRegisterGenericNotificationsExtension({
+				cfg: BASE_CFG,
+				env: { GJC_NOTIFICATIONS_TOKEN: "legacy-token" },
+			}),
 		).toBe(true);
-		expect(shouldRegisterNotificationsExtension({ cfg: GLOBAL_CFG, env: {} })).toBe(true);
-		expect(shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: {} })).toBe(false);
-		expect(shouldRegisterNotificationsExtension({ env: {} })).toBe(false);
+		expect(shouldRegisterGenericNotificationsExtension({ cfg: GLOBAL_CFG, env: {} })).toBe(true);
+		expect(shouldRegisterGenericNotificationsExtension({ cfg: BASE_CFG, env: {} })).toBe(false);
+		expect(shouldRegisterGenericNotificationsExtension({ env: {} })).toBe(false);
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: GLOBAL_CFG,
 				env: { GJC_NOTIFY: "off" },
 			}),
 		).toBe(false);
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: BASE_CFG,
 				env: { GJC_NOTIFY: "FALSE", GJC_NOTIFICATIONS: "1", GJC_NOTIFICATIONS_TOKEN: "legacy-token" },
 			}),
 		).toBe(false);
 		expect(completionNotifyDisabledByEnv({ GJC_NOTIFY: " 0 " })).toBe(true);
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "1", GJC_NOTIFICATIONS_TOKEN: "legacy-token" },
 				taskDepth: 1,
 			}),
 		).toBe(false);
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "1" },
 				parentTaskPrefix: "0-Sub",
 			}),
 		).toBe(false);
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "1" },
 				currentAgentType: "executor",
@@ -1185,30 +1462,30 @@ describe("notifications config", () => {
 		).toBe(false);
 	});
 
-	test("isNotificationHostEligible preserves hard-off, subagent, and primary-scope precedence", () => {
+	test("isGenericNotificationHostEligible preserves hard-off, subagent, and primary-scope precedence", () => {
 		const primary = { ...PRIMARY_GLOBAL_CFG, sessionScope: "primary" as const };
-		expect(isNotificationHostEligible({ env: { GJC_NOTIFY: "off", GJC_NOTIFICATIONS: "1" } })).toBe(false);
-		expect(isNotificationHostEligible({ env: { GJC_NOTIFICATIONS: "1" }, taskDepth: 1 })).toBe(false);
-		expect(isNotificationHostEligible({ env: { GJC_NOTIFICATIONS: "0" } })).toBe(false);
-		expect(isNotificationHostEligible({ env: {}, hostModeSupported: false })).toBe(false);
-		expect(isNotificationHostEligible({ env: {}, sessionScope: primary.sessionScope, spawnedByGjc: true })).toBe(
-			false,
-		);
+		expect(isGenericNotificationHostEligible({ env: { GJC_NOTIFY: "off", GJC_NOTIFICATIONS: "1" } })).toBe(false);
+		expect(isGenericNotificationHostEligible({ env: { GJC_NOTIFICATIONS: "1" }, taskDepth: 1 })).toBe(false);
+		expect(isGenericNotificationHostEligible({ env: { GJC_NOTIFICATIONS: "0" } })).toBe(false);
+		expect(isGenericNotificationHostEligible({ env: {}, hostModeSupported: false })).toBe(false);
 		expect(
-			isNotificationHostEligible({
+			isGenericNotificationHostEligible({ env: {}, sessionScope: primary.sessionScope, spawnedByGjc: true }),
+		).toBe(false);
+		expect(
+			isGenericNotificationHostEligible({
 				env: { GJC_NOTIFICATIONS: "1" },
 				sessionScope: primary.sessionScope,
 				spawnedByGjc: true,
 			}),
 		).toBe(true);
 		expect(
-			isNotificationHostEligible({
+			isGenericNotificationHostEligible({
 				env: { GJC_NOTIFICATIONS_TOKEN: "explicit-token" },
 				sessionScope: primary.sessionScope,
 				spawnedByGjc: true,
 			}),
 		).toBe(true);
-		expect(isNotificationHostEligible({ env: {} })).toBe(true);
+		expect(isGenericNotificationHostEligible({ env: {} })).toBe(true);
 	});
 
 	test("getNotificationConfig reads sessionScope", () => {
@@ -1224,30 +1501,30 @@ describe("notifications config", () => {
 
 	test("sessionScope=primary suppresses GJC-spawned children but preserves everything else", () => {
 		// Default scope "all": a spawned child still registers (fully behavior-preserving).
-		expect(shouldRegisterNotificationsExtension({ cfg: GLOBAL_CFG, env: {}, spawnedByGjc: true })).toBe(true);
+		expect(shouldRegisterGenericNotificationsExtension({ cfg: GLOBAL_CFG, env: {}, spawnedByGjc: true })).toBe(true);
 		// scope "primary": a spawned child is suppressed.
-		expect(shouldRegisterNotificationsExtension({ cfg: PRIMARY_GLOBAL_CFG, env: {}, spawnedByGjc: true })).toBe(
-			false,
-		);
+		expect(
+			shouldRegisterGenericNotificationsExtension({ cfg: PRIMARY_GLOBAL_CFG, env: {}, spawnedByGjc: true }),
+		).toBe(false);
 		// scope "primary": a user-opened session (no marker) is unaffected.
-		expect(shouldRegisterNotificationsExtension({ cfg: PRIMARY_GLOBAL_CFG, env: {}, spawnedByGjc: false })).toBe(
-			true,
-		);
-		expect(shouldRegisterNotificationsExtension({ cfg: PRIMARY_GLOBAL_CFG, env: {} })).toBe(true);
+		expect(
+			shouldRegisterGenericNotificationsExtension({ cfg: PRIMARY_GLOBAL_CFG, env: {}, spawnedByGjc: false }),
+		).toBe(true);
+		expect(shouldRegisterGenericNotificationsExtension({ cfg: PRIMARY_GLOBAL_CFG, env: {} })).toBe(true);
 	});
 
 	test("explicit /session_create opt-in outranks sessionScope=primary suppression", () => {
 		// GJC_NOTIFICATIONS=1 is exactly what Telegram /session_create and cold
 		// /session_resume launch with, so their bidirectional topic survives.
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: PRIMARY_GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "1" },
 				spawnedByGjc: true,
 			}),
 		).toBe(true);
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: PRIMARY_GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS_TOKEN: "legacy-token" },
 				spawnedByGjc: true,
@@ -1255,14 +1532,14 @@ describe("notifications config", () => {
 		).toBe(true);
 		// Hard opt-out and /notify off equivalents still outrank the marker.
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: PRIMARY_GLOBAL_CFG,
 				env: { GJC_NOTIFICATIONS: "0" },
 				spawnedByGjc: true,
 			}),
 		).toBe(false);
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: PRIMARY_GLOBAL_CFG,
 				env: { GJC_NOTIFY: "off" },
 				spawnedByGjc: true,
@@ -1270,7 +1547,7 @@ describe("notifications config", () => {
 		).toBe(false);
 		// A spawned child that is also a subagent stays suppressed regardless.
 		expect(
-			shouldRegisterNotificationsExtension({
+			shouldRegisterGenericNotificationsExtension({
 				cfg: PRIMARY_GLOBAL_CFG,
 				env: {},
 				spawnedByGjc: true,
@@ -1279,7 +1556,7 @@ describe("notifications config", () => {
 		).toBe(false);
 		// Without any configured adapter, a marker under primary is still off (no
 		// spurious enable, and global auto-on is never reached).
-		expect(shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: {}, spawnedByGjc: true })).toBe(false);
+		expect(shouldRegisterGenericNotificationsExtension({ cfg: BASE_CFG, env: {}, spawnedByGjc: true })).toBe(false);
 	});
 	test("settings-enabled subagent sessions do not register the notifications extension", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-subagent-"));
@@ -1476,6 +1753,83 @@ describe("notifications config", () => {
 				"notifications.discord.guildId": "discord-guild",
 				"notifications.discord.parentChannelId": "discord-parent",
 			});
+
+		test("isolates a safe chat sibling endpoint from a proven foreign Telegram owner", async () => {
+			const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-provider-foreign-telegram-"));
+			const agentDir = path.join(cwd, ".gjc", "agent");
+			const cleanup = await createNotificationFixtureRoot(cwd, agentDir);
+			const settings = isolatedNotificationSettings(agentDir, {
+				"notifications.enabled": true,
+				"notifications.telegram.enabled": true,
+				"notifications.telegram.botToken": "1234567890:current-telegram-token-value",
+				"notifications.telegram.chatId": "current-chat",
+				"notifications.discord.enabled": true,
+				"notifications.discord.botToken": "discord-token",
+				"notifications.discord.applicationId": "discord-app",
+				"notifications.discord.guildId": "discord-guild",
+				"notifications.discord.parentChannelId": "discord-parent",
+			});
+			const incarnation = processIncarnation(process.pid);
+			if (!incarnation) throw new Error("Current process incarnation is unavailable for the ownership test.");
+			const paths = daemonPaths(agentDir);
+			fs.mkdirSync(paths.dir, { recursive: true });
+			fs.writeFileSync(
+				paths.state,
+				JSON.stringify({
+					pid: process.pid,
+					incarnation,
+					ownerId: "foreign-owner",
+					tokenFingerprint: tokenFingerprint("9876543210:foreign-telegram-token-value"),
+					chatId: "foreign-chat",
+					startedAt: Date.now(),
+					heartbeatAt: Date.now(),
+					roots: [path.join(cwd, ".gjc", "state")],
+					version: DAEMON_VERSION,
+					generation: DAEMON_GENERATION,
+				}),
+			);
+			const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void> | void>();
+			const api = {
+				on(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) {
+					handlers.set(event, handler);
+				},
+				registerCommand() {},
+			} as unknown as ExtensionAPI;
+			const sessionId = "safe-chat-sibling";
+			const context = {
+				cwd,
+				sessionManager: {
+					getSessionId: () => sessionId,
+					getSessionName: () => "safe chat sibling",
+				},
+				ui: { notify: () => {} },
+			} as unknown as ExtensionContext;
+			let providerEnsures = 0;
+			createNotificationsExtension(api, {
+				settings,
+				ensureTelegramDaemon: async () => "blocked",
+				ensureProviderDaemon: async provider => {
+					expect(provider).toBe("discord");
+					providerEnsures++;
+					return "attached";
+				},
+			});
+			const sessionStart = handlers.get("session_start");
+			const sessionShutdown = handlers.get("session_shutdown");
+			if (!sessionStart || !sessionShutdown) throw new Error("notifications extension handlers were not registered");
+			const standardEndpoint = path.join(cwd, ".gjc", "state", "sdk", `${sessionId}.json`);
+			const chatEndpoint = path.join(cwd, ".gjc", "state", "chat", "sdk", `${sessionId}.json`);
+			try {
+				await sessionStart({}, context);
+				expect(providerEnsures).toBe(2);
+				expect(fs.existsSync(standardEndpoint)).toBe(false);
+				expect(fs.existsSync(chatEndpoint)).toBe(true);
+			} finally {
+				await sessionShutdown({}, context);
+				expect(fs.existsSync(chatEndpoint)).toBe(false);
+				await cleanupFixtureRoot(cleanup);
+			}
+		}, 30_000);
 
 		test("rejects ordinary session_start after provider readiness fails without publishing an endpoint", async () => {
 			const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-provider-readiness-failure-"));
@@ -1790,7 +2144,7 @@ describe("notifications config", () => {
 				if (name === "notify") notify = command;
 			},
 		} as unknown as ExtensionAPI;
-		const extensionShouldRegister = shouldRegisterNotificationsExtension({ cfg: BASE_CFG, env: {} });
+		const extensionShouldRegister = shouldRegisterGenericNotificationsExtension({ cfg: BASE_CFG, env: {} });
 
 		expect(extensionShouldRegister).toBe(false);
 		if (extensionShouldRegister) createNotificationsExtension(api);

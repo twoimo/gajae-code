@@ -46,6 +46,7 @@ static MANAGED_REPLACEMENT_ID: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy)]
 enum RetainedPublishFault {
 	Rename(i32),
+	Unlink(i32),
 	Sync(Option<i32>),
 	PostRenameSnapshot(&'static str),
 }
@@ -71,6 +72,20 @@ fn take_retained_publish_fault(rename: bool) -> Option<Option<i32>> {
 				Some(Some(code))
 			},
 			Some(RetainedPublishFault::Sync(code)) if !rename => {
+				configured.pop_front();
+				Some(code)
+			},
+			_ => None,
+		}
+	})
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn take_post_link_unlink_fault() -> Option<i32> {
+	RETAINED_PUBLISH_FAULTS.with(|configured| {
+		let mut configured = configured.borrow_mut();
+		match configured.front().copied() {
+			Some(RetainedPublishFault::Unlink(code)) => {
 				configured.pop_front();
 				Some(code)
 			},
@@ -124,6 +139,398 @@ fn renameat2_no_replace(
 }
 
 #[cfg(target_os = "linux")]
+/// Errno values proving the filesystem does not implement `renameat2` rename
+/// flags, rather than reporting a malformed request. NFS (and some FUSE and
+/// overlay backends) reject every `renameat2` flag with `EINVAL`, and kernels
+/// older than 3.15 answer `ENOSYS`. The no-replace syscall always passes fixed,
+/// validated descriptors, names, and the single `RENAME_NOREPLACE` flag, so
+/// neither errno can mean an invalid invocation here — only that the atomic
+/// primitive is unavailable on this mount.
+const fn rename_flags_unsupported(errno: Option<i32>) -> bool {
+	matches!(errno, Some(libc::EINVAL | libc::ENOSYS))
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+enum NoReplacePrimitive {
+	Renameat2,
+	Linkat,
+	MkdiratRenameat,
+}
+
+#[cfg(target_os = "linux")]
+impl NoReplacePrimitive {
+	const fn as_str(self) -> &'static str {
+		match self {
+			Self::Renameat2 => "renameat2_noreplace",
+			Self::Linkat => "linkat_noreplace",
+			Self::MkdiratRenameat => "mkdirat_renameat_noreplace",
+		}
+	}
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+enum FileNoReplaceError {
+	PreMutation(std::io::Error),
+	PostMutation(std::io::Error),
+}
+
+#[cfg(target_os = "linux")]
+impl FileNoReplaceError {
+	fn raw_os_error(&self) -> Option<i32> {
+		match self {
+			Self::PreMutation(error) | Self::PostMutation(error) => error.raw_os_error(),
+		}
+	}
+
+	const fn committed(&self) -> bool {
+		matches!(self, Self::PostMutation(_))
+	}
+}
+
+#[cfg(target_os = "linux")]
+/// Atomic no-overwrite publish of a regular file for filesystems that do not
+/// implement `renameat2(RENAME_NOREPLACE)`. `linkat(2)` fails with `EEXIST`
+/// when the destination name already exists, giving the identical no-overwrite
+/// guarantee on every POSIX filesystem (including NFS); the fallback therefore
+/// preserves — never weakens — no-replace authority. The staging source link is
+/// then removed so the destination is the sole link, matching a successful
+/// rename (`st_nlink == 1`).
+///
+/// `release_source_authority` runs after the link has published the destination
+/// and before the staging name is unlinked. Callers that hold a descriptor on
+/// the staged object must release it there: NFS silly-renames a still-open name
+/// to `.nfsXXXX` instead of removing it, which leaves a second link to the
+/// published inode and defeats the `st_nlink == 1` proof this fallback exists
+/// to preserve. Releasing only after the link commits keeps descriptor
+/// authority across publication itself, so the fallback is never weaker than
+/// the `renameat2` primitive it stands in for.
+fn linkat_no_replace(
+	source_parent: &File,
+	source_name: &CString,
+	destination_parent: &File,
+	destination_name: &CString,
+	release_source_authority: impl FnOnce(),
+) -> Result<(), FileNoReplaceError> {
+	// SAFETY: both parents own valid fds and both names are live NUL-terminated
+	// strings for this syscall; flags are 0, so a symlink source is linked as-is.
+	let linked = unsafe {
+		libc::linkat(
+			source_parent.as_raw_fd(),
+			source_name.as_ptr(),
+			destination_parent.as_raw_fd(),
+			destination_name.as_ptr(),
+			0,
+		)
+	};
+	if linked != 0 {
+		return Err(FileNoReplaceError::PreMutation(std::io::Error::last_os_error()));
+	}
+	// Publication has committed: the destination is an independent link to the
+	// verified inode. Only now may the staged descriptor be released, and it must
+	// be released before the unlink below (see the note above).
+	release_source_authority();
+	#[cfg(test)]
+	if let Some(code) = take_post_link_unlink_fault() {
+		return Err(FileNoReplaceError::PostMutation(std::io::Error::from_raw_os_error(code)));
+	}
+	// SAFETY: the source parent fd and name remain valid; the destination now
+	// owns an independent hard link to the same inode.
+	let unlinked = unsafe { libc::unlinkat(source_parent.as_raw_fd(), source_name.as_ptr(), 0) };
+	if unlinked != 0 {
+		return Err(FileNoReplaceError::PostMutation(std::io::Error::last_os_error()));
+	}
+	Ok(())
+}
+
+#[cfg(target_os = "linux")]
+/// Atomic no-overwrite rename of a *directory* for filesystems that do not
+/// implement `renameat2` rename flags. `linkat` cannot hard-link a directory,
+/// so the file fallback does not apply; `mkdirat(2)` provides the missing
+/// exclusivity instead. It fails with `EEXIST` when the destination name
+/// already exists, which is the same no-overwrite guarantee `RENAME_NOREPLACE`
+/// gives, and a successful `mkdirat` means this caller now owns that name: no
+/// other publisher can create it, and nothing in this module deletes a
+/// directory it has not proven. The plain `renameat(2)` that follows can
+/// therefore only ever replace the empty directory just created here, and POSIX
+/// refuses to rename over a *non-empty* directory, so a populated collision is
+/// rejected rather than clobbered.
+///
+/// The destination name is briefly an empty directory instead of absent. That
+/// is the only observable difference from the atomic primitive, and it fails in
+/// the safe direction: a concurrent no-replace publisher racing for the same
+/// name loses at `mkdirat` exactly as it would have lost to `RENAME_NOREPLACE`.
+///
+/// A failed rename removes the placeholder again, so a rejected publish never
+/// leaves an empty directory squatting the destination name.
+fn rename_directory_no_replace(
+	source_parent: &File,
+	source_name: &CString,
+	destination_parent: &File,
+	destination_name: &CString,
+) -> std::io::Result<()> {
+	// SAFETY: the destination parent owns a valid fd and the name is a live
+	// NUL-terminated string for this syscall.
+	if unsafe { libc::mkdirat(destination_parent.as_raw_fd(), destination_name.as_ptr(), 0o700) }
+		!= 0
+	{
+		return Err(std::io::Error::last_os_error());
+	}
+	// SAFETY: both parents own valid fds and both names are live NUL-terminated
+	// strings for this syscall.
+	if unsafe {
+		libc::renameat(
+			source_parent.as_raw_fd(),
+			source_name.as_ptr(),
+			destination_parent.as_raw_fd(),
+			destination_name.as_ptr(),
+		)
+	} == 0
+	{
+		return Ok(());
+	}
+	let error = std::io::Error::last_os_error();
+	// SAFETY: the destination parent fd and name remain valid; this removes only
+	// the empty placeholder created above, which the failed rename did not touch.
+	unsafe {
+		libc::unlinkat(destination_parent.as_raw_fd(), destination_name.as_ptr(), libc::AT_REMOVEDIR)
+	};
+	Err(error)
+}
+
+#[cfg(target_os = "linux")]
+/// No-overwrite rename of a directory. Prefers the atomic
+/// `renameat2(RENAME_NOREPLACE)` primitive and falls back to the `mkdirat(2)`
+/// name claim of `rename_directory_no_replace` when the filesystem does not
+/// implement rename flags (see `rename_flags_unsupported`).
+fn rename_tree_no_replace(
+	source_parent: &File,
+	source_name: &CString,
+	destination_parent: &File,
+	destination_name: &CString,
+) -> std::io::Result<NoReplacePrimitive> {
+	match renameat2_no_replace(source_parent, source_name, destination_parent, destination_name) {
+		Ok(()) => Ok(NoReplacePrimitive::Renameat2),
+		Err(error) if rename_flags_unsupported(error.raw_os_error()) => rename_directory_no_replace(
+			source_parent,
+			source_name,
+			destination_parent,
+			destination_name,
+		)
+		.map(|()| NoReplacePrimitive::MkdiratRenameat),
+		Err(error) => Err(error),
+	}
+}
+
+#[cfg(target_os = "linux")]
+/// Replacement exchange for filesystems that implement no `renameat2` rename
+/// flags. `RENAME_EXCHANGE` swaps two names in a single step and nothing in
+/// POSIX does that — but the swap itself is not what a managed replacement
+/// needs. It needs the destination to carry the candidate afterwards and the
+/// displaced object to stay reachable under the candidate name as rollback
+/// evidence, and `linkat(2)` reaches exactly that terminal state without the
+/// destination name ever being absent:
+///
+/// 1. `linkat(destination -> temporary)` gives the displaced object a second
+///    name before anything moves, so it survives the replacement.
+/// 2. `sync_parent(candidate_parent)` makes that rollback name **durable**
+///    before anything is displaced.
+/// 3. `renameat(candidate -> destination)` replaces the destination in one
+///    atomic step. Plain `rename` never unoccupies a name, so no reader can
+///    observe a gap and no concurrent publisher can claim it.
+/// 4. `renameat(temporary -> candidate)` parks the displaced object under the
+///    candidate name, exactly where the exchange would have left it.
+///
+/// Both objects end single-linked as `RENAME_EXCHANGE` leaves them, so every
+/// identity proof the caller runs afterwards is unchanged. Unlike a directory
+/// exchange, which has no window-free emulation at all, this one is exact.
+///
+/// The pre-destructive sync establishes the enforceable fsync-fault invariant:
+/// if the rollback link's parent cannot be synced, the fallback fails before
+/// releasing destination authority or displacing anything. This implementation
+/// does not include a literal power-loss/restart harness, so it does not claim
+/// to prove filesystem-specific crash equivalence to `RENAME_EXCHANGE`; the
+/// deterministic fault tests cover the failure boundary observable here.
+///
+/// The rollback link lives in `candidate_parent` while the replacement lands in
+/// `destination_parent`, so the two directories are synced separately and in
+/// that order. After the destructive rename, publication has committed and the
+/// destination-parent and final candidate-parent sync failures are classified
+/// as committed-but-unproven by their phase.
+///
+/// `release_destination_authority` runs after the rollback-link sync and before
+/// the first rename. By then the displaced object is durably reachable through
+/// the temporary name, and releasing before the rename avoids NFS
+/// silly-renaming a still-open name.
+fn exchange_through_link(
+	candidate_parent: &File,
+	candidate_name: &CString,
+	destination_parent: &File,
+	destination_name: &CString,
+	release_destination_authority: impl FnOnce(),
+) -> Result<(), &'static str> {
+	let temporary = CString::new(format!(
+		".gjc-managed-exchange-{}-{}",
+		std::process::id(),
+		MANAGED_REPLACEMENT_ID.fetch_add(1, Ordering::Relaxed)
+	))
+	.map_err(|_| "io_error")?;
+	// SAFETY: both parents own valid fds and all names are live NUL-terminated
+	// strings for this syscall; flags are 0, so the destination is linked as-is.
+	if unsafe {
+		libc::linkat(
+			destination_parent.as_raw_fd(),
+			destination_name.as_ptr(),
+			candidate_parent.as_raw_fd(),
+			temporary.as_ptr(),
+			0,
+		)
+	} != 0
+	{
+		return Err("io_error");
+	}
+	// Persist the rollback name before anything is displaced. If durability is
+	// unprovable, remove the link and fail before publication.
+	if sync_parent(candidate_parent).is_err() {
+		// SAFETY: the candidate parent fd and temporary name remain valid; this
+		// removes only the link created above.
+		unsafe { libc::unlinkat(candidate_parent.as_raw_fd(), temporary.as_ptr(), 0) };
+		return Err("durability_not_provable");
+	}
+	// The displaced object is now durably reachable; release authority before the
+	// rename so NFS does not silly-rename the still-open destination name.
+	release_destination_authority();
+	// SAFETY: both parents own valid fds and both names are live NUL-terminated
+	// strings for this syscall.
+	if unsafe {
+		libc::renameat(
+			candidate_parent.as_raw_fd(),
+			candidate_name.as_ptr(),
+			destination_parent.as_raw_fd(),
+			destination_name.as_ptr(),
+		)
+	} != 0
+	{
+		// Nothing was published. Drop the rollback link so the namespace is left
+		// exactly as it was found.
+		// SAFETY: the candidate parent fd and temporary name remain valid; this
+		// removes only the link created above.
+		unsafe { libc::unlinkat(candidate_parent.as_raw_fd(), temporary.as_ptr(), 0) };
+		return Err("io_error");
+	}
+	// Publication has committed. Persist the destination-parent mutation before
+	// moving the rollback name; a sync failure is committed-but-unproven.
+	if sync_parent(destination_parent).is_err() {
+		return Err("destination_parent_sync_failed");
+	}
+	// SAFETY: the candidate parent fd and both names remain valid for this syscall.
+	if unsafe {
+		libc::renameat(
+			candidate_parent.as_raw_fd(),
+			temporary.as_ptr(),
+			candidate_parent.as_raw_fd(),
+			candidate_name.as_ptr(),
+		)
+	} != 0
+	{
+		// The replacement committed. The displaced object remains reachable under
+		// the durable temporary name, so do not delete it.
+		return Err("rollback_unavailable");
+	}
+	// Settle the final rollback name's parent so the terminal namespace is durable.
+	if sync_parent(candidate_parent).is_err() {
+		return Err("candidate_parent_sync_failed");
+	}
+	Ok(())
+}
+
+#[cfg(target_os = "linux")]
+/// Exchange a verified candidate with the destination it replaces. Prefers the
+/// atomic `renameat2(RENAME_EXCHANGE)` primitive and falls back to
+/// `exchange_through_link` when the filesystem does not implement rename flags
+/// (see `rename_flags_unsupported`).
+fn exchange_managed_replacement(
+	candidate_parent: &File,
+	candidate_name: &CString,
+	destination_parent: &File,
+	destination_name: &CString,
+	release_destination_authority: impl FnOnce(),
+) -> Result<(), &'static str> {
+	#[cfg(test)]
+	if let Some(Some(code)) = take_retained_publish_fault(true) {
+		return if rename_flags_unsupported(Some(code)) {
+			exchange_through_link(
+				candidate_parent,
+				candidate_name,
+				destination_parent,
+				destination_name,
+				release_destination_authority,
+			)
+		} else {
+			Err("io_error")
+		};
+	}
+	// SAFETY: retained parents and validated names make exchange atomic.
+	if unsafe {
+		libc::syscall(
+			libc::SYS_renameat2,
+			candidate_parent.as_raw_fd(),
+			candidate_name.as_ptr(),
+			destination_parent.as_raw_fd(),
+			destination_name.as_ptr(),
+			libc::RENAME_EXCHANGE,
+		)
+	} == 0
+	{
+		return Ok(());
+	}
+	if !rename_flags_unsupported(std::io::Error::last_os_error().raw_os_error()) {
+		return Err("io_error");
+	}
+	exchange_through_link(
+		candidate_parent,
+		candidate_name,
+		destination_parent,
+		destination_name,
+		release_destination_authority,
+	)
+}
+
+#[cfg(target_os = "linux")]
+/// No-overwrite publish of a regular file. Prefers the atomic
+/// `renameat2(RENAME_NOREPLACE)` primitive and falls back to `linkat(2)` when
+/// the filesystem does not implement rename flags (see
+/// `rename_flags_unsupported`). Directory publishes must not use this helper:
+/// `linkat` cannot hard-link a directory, so tree renames use
+/// `rename_tree_no_replace` instead.
+///
+/// `release_source_authority` is only invoked on the `linkat` path, between the
+/// publishing link and the staging unlink; see `linkat_no_replace`. `renameat2`
+/// removes the staging name as part of the same atomic step, so there is no
+/// window in which a held descriptor could block it and nothing to release.
+fn rename_file_no_replace(
+	source_parent: &File,
+	source_name: &CString,
+	destination_parent: &File,
+	destination_name: &CString,
+	release_source_authority: impl FnOnce(),
+) -> Result<NoReplacePrimitive, FileNoReplaceError> {
+	match renameat2_no_replace(source_parent, source_name, destination_parent, destination_name) {
+		Ok(()) => Ok(NoReplacePrimitive::Renameat2),
+		Err(error) if rename_flags_unsupported(error.raw_os_error()) => linkat_no_replace(
+			source_parent,
+			source_name,
+			destination_parent,
+			destination_name,
+			release_source_authority,
+		)
+		.map(|()| NoReplacePrimitive::Linkat),
+		Err(error) => Err(FileNoReplaceError::PreMutation(error)),
+	}
+}
+
+#[cfg(target_os = "linux")]
 fn sync_parent(parent: &File) -> std::io::Result<()> {
 	#[cfg(test)]
 	if let Some(code) = take_retained_publish_fault(false) {
@@ -139,6 +546,7 @@ fn sync_parent(parent: &File) -> std::io::Result<()> {
 pub struct RecoveryFsIdentity {
 	pub dev:      String,
 	pub ino:      String,
+	pub nlink:    String,
 	pub size:     String,
 	pub mtime_ns: String,
 	pub ctime_ns: String,
@@ -234,16 +642,75 @@ pub struct RecoveryFsPublishSyncFailure {
 }
 
 #[cfg(target_os = "linux")]
+struct RetainedPublishSuccess {
+	result:    RecoveryFsResult,
+	primitive: NoReplacePrimitive,
+}
+
+#[cfg(target_os = "linux")]
 enum RetainedPublishError {
 	Code(&'static str),
-	PostMutationCode(&'static str),
+	PostMutationCode {
+		code:      &'static str,
+		primitive: NoReplacePrimitive,
+	},
+	PostMutationIo {
+		code:      &'static str,
+		phase:     &'static str,
+		primitive: NoReplacePrimitive,
+		os_code:   Option<i32>,
+	},
 	SyncFailures(Vec<RecoveryFsPublishSyncFailure>),
+	PostMutationSyncFailures {
+		failures:  Vec<RecoveryFsPublishSyncFailure>,
+		primitive: NoReplacePrimitive,
+	},
 }
 
 #[cfg(target_os = "linux")]
 impl From<&'static str> for RetainedPublishError {
 	fn from(code: &'static str) -> Self {
 		Self::Code(code)
+	}
+}
+
+#[cfg(target_os = "linux")]
+fn retained_file_publish_error(error: FileNoReplaceError) -> RetainedPublishError {
+	if error.committed() {
+		return RetainedPublishError::PostMutationIo {
+			code:      "io_error",
+			phase:     "source_unlink",
+			primitive: NoReplacePrimitive::Linkat,
+			os_code:   error.raw_os_error(),
+		};
+	}
+	match error.raw_os_error() {
+		Some(libc::EEXIST) => "already_exists",
+		Some(libc::ENOSYS) => "atomic_unavailable",
+		// renameat2 rename flags are unavailable and linkat also failed, so
+		// classify the residual errno instead of weakening no-overwrite authority.
+		Some(libc::EINVAL) => "invalid_request",
+		Some(libc::EXDEV) => "cross_device",
+		Some(libc::EACCES | libc::EPERM) => "permission_denied",
+		Some(libc::EINTR) => "interrupted",
+		_ => "io_error",
+	}
+	.into()
+}
+
+#[cfg(target_os = "linux")]
+fn bind_post_mutation_error(
+	error: RetainedPublishError,
+	primitive: NoReplacePrimitive,
+) -> RetainedPublishError {
+	match error {
+		RetainedPublishError::Code(code) => {
+			RetainedPublishError::PostMutationCode { code, primitive }
+		},
+		RetainedPublishError::SyncFailures(failures) => {
+			RetainedPublishError::PostMutationSyncFailures { failures, primitive }
+		},
+		error => error,
 	}
 }
 
@@ -273,8 +740,11 @@ pub struct RecoveryFsPublishResult {
 
 impl RecoveryFsPublishResult {
 	#[cfg(target_os = "linux")]
-	fn success(identity: RecoveryFsIdentity) -> Self {
-		Self::result(true, None, Some(identity), "committed", "proven", "none", "complete", None)
+	fn success(identity: RecoveryFsIdentity, primitive: NoReplacePrimitive) -> Self {
+		let mut result =
+			Self::result(true, None, Some(identity), "committed", "proven", "none", "complete", None);
+		primitive.as_str().clone_into(&mut result.primitive);
+		result
 	}
 
 	fn failure(
@@ -358,6 +828,37 @@ fn publish_post_mutation_failure(code: &'static str, phase: &str) -> RecoveryFsP
 }
 
 #[cfg(target_os = "linux")]
+fn publish_post_mutation_failure_with_primitive(
+	code: &'static str,
+	phase: &'static str,
+	primitive: NoReplacePrimitive,
+	os_code: Option<i32>,
+) -> RecoveryFsPublishResult {
+	let mut result = publish_post_mutation_failure(code, phase);
+	primitive.as_str().clone_into(&mut result.primitive);
+	result.diagnostic.os_code = os_code;
+	if os_code.is_some() {
+		"partial".clone_into(&mut result.diagnostic.collection_state);
+	}
+	result
+}
+
+#[cfg(target_os = "linux")]
+fn finish_retained_publish(success: RetainedPublishSuccess) -> RecoveryFsPublishResult {
+	success.result.identity.map_or_else(
+		|| {
+			publish_post_mutation_failure_with_primitive(
+				"identity_mismatch",
+				"terminal_identity",
+				success.primitive,
+				None,
+			)
+		},
+		|identity| RecoveryFsPublishResult::success(identity, success.primitive),
+	)
+}
+
+#[cfg(target_os = "linux")]
 fn publish_post_mutation_sync_failures(
 	failures: Vec<RecoveryFsPublishSyncFailure>,
 ) -> RecoveryFsPublishResult {
@@ -375,6 +876,16 @@ fn publish_post_mutation_sync_failures(
 	);
 	"partial".clone_into(&mut result.diagnostic.collection_state);
 	result.diagnostic.sync_failures = Some(failures);
+	result
+}
+
+#[cfg(target_os = "linux")]
+fn publish_post_mutation_sync_failures_with_primitive(
+	failures: Vec<RecoveryFsPublishSyncFailure>,
+	primitive: NoReplacePrimitive,
+) -> RecoveryFsPublishResult {
+	let mut result = publish_post_mutation_sync_failures(failures);
+	primitive.as_str().clone_into(&mut result.primitive);
 	result
 }
 
@@ -1216,6 +1727,7 @@ fn identity(file: &File) -> Result<RecoveryFsIdentity, &'static str> {
 	Ok(RecoveryFsIdentity {
 		dev:      stat.st_dev.to_string(),
 		ino:      stat.st_ino.to_string(),
+		nlink:    stat.st_nlink.to_string(),
 		size:     (stat.st_size as u64).to_string(),
 		mtime_ns: stat_mtime_ns(&stat).to_string(),
 		ctime_ns: stat_ctime_ns(&stat).to_string(),
@@ -1243,6 +1755,7 @@ fn regular_identity(file: &File) -> Result<RecoveryFsIdentity, &'static str> {
 	Ok(RecoveryFsIdentity {
 		dev:      stat.st_dev.to_string(),
 		ino:      stat.st_ino.to_string(),
+		nlink:    stat.st_nlink.to_string(),
 		size:     (stat.st_size as u64).to_string(),
 		mtime_ns: stat_mtime_ns(&stat).to_string(),
 		ctime_ns: stat_ctime_ns(&stat).to_string(),
@@ -1708,12 +2221,12 @@ fn rename_managed_file_no_replace(
 		ctime_ns,
 		sha256,
 	) {
-		Ok(result) => result.identity.map_or_else(
-			|| publish_post_mutation_failure("identity_mismatch", "terminal_identity"),
-			RecoveryFsPublishResult::success,
-		),
+		Ok(success) => finish_retained_publish(success),
 		Err(RetainedPublishError::SyncFailures(failures)) => {
 			publish_post_mutation_sync_failures(failures)
+		},
+		Err(RetainedPublishError::PostMutationSyncFailures { failures, primitive }) => {
+			publish_post_mutation_sync_failures_with_primitive(failures, primitive)
 		},
 		Err(RetainedPublishError::Code("rollback_unavailable")) => {
 			publish_post_mutation_failure("rollback_unavailable", "terminal_identity")
@@ -1725,8 +2238,11 @@ fn rename_managed_file_no_replace(
 			code @ ("already_exists" | "atomic_unavailable" | "cross_device" | "permission_denied"
 			| "invalid_request"),
 		)) => publish_preflight_failure(code),
-		Err(RetainedPublishError::PostMutationCode(code)) => {
-			publish_post_mutation_failure(code, "terminal_identity")
+		Err(RetainedPublishError::PostMutationCode { code, primitive }) => {
+			publish_post_mutation_failure_with_primitive(code, "terminal_identity", primitive, None)
+		},
+		Err(RetainedPublishError::PostMutationIo { code, phase, primitive, os_code }) => {
+			publish_post_mutation_failure_with_primitive(code, phase, primitive, os_code)
 		},
 		Err(RetainedPublishError::Code(code)) => publish_unknown_failure(code, "terminal_identity"),
 	}
@@ -1743,65 +2259,63 @@ fn rename_managed_file_no_replace_inner(
 	mtime_ns: &str,
 	ctime_ns: &str,
 	sha256: &str,
-) -> Result<RecoveryFsResult, RetainedPublishError> {
+) -> Result<RetainedPublishSuccess, RetainedPublishError> {
 	let source_file = open_existing(root, source, false)?;
 	crate::path_identity::platform::verify_created_owner_only_file(&source_file)?;
 	if !same_expected(&source_file, dev, ino, size, mtime_ns, ctime_ns, sha256)? {
 		return Err("identity_mismatch".into());
 	}
-
 	let (source_parent, source_name) = open_parent(root, source)?;
 	let (destination_parent, destination_name) = open_parent(root, destination)?;
-	let result =
-		renameat2_no_replace(&source_parent, &source_name, &destination_parent, &destination_name);
-	if let Err(error) = result {
-		return Err(
-			match error.raw_os_error() {
-				Some(libc::EEXIST) => "already_exists",
-				Some(libc::ENOSYS) => "atomic_unavailable",
-				// The retained syscall uses fixed, validated descriptors, names, and flags.
-				// EINVAL still cannot prove that this filesystem lacks RENAME_NOREPLACE;
-				// retain it as an invalid request rather than weakening no-overwrite authority.
-				Some(libc::EINVAL) => "invalid_request",
-				Some(libc::EXDEV) => "cross_device",
-				Some(libc::EACCES | libc::EPERM) => "permission_denied",
-				Some(libc::EINTR) => "interrupted",
-				_ => "io_error",
-			}
-			.into(),
-		);
-	}
+	// The staged descriptor stays open across publication and is released only
+	// between the fallback's link and its staging unlink, so NFS removes the
+	// staging name instead of silly-renaming it. See `linkat_no_replace`.
+	let result = rename_file_no_replace(
+		&source_parent,
+		&source_name,
+		&destination_parent,
+		&destination_name,
+		move || drop(source_file),
+	);
+	let primitive = result.map_err(retained_file_publish_error)?;
 	// The namespace mutation is authoritative immediately after renameat2 returns
 	// success. Every following failure is therefore committed-but-unproven.
-	let moved_file = open_existing(root, destination, false).map_err(|_| "rollback_unavailable")?;
+	let post_mutation_code = |code| RetainedPublishError::PostMutationCode { code, primitive };
+	let moved_file = open_existing(root, destination, false)
+		.map_err(|_| post_mutation_code("rollback_unavailable"))?;
 	crate::path_identity::platform::verify_created_owner_only_file(&moved_file)
-		.map_err(|_| "rollback_unavailable")?;
-	let moved = regular_identity(&moved_file).map_err(|_| "rollback_unavailable")?;
+		.map_err(|_| post_mutation_code("rollback_unavailable"))?;
+	let moved =
+		regular_identity(&moved_file).map_err(|_| post_mutation_code("rollback_unavailable"))?;
 	if !same_expected_after_rename(&moved_file, dev, ino, size, mtime_ns, sha256)
-		.map_err(|_| "rollback_unavailable")?
+		.map_err(|_| post_mutation_code("rollback_unavailable"))?
 	{
-		return Err("rollback_unavailable".into());
+		return Err(post_mutation_code("rollback_unavailable"));
 	}
-	let terminal =
-		statat(&destination_parent, &destination_name).map_err(|_| "rollback_unavailable")?;
+	let terminal = statat(&destination_parent, &destination_name)
+		.map_err(|_| post_mutation_code("rollback_unavailable"))?;
 	if terminal.st_dev.to_string() != moved.dev || terminal.st_ino.to_string() != moved.ino {
-		return Err("rollback_unavailable".into());
+		return Err(post_mutation_code("rollback_unavailable"));
 	}
-	let source_parent_identity = identity(&source_parent).map_err(|_| "rollback_unavailable")?;
+	let source_parent_identity =
+		identity(&source_parent).map_err(|_| post_mutation_code("rollback_unavailable"))?;
 	let destination_parent_identity =
-		identity(&destination_parent).map_err(|_| "rollback_unavailable")?;
+		identity(&destination_parent).map_err(|_| post_mutation_code("rollback_unavailable"))?;
 	sync_distinct_parents(
 		&source_parent,
 		&destination_parent,
 		source_parent_identity.dev == destination_parent_identity.dev
 			&& source_parent_identity.ino == destination_parent_identity.ino,
-	)?;
-	let after = regular_identity(&moved_file).map_err(|_| "rollback_unavailable")?;
-	let named_after =
-		statat(&destination_parent, &destination_name).map_err(|_| "rollback_unavailable")?;
+	)
+	.map_err(|error| bind_post_mutation_error(error, primitive))?;
+	let after =
+		regular_identity(&moved_file).map_err(|_| post_mutation_code("rollback_unavailable"))?;
+	let named_after = statat(&destination_parent, &destination_name)
+		.map_err(|_| post_mutation_code("rollback_unavailable"))?;
 	crate::path_identity::platform::verify_created_owner_only_file(&moved_file)
-		.map_err(|_| "rollback_unavailable")?;
-	let after_digest = digest_hex(&moved_file).map_err(|_| "rollback_unavailable")?;
+		.map_err(|_| post_mutation_code("rollback_unavailable"))?;
+	let after_digest =
+		digest_hex(&moved_file).map_err(|_| post_mutation_code("rollback_unavailable"))?;
 	if after.dev != moved.dev
 		|| after.ino != moved.ino
 		|| after.size != moved.size
@@ -1815,9 +2329,9 @@ fn rename_managed_file_no_replace_inner(
 		|| stat_mtime_ns(&named_after).to_string() != moved.mtime_ns
 		|| stat_ctime_ns(&named_after).to_string() != moved.ctime_ns
 	{
-		return Err("rollback_unavailable".into());
+		return Err(post_mutation_code("rollback_unavailable"));
 	}
-	Ok(RecoveryFsResult::success(moved))
+	Ok(RetainedPublishSuccess { result: RecoveryFsResult::success(moved), primitive })
 }
 
 #[cfg(target_os = "linux")]
@@ -1832,7 +2346,6 @@ fn remove_managed(
 	expected_ctime_ns: &str,
 	expected_sha256: &str,
 ) -> Result<RecoveryFsRetainedCleanupResult, &'static str> {
-	use std::os::fd::AsRawFd;
 	let (source_parent, name) = open_parent(root, relative_path)?;
 	let authorized = open_existing(root, relative_path, false)?;
 	if !same_expected(
@@ -1854,57 +2367,60 @@ fn remove_managed(
 	))
 	.map_err(|_| "io_error")?;
 	let recovery_parent = recovery_directory(root, recovery)?;
-	// SAFETY: parent is retained, names are validated, and quarantine rename is
-	// no-replace atomic.
-	if unsafe {
-		libc::syscall(
-			libc::SYS_renameat2,
-			source_parent.as_raw_fd(),
-			name.as_ptr(),
-			recovery_parent.as_raw_fd(),
-			quarantine.as_ptr(),
-			libc::RENAME_NOREPLACE,
-		)
-	} != 0
-	{
-		return Err(match std::io::Error::last_os_error().raw_os_error() {
+	// The parent is retained, the names are validated, and the quarantine publish
+	// is atomic no-replace: renameat2(RENAME_NOREPLACE) where supported, else a
+	// linkat(2) fallback for filesystems (e.g. NFS) that reject rename flags.
+	//
+	// `authorized` is held across the quarantine publish and released between the
+	// fallback's link and its staging unlink, so the staging name is removed rather
+	// than silly-renamed. Keeping it open past the unlink would leave the detached
+	// object double-linked on NFS, and every subsequent proof below would fail as
+	// `rollback_unavailable` even though the detach committed correctly.
+	if let Err(error) =
+		rename_file_no_replace(&source_parent, &name, &recovery_parent, &quarantine, move || {
+			drop(authorized);
+		}) {
+		if error.committed() {
+			return Err("rollback_unavailable");
+		}
+		return Err(match error.raw_os_error() {
 			Some(libc::ENOSYS | libc::EINVAL) => "atomic_unavailable",
 			_ => "io_error",
 		});
 	}
 	let quarantined_relative = quarantine.to_str().map_err(|_| "io_error")?;
-	let verified =
-		open_existing(&recovery_parent, quarantined_relative, false).and_then(|detached| {
-			let identity = regular_identity(&detached)?;
-			if identity.dev != authorized_identity.dev
-				|| identity.ino != authorized_identity.ino
-				|| !same_expected_after_rename(
-					&detached,
-					expected_dev,
-					expected_ino,
-					expected_size,
-					expected_mtime_ns,
-					expected_sha256,
-				)? {
-				Err("identity_mismatch")
-			} else {
-				Ok(())
-			}
-		});
-	if verified.is_err() {
+	// Re-acquire the detached object from its quarantined name inside the retained
+	// recovery parent. The identity comparison below proves it is the very inode
+	// `authorized` verified before publication, so this descriptor carries the same
+	// authority the retained one did.
+	let detached = open_existing(&recovery_parent, quarantined_relative, false)
+		.map_err(|_| "rollback_unavailable")?;
+	let detached_identity = regular_identity(&detached).map_err(|_| "rollback_unavailable")?;
+	if detached_identity.dev != authorized_identity.dev
+		|| detached_identity.ino != authorized_identity.ino
+		|| !same_expected_after_rename(
+			&detached,
+			expected_dev,
+			expected_ino,
+			expected_size,
+			expected_mtime_ns,
+			expected_sha256,
+		)
+		.map_err(|_| "rollback_unavailable")?
+	{
 		return Err("rollback_unavailable");
 	}
-	crate::path_identity::platform::verify_created_owner_only_file(&authorized)?;
-	let post_detach_identity = regular_identity(&authorized)?;
-	if digest_hex(&authorized)? != expected_sha256 {
+	crate::path_identity::platform::verify_created_owner_only_file(&detached)?;
+	let post_detach_identity = regular_identity(&detached)?;
+	if digest_hex(&detached)? != expected_sha256 {
 		return Err("rollback_unavailable");
 	}
 	if source_parent.sync_all().is_err() || recovery_parent.sync_all().is_err() {
 		return Err("rollback_unavailable");
 	}
-	crate::path_identity::platform::verify_created_owner_only_file(&authorized)?;
-	let terminal_identity = regular_identity(&authorized)?;
-	let terminal_digest = digest_hex(&authorized)?;
+	crate::path_identity::platform::verify_created_owner_only_file(&detached)?;
+	let terminal_identity = regular_identity(&detached)?;
+	let terminal_digest = digest_hex(&detached)?;
 	let terminal = statat(&recovery_parent, &quarantine).map_err(|_| "identity_mismatch")?;
 	if terminal_identity != post_detach_identity
 		|| terminal_identity.dev != authorized_identity.dev
@@ -2010,7 +2526,6 @@ fn replace_managed(
 	expected_ctime_ns: &str,
 	expected_sha256: &str,
 ) -> Result<RecoveryFsResult, &'static str> {
-	use std::os::fd::AsRawFd;
 	let recovery_parent = recovery_directory(root, recovery)?;
 	let authorized = open_existing(root, relative_path, false)?;
 	if !same_expected(
@@ -2048,20 +2563,24 @@ fn replace_managed(
 	let candidate_parent = recovery_parent;
 	let candidate_name = CString::new(candidate).map_err(|_| "io_error")?;
 	let (destination_parent, destination_name) = open_parent(root, relative_path)?;
-	// SAFETY: retained parents and validated names make exchange atomic.
-	if unsafe {
-		libc::syscall(
-			libc::SYS_renameat2,
-			candidate_parent.as_raw_fd(),
-			candidate_name.as_ptr(),
-			destination_parent.as_raw_fd(),
-			destination_name.as_ptr(),
-			libc::RENAME_EXCHANGE,
-		)
-	} != 0
-	{
-		return Err("io_error");
-	}
+	// The descriptor proving the destination's identity is held across the
+	// exchange, matching the authority `renameat2` would have carried. On the
+	// link fallback it is released between the rollback link and the rename that
+	// displaces the destination: NFS silly-renames a still-open name that a
+	// rename displaces, which would leave the displaced object double-linked and
+	// fail the `st_nlink == 1` proof re-run against it below. Releasing there
+	// costs no provability, because the object is already reachable through the
+	// fallback's temporary name, and the checks below re-prove it from the
+	// candidate name against the identity verified before publication.
+	exchange_managed_replacement(
+		&candidate_parent,
+		&candidate_name,
+		&destination_parent,
+		&destination_name,
+		move || {
+			drop(authorized);
+		},
+	)?;
 	let verified =
 		(|| -> Result<(RecoveryFsIdentity, RecoveryFsIdentity, File, File), &'static str> {
 			let displaced = open_existing(
@@ -2129,12 +2648,12 @@ fn replace_managed(
 #[cfg(target_os = "linux")]
 fn install(root: &File, source: &str, destination: &str) -> RecoveryFsPublishResult {
 	match install_inner(root, source, destination) {
-		Ok(result) => result.identity.map_or_else(
-			|| publish_post_mutation_failure("identity_mismatch", "terminal_identity"),
-			RecoveryFsPublishResult::success,
-		),
+		Ok(success) => finish_retained_publish(success),
 		Err(RetainedPublishError::SyncFailures(failures)) => {
 			publish_post_mutation_sync_failures(failures)
+		},
+		Err(RetainedPublishError::PostMutationSyncFailures { failures, primitive }) => {
+			publish_post_mutation_sync_failures_with_primitive(failures, primitive)
 		},
 		Err(RetainedPublishError::Code("post_mutation_identity_mismatch")) => {
 			publish_post_mutation_failure("identity_mismatch", "terminal_identity")
@@ -2146,8 +2665,11 @@ fn install(root: &File, source: &str, destination: &str) -> RecoveryFsPublishRes
 			code @ ("already_exists" | "atomic_unavailable" | "cross_device" | "permission_denied"
 			| "invalid_request"),
 		)) => publish_preflight_failure(code),
-		Err(RetainedPublishError::PostMutationCode(code)) => {
-			publish_post_mutation_failure(code, "terminal_identity")
+		Err(RetainedPublishError::PostMutationCode { code, primitive }) => {
+			publish_post_mutation_failure_with_primitive(code, "terminal_identity", primitive, None)
+		},
+		Err(RetainedPublishError::PostMutationIo { code, phase, primitive, os_code }) => {
+			publish_post_mutation_failure_with_primitive(code, phase, primitive, os_code)
 		},
 		Err(RetainedPublishError::Code(code)) => publish_unknown_failure(code, "terminal_identity"),
 	}
@@ -2158,48 +2680,44 @@ fn install_inner(
 	root: &File,
 	source: &str,
 	destination: &str,
-) -> Result<RecoveryFsResult, RetainedPublishError> {
+) -> Result<RetainedPublishSuccess, RetainedPublishError> {
 	let source_file = open_existing(root, source, false)?;
 	let source_identity = regular_identity(&source_file)?;
 	let (source_parent, source_name) = open_parent(root, source)?;
 	let (destination_parent, destination_name) = open_parent(root, destination)?;
-	let result =
-		renameat2_no_replace(&source_parent, &source_name, &destination_parent, &destination_name);
-	if let Err(error) = result {
-		return Err(
-			match error.raw_os_error() {
-				Some(libc::EEXIST) => "already_exists",
-				Some(libc::ENOSYS) => "atomic_unavailable",
-				Some(libc::EINVAL) => "invalid_request",
-				Some(libc::EXDEV) => "cross_device",
-				Some(libc::EACCES | libc::EPERM) => "permission_denied",
-				Some(libc::EINTR) => "interrupted",
-				_ => "io_error",
-			}
-			.into(),
-		);
-	}
+	// Released between the fallback's link and unlink; see the matching note in
+	// `rename_managed_file_no_replace_inner`.
+	let result = rename_file_no_replace(
+		&source_parent,
+		&source_name,
+		&destination_parent,
+		&destination_name,
+		move || drop(source_file),
+	);
+	let primitive = result.map_err(retained_file_publish_error)?;
 	// The rename has committed; all following verification failures are durability
 	// proof failures, never a new pre-mutation classification.
-	let installed =
-		open_existing(root, destination, false).map_err(|_| "post_mutation_identity_mismatch")?;
-	let installed_identity =
-		regular_identity(&installed).map_err(|_| "post_mutation_identity_mismatch")?;
+	let post_mutation_code = |code| RetainedPublishError::PostMutationCode { code, primitive };
+	let installed = open_existing(root, destination, false)
+		.map_err(|_| post_mutation_code("post_mutation_identity_mismatch"))?;
+	let installed_identity = regular_identity(&installed)
+		.map_err(|_| post_mutation_code("post_mutation_identity_mismatch"))?;
 	if installed_identity.dev != source_identity.dev || installed_identity.ino != source_identity.ino
 	{
-		return Err("post_mutation_identity_mismatch".into());
+		return Err(post_mutation_code("post_mutation_identity_mismatch"));
 	}
-	let source_parent_identity =
-		identity(&source_parent).map_err(|_| "post_mutation_identity_mismatch")?;
-	let destination_parent_identity =
-		identity(&destination_parent).map_err(|_| "post_mutation_identity_mismatch")?;
+	let source_parent_identity = identity(&source_parent)
+		.map_err(|_| post_mutation_code("post_mutation_identity_mismatch"))?;
+	let destination_parent_identity = identity(&destination_parent)
+		.map_err(|_| post_mutation_code("post_mutation_identity_mismatch"))?;
 	sync_distinct_parents(
 		&source_parent,
 		&destination_parent,
 		source_parent_identity.dev == destination_parent_identity.dev
 			&& source_parent_identity.ino == destination_parent_identity.ino,
-	)?;
-	Ok(RecoveryFsResult::success(installed_identity))
+	)
+	.map_err(|error| bind_post_mutation_error(error, primitive))?;
+	Ok(RetainedPublishSuccess { result: RecoveryFsResult::success(installed_identity), primitive })
 }
 
 #[cfg(target_os = "linux")]
@@ -2276,6 +2794,7 @@ fn tree_entry(
 		kind: kind.to_owned(),
 		dev: stat.st_dev.to_string(),
 		ino: stat.st_ino.to_string(),
+		nlink: stat.st_nlink.to_string(),
 		size: (stat.st_size as u64).to_string(),
 		mtime_ns: stat_mtime_ns(stat).to_string(),
 		ctime_ns: stat_ctime_ns(stat).to_string(),
@@ -2562,6 +3081,7 @@ fn tree_matches_after_rename(
 					&& left.kind == right.kind
 					&& left.dev == right.dev
 					&& left.ino == right.ino
+					&& left.nlink == right.nlink
 					&& left.size == right.size
 					&& left.mtime_ns == right.mtime_ns
 					&& (left.relative_path.is_empty() || left.ctime_ns == right.ctime_ns)
@@ -2577,12 +3097,12 @@ fn rename_managed_tree_no_replace(
 	expected: &crate::path_identity::NativeDirectoryTreeSnapshot,
 ) -> RecoveryFsPublishResult {
 	match rename_managed_tree_no_replace_inner(root, source, destination, expected) {
-		Ok(result) => result.identity.map_or_else(
-			|| publish_post_mutation_failure("identity_mismatch", "terminal_identity"),
-			RecoveryFsPublishResult::success,
-		),
+		Ok(success) => finish_retained_publish(success),
 		Err(RetainedPublishError::SyncFailures(failures)) => {
 			publish_post_mutation_sync_failures(failures)
+		},
+		Err(RetainedPublishError::PostMutationSyncFailures { failures, primitive }) => {
+			publish_post_mutation_sync_failures_with_primitive(failures, primitive)
 		},
 		Err(RetainedPublishError::Code("rollback_unavailable")) => {
 			publish_post_mutation_failure("rollback_unavailable", "terminal_identity")
@@ -2594,8 +3114,11 @@ fn rename_managed_tree_no_replace(
 			code @ ("already_exists" | "atomic_unavailable" | "cross_device" | "permission_denied"
 			| "invalid_request"),
 		)) => publish_preflight_failure(code),
-		Err(RetainedPublishError::PostMutationCode(code)) => {
-			publish_post_mutation_failure(code, "terminal_identity")
+		Err(RetainedPublishError::PostMutationCode { code, primitive }) => {
+			publish_post_mutation_failure_with_primitive(code, "terminal_identity", primitive, None)
+		},
+		Err(RetainedPublishError::PostMutationIo { code, phase, primitive, os_code }) => {
+			publish_post_mutation_failure_with_primitive(code, phase, primitive, os_code)
 		},
 		Err(RetainedPublishError::Code(code)) => publish_unknown_failure(code, "terminal_identity"),
 	}
@@ -2607,7 +3130,7 @@ fn rename_managed_tree_no_replace_inner(
 	source: &str,
 	destination: &str,
 	expected: &crate::path_identity::NativeDirectoryTreeSnapshot,
-) -> Result<RecoveryFsResult, RetainedPublishError> {
+) -> Result<RetainedPublishSuccess, RetainedPublishError> {
 	let before = snapshot_managed_tree(root, source)?
 		.snapshot
 		.ok_or("io_error")?;
@@ -2616,22 +3139,28 @@ fn rename_managed_tree_no_replace_inner(
 	}
 	let (source_parent, source_name) = open_parent(root, source)?;
 	let (destination_parent, destination_name) = open_parent(root, destination)?;
-	if let Err(error) =
-		renameat2_no_replace(&source_parent, &source_name, &destination_parent, &destination_name)
-	{
-		return Err(
-			match error.raw_os_error() {
-				Some(libc::EEXIST) => "already_exists",
-				Some(libc::ENOSYS) => "atomic_unavailable",
-				Some(libc::EINVAL) => "invalid_request",
-				Some(libc::EXDEV) => "cross_device",
-				Some(libc::EACCES | libc::EPERM) => "permission_denied",
-				Some(libc::EINTR) => "interrupted",
-				_ => "io_error",
-			}
-			.into(),
-		);
-	}
+	let primitive = match rename_tree_no_replace(
+		&source_parent,
+		&source_name,
+		&destination_parent,
+		&destination_name,
+	) {
+		Ok(primitive) => primitive,
+		Err(error) => {
+			return Err(
+				match error.raw_os_error() {
+					Some(libc::EEXIST) => "already_exists",
+					Some(libc::ENOSYS) => "atomic_unavailable",
+					Some(libc::EINVAL) => "invalid_request",
+					Some(libc::EXDEV) => "cross_device",
+					Some(libc::EACCES | libc::EPERM) => "permission_denied",
+					Some(libc::EINTR) => "interrupted",
+					_ => "io_error",
+				}
+				.into(),
+			);
+		},
+	};
 	let post_mutation = (|| -> Result<RecoveryFsIdentity, RetainedPublishError> {
 		let after = snapshot_managed_tree_after_rename(root, destination)?
 			.snapshot
@@ -2663,9 +3192,10 @@ fn rename_managed_tree_no_replace_inner(
 		Ok(destination_identity)
 	})();
 	match post_mutation {
-		Ok(identity) => Ok(RecoveryFsResult::success(identity)),
-		Err(RetainedPublishError::Code(code)) => Err(RetainedPublishError::PostMutationCode(code)),
-		Err(error) => Err(error),
+		Ok(identity) => {
+			Ok(RetainedPublishSuccess { result: RecoveryFsResult::success(identity), primitive })
+		},
+		Err(error) => Err(bind_post_mutation_error(error, primitive)),
 	}
 }
 
@@ -2676,7 +3206,6 @@ fn remove_managed_tree(
 	relative_path: &str,
 	expected: &crate::path_identity::NativeDirectoryTreeSnapshot,
 ) -> Result<RecoveryFsRetainedCleanupResult, &'static str> {
-	use std::os::fd::AsRawFd;
 	let snapshot = snapshot_managed_tree(root, relative_path)?
 		.snapshot
 		.ok_or("io_error")?;
@@ -2692,19 +3221,11 @@ fn remove_managed_tree(
 	))
 	.map_err(|_| "io_error")?;
 	let recovery_parent = recovery_directory(root, recovery)?;
-	// SAFETY: retained parent and validated names make the detach no-replace
-	// atomic.
-	if unsafe {
-		libc::syscall(
-			libc::SYS_renameat2,
-			source_parent.as_raw_fd(),
-			name.as_ptr(),
-			recovery_parent.as_raw_fd(),
-			quarantine.as_ptr(),
-			libc::RENAME_NOREPLACE,
-		)
-	} != 0
-	{
+	// Retained parents and validated names make the detach no-replace. The
+	// quarantine name is freshly minted and therefore absent, so on a filesystem
+	// without rename flags the `mkdirat` claim inside `rename_tree_no_replace`
+	// carries the same exclusivity the atomic primitive would have.
+	if rename_tree_no_replace(&source_parent, &name, &recovery_parent, &quarantine).is_err() {
 		return Err("io_error");
 	}
 	let detached = quarantine.to_str().map_err(|_| "io_error")?;
@@ -2796,6 +3317,7 @@ mod tests {
 	}
 
 	use std::{
+		cell::Cell,
 		fs,
 		path::PathBuf,
 		time::{SystemTime, UNIX_EPOCH},
@@ -3030,6 +3552,804 @@ mod tests {
 		assert_eq!(
 			second.join().expect("second install thread"),
 			(Some(libc::EACCES), b"second".to_vec())
+		);
+	}
+
+	#[test]
+	fn rename_flags_unsupported_classifies_only_the_missing_primitive_errnos() {
+		assert!(rename_flags_unsupported(Some(libc::EINVAL)));
+		assert!(rename_flags_unsupported(Some(libc::ENOSYS)));
+		assert!(!rename_flags_unsupported(Some(libc::EEXIST)));
+		assert!(!rename_flags_unsupported(Some(libc::EXDEV)));
+		assert!(!rename_flags_unsupported(Some(libc::EACCES)));
+		assert!(!rename_flags_unsupported(None));
+	}
+
+	#[test]
+	fn file_publish_falls_back_to_linkat_when_rename_flags_unsupported() {
+		for unsupported in [libc::EINVAL, libc::ENOSYS] {
+			let temporary = TempDir::new();
+			let root = temporary.root();
+			ensure_managed_directory(&root, "source-parent").expect("create source parent");
+			ensure_managed_directory(&root, "destination-parent").expect("create destination parent");
+			let contents = b"nfs-published-binding";
+			let identity = managed_file(&root, "source-parent/source", contents);
+			// Force the renameat2(RENAME_NOREPLACE) primitive to report the flag as
+			// unavailable, exactly as an NFS mount does with EINVAL.
+			set_retained_publish_faults([RetainedPublishFault::Rename(unsupported)]);
+			let result = rename_managed_file_no_replace(
+				&root,
+				"source-parent/source",
+				"destination-parent/destination",
+				&identity.dev,
+				&identity.ino,
+				&identity.size,
+				&identity.mtime_ns,
+				&identity.ctime_ns,
+				&file_digest(contents),
+			);
+			assert!(
+				result.ok,
+				"linkat fallback must publish (errno {unsupported}): {:?}",
+				result.code
+			);
+			assert_eq!(result.primitive, "linkat_noreplace");
+			assert!(
+				!temporary.0.join("source-parent/source").exists(),
+				"staging source is removed after the link fallback"
+			);
+			assert_eq!(
+				fs::read(temporary.0.join("destination-parent/destination"))
+					.expect("published destination"),
+				contents
+			);
+			let published = fs::metadata(temporary.0.join("destination-parent/destination"))
+				.expect("published destination metadata");
+			assert_eq!(
+				std::os::unix::fs::MetadataExt::nlink(&published),
+				1,
+				"published file is single-linked, matching a rename"
+			);
+		}
+	}
+
+	#[test]
+	fn install_receipt_names_linkat_fallback_primitive() {
+		let temporary = TempDir::new();
+		let root = temporary.root();
+		managed_file(&root, "source", b"payload");
+		set_retained_publish_faults([RetainedPublishFault::Rename(libc::EINVAL)]);
+
+		let result = install(&root, "source", "destination");
+
+		assert!(result.ok, "linkat fallback must install: {:?}", result.code);
+		assert_eq!(result.primitive, "linkat_noreplace");
+		assert!(!temporary.0.join("source").exists());
+		assert_eq!(
+			fs::read(temporary.0.join("destination")).expect("published destination"),
+			b"payload"
+		);
+	}
+
+	#[test]
+	fn linkat_unlink_failures_report_committed_mutation() {
+		for operation in ["managed_rename", "install"] {
+			let temporary = TempDir::new();
+			let root = temporary.root();
+			let contents = b"committed-payload";
+			let identity = managed_file(&root, "source", contents);
+			set_retained_publish_faults([
+				RetainedPublishFault::Rename(libc::EINVAL),
+				RetainedPublishFault::Unlink(libc::EACCES),
+			]);
+
+			let result = if operation == "managed_rename" {
+				rename_managed_file_no_replace(
+					&root,
+					"source",
+					"destination",
+					&identity.dev,
+					&identity.ino,
+					&identity.size,
+					&identity.mtime_ns,
+					&identity.ctime_ns,
+					&file_digest(contents),
+				)
+			} else {
+				install(&root, "source", "destination")
+			};
+
+			assert!(!result.ok, "{operation} must surface the failed staging unlink");
+			assert_eq!(result.code.as_deref(), Some("io_error"));
+			assert_eq!(result.mutation_state, "committed");
+			assert_eq!(result.durability_state, "not_provable");
+			assert_eq!(result.reason, "io_failure");
+			assert_eq!(result.primitive, "linkat_noreplace");
+			assert_eq!(result.phase, "source_unlink");
+			assert_eq!(result.diagnostic.os_code, Some(libc::EACCES));
+			assert!(temporary.0.join("source").exists(), "failed unlink retains staging evidence");
+			assert_eq!(
+				fs::read(temporary.0.join("destination")).expect("committed destination"),
+				contents
+			);
+		}
+	}
+
+	#[test]
+	fn linkat_fallback_still_refuses_to_overwrite_an_existing_destination() {
+		let temporary = TempDir::new();
+		let root = temporary.root();
+		ensure_managed_directory(&root, "source-parent").expect("create source parent");
+		ensure_managed_directory(&root, "destination-parent").expect("create destination parent");
+		let contents = b"candidate";
+		let identity = managed_file(&root, "source-parent/source", contents);
+		// A distinct committed transcript already owns the destination name.
+		fs::write(temporary.0.join("destination-parent/destination"), b"committed")
+			.expect("seed committed destination");
+		set_retained_publish_faults([RetainedPublishFault::Rename(libc::EINVAL)]);
+		let result = rename_managed_file_no_replace(
+			&root,
+			"source-parent/source",
+			"destination-parent/destination",
+			&identity.dev,
+			&identity.ino,
+			&identity.size,
+			&identity.mtime_ns,
+			&identity.ctime_ns,
+			&file_digest(contents),
+		);
+		assert!(!result.ok);
+		assert_eq!(result.code.as_deref(), Some("already_exists"));
+		assert_eq!(result.reason, "destination_exists");
+		assert_eq!(result.mutation_state, "not_committed");
+		// Neither the staging source nor the committed destination is disturbed.
+		assert_eq!(
+			fs::read(temporary.0.join("source-parent/source")).expect("source retained"),
+			contents
+		);
+		assert_eq!(
+			fs::read(temporary.0.join("destination-parent/destination"))
+				.expect("committed destination untouched"),
+			b"committed"
+		);
+	}
+
+	/// Opt-in check that the `linkat(2)` no-replace fallback is atomic on a real
+	/// filesystem whose `renameat2` rejects `RENAME_NOREPLACE` (e.g. an `NFSv4`
+	/// home directory). Point `GJC_TEST_NFS_DIR` at a writable directory on such
+	/// a mount. Exercises the raw fallback helper directly so it is independent
+	/// of the owner-only ACL probe.
+	#[test]
+	fn linkat_no_replace_is_atomic_on_a_real_filesystem() {
+		let Some(base) = std::env::var_os("GJC_TEST_NFS_DIR") else {
+			return;
+		};
+		let dir = PathBuf::from(base).join(format!(
+			"pi-recovery-fs-linkat-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("clock before epoch")
+				.as_nanos(),
+		));
+		fs::create_dir(&dir).expect("create real-filesystem test root");
+		let parent = File::open(&dir).expect("open real-filesystem root");
+		let source_name = CString::new("source").expect("source name");
+		let destination_name = CString::new("destination").expect("destination name");
+
+		fs::write(dir.join("source"), b"payload").expect("seed source");
+		linkat_no_replace(&parent, &source_name, &parent, &destination_name, || ())
+			.expect("link publish on the real filesystem");
+		assert_eq!(fs::read(dir.join("destination")).expect("published destination"), b"payload");
+		assert!(!dir.join("source").exists(), "staging source removed after publish");
+
+		fs::write(dir.join("collision"), b"other").expect("seed collision source");
+		let collision_name = CString::new("collision").expect("collision name");
+		let error = linkat_no_replace(&parent, &collision_name, &parent, &destination_name, || ())
+			.expect_err("no-replace must refuse an existing destination");
+		assert_eq!(error.raw_os_error(), Some(libc::EEXIST));
+		assert!(dir.join("collision").exists(), "source is untouched on collision");
+		assert_eq!(
+			fs::read(dir.join("destination")).expect("destination unchanged on collision"),
+			b"payload"
+		);
+
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	/// The staged descriptor must be released between the publishing link and
+	/// the staging unlink. Releasing earlier would publish without descriptor
+	/// authority; releasing later is exactly what leaves a silly-renamed sibling
+	/// on NFS. This pins that order deterministically on any filesystem, so the
+	/// contract is covered without depending on an external mount.
+	#[test]
+	fn linkat_fallback_releases_source_authority_between_link_and_unlink() {
+		let temporary = TempDir::new();
+		let parent = temporary.root();
+		let source_name = CString::new("source").expect("source name");
+		let destination_name = CString::new("destination").expect("destination name");
+		fs::write(temporary.0.join("source"), b"payload").expect("seed source");
+
+		let observed = Cell::new(None);
+		linkat_no_replace(&parent, &source_name, &parent, &destination_name, || {
+			observed.set(Some((
+				temporary.0.join("destination").exists(),
+				temporary.0.join("source").exists(),
+			)));
+		})
+		.expect("link publish");
+
+		assert_eq!(
+			observed.get(),
+			Some((true, true)),
+			"authority must be released after the destination is published and before the staging \
+			 name is unlinked"
+		);
+		assert!(!temporary.0.join("source").exists(), "staging name removed after release");
+	}
+
+	/// Opt-in end-to-end regression for the managed publish path on a filesystem
+	/// whose `renameat2` rejects `RENAME_NOREPLACE`. Point `GJC_TEST_NFS_DIR` at
+	/// a writable directory on such a mount (e.g. an `NFSv4` home directory).
+	///
+	/// Unlike `linkat_no_replace_is_atomic_on_a_real_filesystem`, which
+	/// exercises the raw helper with no descriptor open, this drives the whole
+	/// publish. That distinction is the defect: the publish path held the
+	/// staging descriptor open across the fallback, so `unlinkat` silly-renamed
+	/// the staging name to `.nfsXXXX` instead of removing it. The published
+	/// inode kept a second link, the terminal re-open rejected it as
+	/// `hard_link`, and a committed publish was reported as
+	/// `rollback_unavailable` — crashing startup on every NFS home.
+	#[test]
+	fn managed_publish_commits_on_a_filesystem_without_rename_flags() {
+		let Some(base) = std::env::var_os("GJC_TEST_NFS_DIR") else {
+			return;
+		};
+		let dir = PathBuf::from(base).join(format!(
+			"pi-recovery-fs-publish-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("clock before epoch")
+				.as_nanos(),
+		));
+		fs::create_dir(&dir).expect("create real-filesystem test root");
+		fs::set_permissions(
+			&dir,
+			<fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+		)
+		.expect("restrict real-filesystem test root");
+		let root = File::open(&dir).expect("open real-filesystem root");
+
+		// Prove this mount actually lacks renameat2 rename flags. Without it the
+		// test would also pass on a filesystem where `RENAME_NOREPLACE` works and
+		// the `linkat` fallback — the whole point of this case — is never reached.
+		fs::write(dir.join("probe-source"), b"probe").expect("seed probe source");
+		let probe_error = renameat2_no_replace(
+			&root,
+			&CString::new("probe-source").expect("probe source name"),
+			&root,
+			&CString::new("probe-destination").expect("probe destination name"),
+		)
+		.expect_err(
+			"GJC_TEST_NFS_DIR must point at a filesystem whose renameat2 rejects RENAME_NOREPLACE",
+		);
+		assert!(
+			rename_flags_unsupported(probe_error.raw_os_error()),
+			"GJC_TEST_NFS_DIR must point at a filesystem without renameat2 rename flags (errno {:?})",
+			probe_error.raw_os_error()
+		);
+		fs::remove_file(dir.join("probe-source")).expect("remove probe source");
+
+		let contents = b"binding";
+		let identity = managed_file(&root, "staged", contents);
+		let result = rename_managed_file_no_replace(
+			&root,
+			"staged",
+			"published",
+			&identity.dev,
+			&identity.ino,
+			&identity.size,
+			&identity.mtime_ns,
+			&identity.ctime_ns,
+			&file_digest(contents),
+		);
+
+		assert!(
+			result.ok,
+			"publish must commit and prove itself (code={:?} reason={} phase={})",
+			result.code, result.reason, result.phase
+		);
+		assert_eq!(result.reason, "none");
+		assert_eq!(result.phase, "complete");
+		assert_eq!(result.mutation_state, "committed");
+		assert_eq!(result.durability_state, "proven");
+		assert_eq!(fs::read(dir.join("published")).expect("published contents"), contents);
+		let published =
+			fs::symlink_metadata(dir.join("published")).expect("published destination metadata");
+		assert_eq!(
+			std::os::unix::fs::MetadataExt::nlink(&published),
+			1,
+			"no silly-renamed staging sibling may survive the publish"
+		);
+		assert!(!dir.join("staged").exists(), "staging name removed after publish");
+
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	/// Opt-in companion to the publish case: detaching must survive the same
+	/// filesystem. `remove_managed` holds its authority descriptor across the
+	/// quarantine publish; if it were still open at the staging unlink, NFS
+	/// would silly-rename that name, leave the detached object double-linked,
+	/// and every proof afterwards would fail as `rollback_unavailable`.
+	///
+	/// That failure is not cosmetic. The session layer calls this to reconcile a
+	/// staged file after a publish that legitimately lost the no-replace race,
+	/// and it throws the detach code in place of the benign
+	/// `destination_conflict`, which surfaces as `binding_invalid` and crashes
+	/// startup on every launch after the first in a given scope.
+	#[test]
+	fn managed_remove_detaches_on_a_filesystem_without_rename_flags() {
+		let Some(base) = std::env::var_os("GJC_TEST_NFS_DIR") else {
+			return;
+		};
+		let dir = PathBuf::from(base).join(format!(
+			"pi-recovery-fs-detach-{}-{}",
+			std::process::id(),
+			SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("clock before epoch")
+				.as_nanos(),
+		));
+		fs::create_dir(&dir).expect("create real-filesystem test root");
+		fs::set_permissions(
+			&dir,
+			<fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+		)
+		.expect("restrict real-filesystem test root");
+		let root = File::open(&dir).expect("open real-filesystem root");
+
+		fs::write(dir.join("probe-source"), b"probe").expect("seed probe source");
+		let probe_error = renameat2_no_replace(
+			&root,
+			&CString::new("probe-source").expect("probe source name"),
+			&root,
+			&CString::new("probe-destination").expect("probe destination name"),
+		)
+		.expect_err(
+			"GJC_TEST_NFS_DIR must point at a filesystem whose renameat2 rejects RENAME_NOREPLACE",
+		);
+		assert!(
+			rename_flags_unsupported(probe_error.raw_os_error()),
+			"GJC_TEST_NFS_DIR must point at a filesystem without renameat2 rename flags (errno {:?})",
+			probe_error.raw_os_error()
+		);
+		fs::remove_file(dir.join("probe-source")).expect("remove probe source");
+
+		let contents = b"staged";
+		let identity = managed_file(&root, "staged", contents);
+		let result = remove_managed(
+			&root,
+			None,
+			"staged",
+			&identity.dev,
+			&identity.ino,
+			&identity.size,
+			&identity.mtime_ns,
+			&identity.ctime_ns,
+			&file_digest(contents),
+		)
+		.expect("detach must not fail on a filesystem without rename flags");
+
+		// A retained detach reports `cleanup_pending` with recovery evidence; the
+		// regression reported `rollback_unavailable` through the Err arm above.
+		assert_eq!(result.code.as_deref(), Some("cleanup_pending"));
+		assert!(result.recovery_path.is_some(), "detach must retain recovery evidence");
+		assert!(!dir.join("staged").exists(), "staging name removed after detach");
+
+		let _ = fs::remove_dir_all(&dir);
+	}
+
+	/// Seed a small directory tree and return its captured snapshot.
+	fn managed_tree(root: &File, path: &str) -> crate::path_identity::NativeDirectoryTreeSnapshot {
+		ensure_managed_directory(root, path).expect("create tree root");
+		ensure_managed_directory(root, &format!("{path}/nested")).expect("create nested directory");
+		managed_file(root, &format!("{path}/nested/leaf"), b"leaf-contents");
+		snapshot_managed_tree(root, path)
+			.expect("snapshot tree")
+			.snapshot
+			.expect("tree snapshot present")
+	}
+
+	/// `linkat` cannot hard-link a directory, so the file fallback does not
+	/// reach tree publishes; `mkdirat` supplies the missing exclusivity
+	/// instead. Without this fallback a managed fork of a session that owns
+	/// artifacts fails on every mount whose `renameat2` rejects rename flags.
+	#[test]
+	fn tree_publish_falls_back_to_mkdirat_when_rename_flags_unsupported() {
+		for unsupported in [libc::EINVAL, libc::ENOSYS] {
+			let temporary = TempDir::new();
+			let root = temporary.root();
+			ensure_managed_directory(&root, "source-parent").expect("create source parent");
+			ensure_managed_directory(&root, "destination-parent").expect("create destination parent");
+			let expected = managed_tree(&root, "source-parent/tree");
+
+			// Force the renameat2(RENAME_NOREPLACE) primitive to report the flag as
+			// unavailable, exactly as an NFS mount does with EINVAL.
+			set_retained_publish_faults([RetainedPublishFault::Rename(unsupported)]);
+			let result = rename_managed_tree_no_replace(
+				&root,
+				"source-parent/tree",
+				"destination-parent/tree",
+				&expected,
+			);
+
+			assert!(
+				result.ok,
+				"mkdirat fallback must publish the tree (errno {unsupported}): {:?}",
+				result.code
+			);
+			assert_eq!(result.primitive, "mkdirat_renameat_noreplace");
+			assert!(
+				!temporary.0.join("source-parent/tree").exists(),
+				"staging tree is removed after the fallback publish"
+			);
+			assert_eq!(
+				fs::read(temporary.0.join("destination-parent/tree/nested/leaf"))
+					.expect("published leaf"),
+				b"leaf-contents",
+				"the published tree must carry the staged contents"
+			);
+		}
+	}
+
+	/// The guarantee the fallback exists to preserve. `mkdirat` fails with
+	/// `EEXIST` exactly where `RENAME_NOREPLACE` would, so standing in for the
+	/// missing primitive never authorizes an overwrite.
+	#[test]
+	fn tree_fallback_still_refuses_to_overwrite_an_existing_destination() {
+		let temporary = TempDir::new();
+		let root = temporary.root();
+		ensure_managed_directory(&root, "source-parent").expect("create source parent");
+		ensure_managed_directory(&root, "destination-parent").expect("create destination parent");
+		let expected = managed_tree(&root, "source-parent/tree");
+		// A distinct committed tree already owns the destination name.
+		managed_tree(&root, "destination-parent/tree");
+
+		set_retained_publish_faults([RetainedPublishFault::Rename(libc::EINVAL)]);
+		let result = rename_managed_tree_no_replace(
+			&root,
+			"source-parent/tree",
+			"destination-parent/tree",
+			&expected,
+		);
+
+		assert!(!result.ok, "an occupied destination must never be published over");
+		assert_eq!(result.code.as_deref(), Some("already_exists"));
+		assert_eq!(
+			fs::read(temporary.0.join("destination-parent/tree/nested/leaf"))
+				.expect("occupying leaf survives"),
+			b"leaf-contents",
+			"the occupying tree must be left untouched"
+		);
+		assert!(
+			temporary.0.join("source-parent/tree").exists(),
+			"a rejected publish leaves the staging tree in place"
+		);
+	}
+
+	/// The name claim and the rename are two steps, so a rename that fails after
+	/// the claim must give the destination name back rather than leave an empty
+	/// directory squatting it.
+	#[test]
+	fn tree_fallback_removes_its_placeholder_when_the_rename_fails() {
+		let temporary = TempDir::new();
+		let root = temporary.root();
+
+		let error = rename_directory_no_replace(
+			&root,
+			&CString::new("absent-source").expect("source name"),
+			&root,
+			&CString::new("destination").expect("destination name"),
+		)
+		.expect_err("renaming an absent source must fail");
+
+		assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+		assert!(
+			!temporary.0.join("destination").exists(),
+			"a failed rename must not leave its placeholder behind"
+		);
+	}
+
+	/// `remove_managed_tree` quarantines through the same directory no-replace
+	/// primitive, so staging-tree cleanup is blocked on the same mounts the
+	/// publish was. Fixing only the publish leaves a fork that fails mid-flight
+	/// unable to clean up after itself.
+	#[test]
+	fn managed_remove_tree_detaches_on_a_filesystem_without_rename_flags() {
+		let temporary = TempDir::new();
+		let root = temporary.root();
+		let expected = managed_tree(&root, "staged-tree");
+
+		set_retained_publish_faults([RetainedPublishFault::Rename(libc::EINVAL)]);
+		let result = remove_managed_tree(&root, None, "staged-tree", &expected)
+			.expect("detach must not fail on a filesystem without rename flags");
+
+		assert_eq!(result.code.as_deref(), Some("cleanup_pending"));
+		assert!(result.recovery_path.is_some(), "detach must retain recovery evidence");
+		assert!(
+			!temporary.0.join("staged-tree").exists(),
+			"canonical tree name removed after detach"
+		);
+	}
+
+	/// `replace_managed` reaches `RENAME_EXCHANGE` directly. Without a fallback
+	/// every managed replacement fails on a mount that implements no rename
+	/// flags, and that is an ordinary in-session path — the session transcript
+	/// rewrite (`#persistPatch` / `#rewriteFile`) goes through it — not a
+	/// migration-only one.
+	#[test]
+	fn managed_replace_falls_back_to_linkat_when_rename_flags_unsupported() {
+		for unsupported in [libc::EINVAL, libc::ENOSYS] {
+			let temporary = TempDir::new();
+			let root = temporary.root();
+			let original = b"original-transcript";
+			let identity = managed_file(&root, "transcript", original);
+			let replacement = b"rewritten-transcript";
+
+			// Force the renameat2(RENAME_EXCHANGE) primitive to report the flag as
+			// unavailable, exactly as an NFS mount does with EINVAL.
+			set_retained_publish_faults([RetainedPublishFault::Rename(unsupported)]);
+			let result = replace_managed(
+				&root,
+				None,
+				"transcript",
+				replacement,
+				&identity.dev,
+				&identity.ino,
+				&identity.size,
+				&identity.mtime_ns,
+				&identity.ctime_ns,
+				&file_digest(original),
+			)
+			.expect("replacement must not fail on a filesystem without rename flags");
+
+			assert!(result.ok, "link fallback must publish (errno {unsupported}): {:?}", result.code);
+			assert_eq!(
+				fs::read(temporary.0.join("transcript")).expect("published transcript"),
+				replacement,
+				"the destination must carry the replacement contents"
+			);
+			let published = fs::metadata(temporary.0.join("transcript")).expect("published metadata");
+			assert_eq!(
+				std::os::unix::fs::MetadataExt::nlink(&published),
+				1,
+				"the published replacement is single-linked, matching an exchange"
+			);
+
+			// The exchange leaves the displaced object under the candidate name as
+			// rollback evidence; the fallback must reach the same terminal state.
+			let displaced = fs::read_dir(temporary.0.join(".gjc-recovery"))
+				.expect("recovery directory")
+				.filter_map(Result::ok)
+				.find(|entry| {
+					entry
+						.file_name()
+						.to_string_lossy()
+						.starts_with(".gjc-managed-replace-")
+				})
+				.expect("displaced object retained under the candidate name");
+			assert_eq!(
+				fs::read(displaced.path()).expect("displaced contents"),
+				original,
+				"the displaced object must still hold the replaced contents"
+			);
+			assert_eq!(
+				std::os::unix::fs::MetadataExt::nlink(
+					&fs::metadata(displaced.path()).expect("displaced metadata")
+				),
+				1,
+				"the displaced object is single-linked, matching an exchange"
+			);
+			// The fallback's temporary name is an implementation detail and must not
+			// survive a successful replacement.
+			assert!(
+				!fs::read_dir(temporary.0.join(".gjc-recovery"))
+					.expect("recovery directory")
+					.filter_map(Result::ok)
+					.any(|entry| entry
+						.file_name()
+						.to_string_lossy()
+						.starts_with(".gjc-managed-exchange-")),
+				"no temporary exchange name may survive"
+			);
+		}
+	}
+
+	/// The ordering that makes the fallback safe on NFS, pinned
+	/// deterministically on any filesystem: the displaced object must already
+	/// be reachable through the rollback link when authority is released, and
+	/// the destination must not yet have been replaced.
+	#[test]
+	fn replacement_fallback_releases_authority_between_rollback_link_and_rename() {
+		let temporary = TempDir::new();
+		let parent = temporary.root();
+		fs::write(temporary.0.join("destination"), b"old").expect("seed destination");
+		fs::write(temporary.0.join("candidate"), b"new").expect("seed candidate");
+		let candidate_name = CString::new("candidate").expect("candidate name");
+		let destination_name = CString::new("destination").expect("destination name");
+
+		let observed = Cell::new(None);
+		exchange_through_link(&parent, &candidate_name, &parent, &destination_name, || {
+			let rollback = fs::read_dir(&temporary.0)
+				.expect("read parent")
+				.filter_map(Result::ok)
+				.any(|entry| {
+					entry
+						.file_name()
+						.to_string_lossy()
+						.starts_with(".gjc-managed-exchange-")
+				});
+			let destination =
+				fs::read(temporary.0.join("destination")).expect("destination still present");
+			observed.set(Some((rollback, destination == b"old")));
+		})
+		.expect("link exchange");
+
+		assert_eq!(
+			observed.get(),
+			Some((true, true)),
+			"authority must be released once the displaced object has a rollback link and before the \
+			 destination is replaced"
+		);
+		assert_eq!(fs::read(temporary.0.join("destination")).expect("destination"), b"new");
+		assert_eq!(fs::read(temporary.0.join("candidate")).expect("candidate"), b"old");
+	}
+
+	/// The crash boundary. A three-step emulation is only equivalent to
+	/// `RENAME_EXCHANGE` if the displaced object can never lose its last name,
+	/// so the rollback link must be durable *before* anything is displaced.
+	/// When that durability cannot be proven the call must fail closed with
+	/// nothing published, rather than commit a replacement whose rollback
+	/// evidence might never reach the disk.
+	#[test]
+	fn replacement_fallback_fails_closed_when_the_rollback_link_is_not_durable() {
+		let temporary = TempDir::new();
+		let root = temporary.root();
+		let original = b"original-transcript";
+		let identity = managed_file(&root, "transcript", original);
+
+		// Force the exchange primitive to report the flag as unavailable, then fail
+		// the rollback link's parent sync — the boundary between the link and the
+		// destructive rename.
+		set_retained_publish_faults([
+			RetainedPublishFault::Rename(libc::EINVAL),
+			RetainedPublishFault::Sync(Some(libc::EIO)),
+		]);
+		let failure = match replace_managed(
+			&root,
+			None,
+			"transcript",
+			b"rewritten-transcript",
+			&identity.dev,
+			&identity.ino,
+			&identity.size,
+			&identity.mtime_ns,
+			&identity.ctime_ns,
+			&file_digest(original),
+		) {
+			Ok(_) => panic!("an unprovable rollback link must not publish"),
+			Err(code) => code,
+		};
+
+		assert_eq!(failure, "durability_not_provable");
+		assert_eq!(
+			fs::read(temporary.0.join("transcript")).expect("destination"),
+			original,
+			"nothing may be displaced when the rollback link is not durable"
+		);
+		assert!(
+			!fs::read_dir(temporary.0.join(".gjc-recovery"))
+				.expect("recovery directory")
+				.filter_map(Result::ok)
+				.any(|entry| entry
+					.file_name()
+					.to_string_lossy()
+					.starts_with(".gjc-managed-exchange-")),
+			"the unprovable rollback link must be removed"
+		);
+	}
+
+	/// Cross-parent post-publication sync failures retain their phase-specific
+	/// classification and never discard the displaced recovery evidence.
+	#[test]
+	fn replacement_fallback_classifies_cross_parent_sync_failures() {
+		let temporary = TempDir::new();
+		let source_parent_path = temporary.0.join("recovery");
+		let destination_parent_path = temporary.0.join("destination");
+		fs::create_dir_all(&source_parent_path).expect("create recovery parent");
+		fs::create_dir_all(&destination_parent_path).expect("create destination parent");
+		fs::write(source_parent_path.join("candidate"), b"new").expect("seed candidate");
+		fs::write(destination_parent_path.join("destination"), b"old").expect("seed destination");
+		let source_parent = File::open(&source_parent_path).expect("open recovery parent");
+		let destination_parent =
+			File::open(&destination_parent_path).expect("open destination parent");
+		let candidate_name = CString::new("candidate").expect("candidate name");
+		let destination_name = CString::new("destination").expect("destination name");
+
+		set_retained_publish_faults([
+			RetainedPublishFault::Sync(None),
+			RetainedPublishFault::Sync(Some(libc::EIO)),
+		]);
+		let destination_error = exchange_through_link(
+			&source_parent,
+			&candidate_name,
+			&destination_parent,
+			&destination_name,
+			|| {},
+		)
+		.expect_err("destination-parent sync failure must be reported");
+		assert_eq!(destination_error, "destination_parent_sync_failed");
+		assert_eq!(fs::read(destination_parent_path.join("destination")).unwrap(), b"new");
+		assert!(
+			fs::read_dir(&source_parent_path)
+				.unwrap()
+				.filter_map(Result::ok)
+				.any(|entry| entry
+					.file_name()
+					.to_string_lossy()
+					.starts_with(".gjc-managed-exchange-")),
+			"rollback evidence must remain after destination sync failure"
+		);
+
+		fs::write(source_parent_path.join("candidate"), b"new").expect("reseeding candidate");
+		fs::write(destination_parent_path.join("destination"), b"old")
+			.expect("reseeding destination");
+		set_retained_publish_faults([
+			RetainedPublishFault::Sync(None),
+			RetainedPublishFault::Sync(None),
+			RetainedPublishFault::Sync(Some(libc::EACCES)),
+		]);
+		let candidate_error = exchange_through_link(
+			&source_parent,
+			&candidate_name,
+			&destination_parent,
+			&destination_name,
+			|| {},
+		)
+		.expect_err("candidate-parent sync failure must be reported");
+		assert_eq!(candidate_error, "candidate_parent_sync_failed");
+		assert_eq!(fs::read(destination_parent_path.join("destination")).unwrap(), b"new");
+		assert_eq!(fs::read(source_parent_path.join("candidate")).unwrap(), b"old");
+	}
+
+	/// A replacement that cannot publish must leave the namespace exactly as it
+	/// was found, including the rollback link the fallback created.
+	#[test]
+	fn replacement_fallback_removes_its_rollback_link_when_the_rename_fails() {
+		let temporary = TempDir::new();
+		let parent = temporary.root();
+		fs::write(temporary.0.join("destination"), b"old").expect("seed destination");
+		let candidate_name = CString::new("absent-candidate").expect("candidate name");
+		let destination_name = CString::new("destination").expect("destination name");
+
+		exchange_through_link(&parent, &candidate_name, &parent, &destination_name, || {})
+			.expect_err("replacing from an absent candidate must fail");
+
+		assert_eq!(
+			fs::read(temporary.0.join("destination")).expect("destination"),
+			b"old",
+			"a failed replacement must leave the destination untouched"
+		);
+		assert!(
+			!fs::read_dir(&temporary.0)
+				.expect("read parent")
+				.filter_map(Result::ok)
+				.any(|entry| entry
+					.file_name()
+					.to_string_lossy()
+					.starts_with(".gjc-managed-exchange-")),
+			"a failed replacement must not leave its rollback link behind"
 		);
 	}
 }

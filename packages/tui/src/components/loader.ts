@@ -1,21 +1,42 @@
 import { type AnimationRegistration, registerAnimationCallback } from "../animation-scheduler";
+import { isRemoteTerminalSession, isUnderTerminalMultiplexer } from "../terminal-capabilities";
 import type { TUI } from "../tui";
 import { sliceByColumn, visibleWidth } from "../utils";
 import { Text } from "./text";
 
 const SPINNER_ADVANCE_MS = 80;
 
+/**
+ * Compatibility options for existing loader call sites.
+ *
+ * @deprecated `timeDependentColor` preserves the historical smooth-animation
+ * contract: direct local terminals reevaluate colorizers at 60 fps, while
+ * remote or multiplexed terminals stay on the shared 80 ms cadence to avoid
+ * output churn. The field remains accepted for downstream callers while they
+ * migrate to an explicit animation policy.
+ */
 export interface LoaderOptions {
 	timeDependentColor?: boolean;
+}
+
+const SMOOTH_ANIMATION_MS = 16;
+
+function resolveAnimationCadence(options: LoaderOptions): 16 | 80 {
+	if (options.timeDependentColor !== true) return SPINNER_ADVANCE_MS;
+	return isRemoteTerminalSession() || isUnderTerminalMultiplexer() ? SPINNER_ADVANCE_MS : SMOOTH_ANIMATION_MS;
 }
 
 /** Test-only performance counters for advisory baseline tests. */
 export const __loaderPerfCounters = {
 	liveIntervals: 0,
 	startedIntervals: 0,
+	callbackInvocations: 0,
+	renderRequests: 0,
 	reset(): void {
 		this.liveIntervals = 0;
 		this.startedIntervals = 0;
+		this.callbackInvocations = 0;
+		this.renderRequests = 0;
 	},
 };
 
@@ -26,7 +47,6 @@ export class Loader extends Text {
 	#ui: TUI | null = null;
 	#lastSpinnerTick = 0;
 	#lastDisplayed?: string;
-	#timeDependentColor: boolean;
 
 	constructor(
 		ui: TUI,
@@ -34,11 +54,10 @@ export class Loader extends Text {
 		private messageColorFn: (str: string) => string,
 		private message: string = "Loading...",
 		spinnerFrames?: string[],
-		options: LoaderOptions = {},
+		private options: LoaderOptions = {},
 	) {
 		super("", 1, 0);
 		this.#ui = ui;
-		this.#timeDependentColor = options.timeDependentColor ?? false;
 		if (spinnerFrames && spinnerFrames.length > 0) {
 			this.#frames = spinnerFrames;
 		}
@@ -62,16 +81,14 @@ export class Loader extends Text {
 		this.#updateDisplay();
 		__loaderPerfCounters.liveIntervals += 1;
 		__loaderPerfCounters.startedIntervals += 1;
-		this.#animation = registerAnimationCallback(
-			now => {
-				if (now - this.#lastSpinnerTick >= SPINNER_ADVANCE_MS) {
-					this.#currentFrame = (this.#currentFrame + 1) % this.#frames.length;
-					this.#lastSpinnerTick = now;
-				}
-				this.#updateDisplay();
-			},
-			this.#timeDependentColor ? 16 : 80,
-		);
+		this.#animation = registerAnimationCallback(now => {
+			__loaderPerfCounters.callbackInvocations += 1;
+			if (now - this.#lastSpinnerTick >= SPINNER_ADVANCE_MS) {
+				this.#currentFrame = (this.#currentFrame + 1) % this.#frames.length;
+				this.#lastSpinnerTick = now;
+			}
+			this.#updateDisplay();
+		}, resolveAnimationCadence(this.options));
 	}
 
 	stop() {
@@ -97,6 +114,7 @@ export class Loader extends Text {
 		if (next === this.#lastDisplayed) return;
 		this.#lastDisplayed = next;
 		this.setText(next);
+		__loaderPerfCounters.renderRequests += 1;
 		this.#ui?.requestRender(false, "loader");
 	}
 }

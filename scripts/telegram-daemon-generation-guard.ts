@@ -8,13 +8,18 @@ import * as path from "node:path";
 
 const root = path.join(import.meta.dir, "..");
 const SHA = /^[0-9a-f]{40}$/i;
-export const GUARD_CONTRACT_VERSION = 26;
+export const GUARD_CONTRACT_VERSION = 43;
 const telegramContract = "packages/coding-agent/src/sdk/bus/telegram-daemon-contract.ts";
 const telegramDaemon = "packages/coding-agent/src/sdk/bus/telegram-daemon.ts";
 const telegramControl = "packages/coding-agent/src/sdk/bus/telegram-daemon-control.ts";
+const telegramReference = "packages/coding-agent/src/sdk/bus/telegram-reference.ts";
+const richRender = "packages/coding-agent/src/sdk/bus/rich-render.ts";
+const sdkHost = "packages/coding-agent/src/sdk/host/host.ts";
 
 const chatControl = "packages/coding-agent/src/sdk/bus/chat-daemon-control.ts";
 const chatCli = "packages/coding-agent/src/sdk/bus/chat-daemon-cli.ts";
+const chatRuntime = "packages/coding-agent/src/sdk/bus/chat-daemon-runtime.ts";
+const sdkDiscovery = "packages/coding-agent/src/sdk/client/discovery.ts";
 const config = "packages/coding-agent/src/sdk/bus/config.ts";
 const guardScript = "scripts/telegram-daemon-generation-guard.ts";
 const manifestScript = "scripts/telegram-daemon-generation-manifest.json";
@@ -36,6 +41,8 @@ const nativeAuthorityDeclarations = {
 	],
 	"crates/pi-natives/src/ps.rs": ["napi impl Process"],
 	"crates/pi-shell/src/process.rs": ["impl Process", "kill_process_group", "current_descendant_pids", "add_new_descendants"],
+	"crates/pi-shell/src/shell.rs": ["impl Shell", "run_shell_session", "run_shell_oneshot", "run_shell_oneshot_streams", "run_shell_command", "run_shell_command_streams", "impl builtins::Command for TimeoutCommand"],
+	"crates/brush-core-vendored/src/commands.rs": ["execute_external_command"],
 	"packages/natives/native/index.d.ts": ["Process"],
 	"packages/coding-agent/src/sdk/broker/process-incarnation.ts": ["isProcessIncarnation", "processIncarnation"],
 } as const;
@@ -57,11 +64,12 @@ type GuardManifest = {
 
 
 /**
- * This is a deliberately small, exact lifecycle contract. Do not include session
- * endpoint or provider generations: they do not replace daemon owners.
+ * This is a deliberately small, exact lifecycle contract. Per-session endpoint
+ * generation counters remain separate, while daemon-owned endpoint discovery is
+ * protected because old owners must be replaced when that admission path changes.
  */
 export const protectedInventory = manifest.inventory as Inventory;
-const PROTECTED_INVENTORY_SHA256 = "9541718e76791cc6c19ed9870a8a0bc60a96341eb658b2307588f0146389a131";
+const PROTECTED_INVENTORY_SHA256 = "bef21d66aa1784d3dc93df813f98074773c116eac8cd4c4ec2adbed1aec6432c";
 
 /** Transition-marker generations fence every daemon lifecycle mutation. */
 export const TRANSITION_TOKEN_PROTECTED_DECLARATIONS = [
@@ -103,15 +111,103 @@ export const TELEGRAM_PROCESS_AUTHORITY_PROTECTED_DECLARATIONS = ["DaemonProcess
 
 /** Telegram authentication and lifecycle control must remain generation-fenced. */
 export const TELEGRAM_LIFECYCLE_PROTECTED_DECLARATIONS = ["validBotToken", "requestStop", "startLifecycleControl", "run"] as const;
+/** Callback receipt activation and revocation define durable reply authority. */
+export const TELEGRAM_CALLBACK_RECEIPT_PROTECTED_DECLARATIONS = [
+	"dropSession",
+	"TelegramUpdatePoller",
+	"TelegramBotTransport",
+	"fetchWithRetry",
+	"isTransientNetworkError",
+	"TelegramEffectSupervisor",
+	"callBotApi",
+	"createBotApiAdapter",
+	"createBotApiPipeline",
+	"writeJsonAtomic",
+	"syncTelegramFile",
+	"syncTelegramDirectory",
+	"isUnsupportedTelegramDirectoryBarrier",
+	"TelegramNotificationDaemon.#authorizeLease",
+	"TelegramNotificationDaemon.#leaseAllows",
+	"TelegramNotificationDaemon.#leaseTokenAllows",
+	"TelegramNotificationDaemon.#socketLease",
+	"TelegramNotificationDaemon.#revokeCallbackAlias",
+	"TelegramNotificationDaemon.#stageCallbackActivation",
+	"topicAuthorityLeaseFromRegistry",
+	"topicLeaseIsCurrent",
+	"reissuePendingAction",
+] as const;
 
 /** Chat daemon CLI helpers determine whether a prior owner can be replaced. */
 export const CHAT_CLI_PROTECTED_DECLARATIONS = ["defaultPidAlive", "loadConfig", "ownerPid"] as const;
 
 /** Provider credentials configure daemon ownership and must stay family-scoped. */
 export const CHAT_CONFIG_PROTECTED_DECLARATIONS = {
-	discord: ["getNotificationConfig", "notificationConfigFromFile", "isDiscordConfigured", "tokenFingerprint"],
-	slack: ["getNotificationConfig", "notificationConfigFromFile", "isSlackConfigured", "tokenFingerprint"],
+	discord: [
+		"getNotificationConfig",
+		"notificationConfigFromFile",
+		"resolveNotificationProvider",
+		"isDiscordComplete",
+		"isProviderEffectivelyEnabled",
+		"tokenFingerprint",
+	],
+	slack: [
+		"getNotificationConfig",
+		"notificationConfigFromFile",
+		"resolveNotificationProvider",
+		"isSlackComplete",
+		"isProviderEffectivelyEnabled",
+		"tokenFingerprint",
+	],
 } as const;
+
+/** Chat-only endpoint isolation must replace daemon owners that cannot discover it. */
+export const CHAT_ENDPOINT_DISCOVERY_PROTECTED_DECLARATIONS = {
+	[chatRuntime]: ["attach"],
+	[sdkDiscovery]: ["readSdkSessionEndpoint"],
+} as const;
+
+/** Telegram tool-activity defaults and delivery admission must stay generation-fenced. */
+export const TELEGRAM_TOOL_ACTIVITY_PROTECTED_DECLARATIONS = {
+	[config]: ["parseNotificationSettingsSnapshot"],
+	[sdkHost]: ["TOOL_ACTIVITY_CAPABILITY"],
+	[telegramDaemon]: [
+		"TOOL_ACTIVITY_CAPABILITY",
+		"LEGACY_TOOL_ACTIVITY_CAPABILITY",
+		"negotiateToolActivityCapability",
+		"toolActivityOwner",
+		"toolActivityAuthorityIsCurrent",
+		"toolActivityDeliveryIsCurrent",
+		"handleSessionMessage",
+		"processTelegramUpdate",
+		"createSessionRouter",
+	],
+} as const;
+/** Callback recovery receipt and routing primitives must remain generation-fenced. */
+export const TELEGRAM_CALLBACK_RECOVERY_PROTECTED_DECLARATIONS = {
+	[telegramDaemon]: [
+		"handleTelegramUpdate",
+		"loadAliases",
+		"persistAliases",
+		"revokeCallbackAliases",
+	],
+	[telegramReference]: ["createAliasTable", "routeInboundUpdate"],
+	[richRender]: ["deliverRichActionWithFallback"],
+} as const;
+
+function validateTelegramCallbackRecoveryInventory(inventory: Inventory): void {
+	for (const [file, required] of Object.entries(TELEGRAM_CALLBACK_RECOVERY_PROTECTED_DECLARATIONS)) {
+		const symbols = inventory.telegram[file];
+		if (!symbols || required.some(symbol => !symbols.includes(symbol)))
+			throw new Error("telegram-daemon-generation-guard: Telegram callback recovery primitives must be protected by the Telegram generation contract");
+	}
+}
+
+/** Shutdown must fence new session work and await admitted handlers before durable release. */
+export const TELEGRAM_SHUTDOWN_DRAIN_PROTECTED_DECLARATIONS = [
+	"TelegramEffectSupervisor",
+	"handleSessionMessage",
+	"run",
+] as const;
 
 /** Chat credential, provenance, and persistence are shared takeover authority. */
 export const CHAT_OWNER_LOCK_PROTECTED_DECLARATIONS = [
@@ -159,6 +255,27 @@ function validateChatConfigInventory(inventory: Inventory): void {
 	}
 }
 
+function validateChatEndpointDiscoveryInventory(inventory: Inventory): void {
+	for (const family of ["discord", "slack"] as const) {
+		for (const [file, required] of Object.entries(CHAT_ENDPOINT_DISCOVERY_PROTECTED_DECLARATIONS)) {
+			const symbols = inventory[family][file];
+			if (!symbols || required.some(symbol => !symbols.includes(symbol))) {
+				throw new Error(
+					`telegram-daemon-generation-guard: isolated chat endpoint discovery must be protected by the ${family} generation contract`,
+				);
+			}
+		}
+	}
+}
+
+function validateTelegramToolActivityInventory(inventory: Inventory): void {
+	for (const [file, required] of Object.entries(TELEGRAM_TOOL_ACTIVITY_PROTECTED_DECLARATIONS)) {
+		const symbols = inventory.telegram[file];
+		if (!symbols || required.some(symbol => !symbols.includes(symbol)))
+			throw new Error("telegram-daemon-generation-guard: Telegram tool-activity configuration and delivery policy must be protected by the Telegram generation contract");
+	}
+}
+
 function validateTelegramOwnerLockInventory(inventory: Inventory): void {
 	const symbols = inventory.telegram[telegramDaemon];
 	if (!symbols || TELEGRAM_OWNER_LOCK_PROTECTED_DECLARATIONS.some(symbol => !symbols.includes(symbol)))
@@ -170,6 +287,18 @@ function validateTelegramLifecycleInventory(inventory: Inventory): void {
 	if (!symbols || TELEGRAM_LIFECYCLE_PROTECTED_DECLARATIONS.some(symbol => !symbols.includes(symbol)))
 		throw new Error("telegram-daemon-generation-guard: Telegram authentication and lifecycle primitives must be protected by the Telegram generation contract");
 }
+function validateTelegramShutdownDrainInventory(inventory: Inventory): void {
+	const symbols = inventory.telegram[telegramDaemon];
+	if (!symbols || TELEGRAM_SHUTDOWN_DRAIN_PROTECTED_DECLARATIONS.some(symbol => !symbols.includes(symbol)))
+		throw new Error("telegram-daemon-generation-guard: Telegram shutdown admission and durable drain primitives must be protected by the Telegram generation contract");
+}
+
+function validateTelegramCallbackReceiptInventory(inventory: Inventory): void {
+	const symbols = inventory.telegram[telegramDaemon];
+	if (!symbols || TELEGRAM_CALLBACK_RECEIPT_PROTECTED_DECLARATIONS.some(symbol => !symbols.includes(symbol)))
+		throw new Error("telegram-daemon-generation-guard: Telegram callback receipt authority primitives must be protected by the Telegram generation contract");
+}
+
 
 function validateTransitionTokenInventory(inventory: Inventory): void {
 	const symbols = inventory.telegram["packages/coding-agent/src/sdk/bus/notification-service.ts"];
@@ -191,7 +320,7 @@ function inventoryHash(inventory: Inventory): string {
 }
 
 export function validateInventory(inventory: Inventory = protectedInventory): void {
-	if (GUARD_CONTRACT_VERSION !== 26) throw new Error("telegram-daemon-generation-guard: unsupported guard contract version");
+	if (GUARD_CONTRACT_VERSION < 32) throw new Error("telegram-daemon-generation-guard: unsupported guard contract version");
 	for (const [family, files] of Object.entries(inventory)) {
 		for (const [file, symbols] of Object.entries(files)) {
 			if (!file || symbols.length === 0 || new Set(symbols).size !== symbols.length)
@@ -202,9 +331,14 @@ export function validateInventory(inventory: Inventory = protectedInventory): vo
 	validateTelegramOwnerLockInventory(inventory);
 	validateTelegramLifecycleInventory(inventory);
 	validateTelegramProcessAuthorityInventory(inventory);
+	validateTelegramCallbackReceiptInventory(inventory);
 	validateChatOwnerLockInventory(inventory);
 	validateChatCliInventory(inventory);
 	validateChatConfigInventory(inventory);
+	validateChatEndpointDiscoveryInventory(inventory);
+	validateTelegramToolActivityInventory(inventory);
+	validateTelegramCallbackRecoveryInventory(inventory);
+	validateTelegramShutdownDrainInventory(inventory);
 }
 
 export function validateManifest(value: unknown = manifest): asserts value is GuardManifest {
@@ -290,8 +424,16 @@ export async function validateCurrentTreeManifest(): Promise<void> {
 	if (manifest.contractVersion !== actual.contractVersion)
 		throw new Error("telegram-daemon-generation-guard: semantic manifest contract version does not match the current guard");
 	const expected = JSON.stringify(Object.entries(manifest.digests).sort());
-	if (JSON.stringify(Object.entries(actual.digests).sort()) !== expected)
-		throw new Error("telegram-daemon-generation-guard: semantic manifest declaration digests do not byte-match the current tree");
+	const generated = JSON.stringify(Object.entries(actual.digests).sort());
+	if (generated !== expected) {
+		const expectedDigests = Object.fromEntries(Object.entries(manifest.digests));
+		const mismatches = Object.keys(actual.digests)
+			.filter(key => actual.digests[key] !== expectedDigests[key])
+			.map(key => `${key}: manifest=${expectedDigests[key] ?? "<missing>"} actual=${actual.digests[key]}`);
+		throw new Error(
+			`telegram-daemon-generation-guard: semantic manifest declaration digests do not byte-match the current tree (${mismatches.join(", ")})`,
+		);
+	}
 	if (JSON.stringify(actual.nativeAuthoritySha256) !== JSON.stringify(manifest.nativeAuthoritySha256))
 		throw new Error("telegram-daemon-generation-guard: native authority digests do not byte-match the current tree");
 }
@@ -369,6 +511,7 @@ export function assertGuardAuthority(input: {
 function nodeName(node: any): string | undefined {
 	if (node?.id?.type === "Identifier") return node.id.name;
 	if (node?.key?.type === "Identifier") return node.key.name;
+	if (node?.key?.type === "PrivateName" && node.key.id?.type === "Identifier") return `#${node.key.id.name}`;
 	if (node?.key?.type === "StringLiteral") return node.key.value;
 }
 
@@ -398,6 +541,13 @@ function declarationNodes(node: any, name: string, found: any[] = []): any[] {
 }
 
 function resolveDeclaration(node: any, name: string): { node?: any; ambiguous: boolean } {
+	const [className, privateMethod] = name.split(".#");
+	if (privateMethod) {
+		const classes = declarationNodes(node, className);
+		if (classes.length !== 1 || classes[0]?.type !== "ClassDeclaration") return { ambiguous: classes.length > 1 };
+		const methods = classes[0].body?.body?.filter((member: any) => nodeName(member) === `#${privateMethod}`) ?? [];
+		return methods.length === 1 ? { node: methods[0], ambiguous: false } : { ambiguous: methods.length > 1 };
+	}
 	const [rootName, property] = name.split(".");
 	const matches = declarationNodes(node, rootName);
 	// More than one match is ambiguous and must fail closed as malformed; zero is
@@ -425,6 +575,7 @@ export function declaration(source: string, name: string): string | undefined {
 const AST_METADATA = new Set(["start", "end", "loc", "comments", "leadingComments", "trailingComments", "innerComments", "extra"]);
 
 function canonicalAst(value: unknown): unknown {
+	if (typeof value === "bigint") return `${value}n`;
 	if (Array.isArray(value)) return value.map(canonicalAst);
 	if (!value || typeof value !== "object") return value;
 	return Object.fromEntries(
@@ -471,6 +622,17 @@ function manifestPolicySignature(source: string | undefined): string | undefined
 		return undefined;
 	}
 }
+function manifestNativeAuthoritySources(source: string | undefined): Set<string> {
+	try {
+		const parsed = source ? JSON.parse(source) : undefined;
+		const native = parsed?.nativeAuthoritySha256;
+		if (!native || typeof native !== "object" || Array.isArray(native)) return new Set();
+		return new Set(Object.keys(native));
+	} catch {
+		return new Set();
+	}
+}
+
 
 function malformedDeclaration(): Declaration {
 	return { text: "<malformed>", canonical: "<malformed>", valid: false };
@@ -548,7 +710,7 @@ export function isLegacyBootstrapBase(base: ReadonlyMap<string, string | undefin
 			if (declaration?.type !== "VariableDeclaration") return [];
 			return declaration.declarations.map((item: any) => item.id?.name).filter((name: unknown): name is string => typeof name === "string");
 		});
-		if (exportedNames.sort().join(",") !== "DAEMON_GENERATION,NOTIFICATION_PROTOCOL_VERSION,SERVING_EPOCH") return false;
+		if (exportedNames.sort().join(",") !== "DAEMON_GENERATION,NOTIFICATION_PROTOCOL_VERSION") return false;
 		const protocol = declarationNode(program, "NOTIFICATION_PROTOCOL_VERSION");
 		const generation = declarationNode(program, "DAEMON_GENERATION");
 		const protocolDeclaration = protocol?.declarations?.find((item: any) => item.id?.name === "NOTIFICATION_PROTOCOL_VERSION");
@@ -675,11 +837,29 @@ function rustDeclaration(source: string, selector: string): Declaration {
 	const lexical = rustLexicalSource(source);
 	if (!lexical.valid) return malformedDeclaration();
 	const declarationName = selector;
+	if (declarationName.startsWith("const ")) {
+		const name = declarationName.slice("const ".length);
+		const pattern = new RegExp(`(?:#\\[[^\\]]+\\]\\s*)*(?:pub(?:\\([^)]*\\))?\\s+)?const\\s+${name}\\b`, "g");
+		const matches = [...lexical.code.matchAll(pattern)];
+		if (matches.length === 0) return undefined;
+		const declarations = matches.map(match => {
+			const start = match.index!;
+			const end = lexical.code.indexOf(";", start);
+			return end < 0 ? undefined : source.slice(start, end + 1);
+		});
+		if (declarations.some(declaration => declaration === undefined)) return malformedDeclaration();
+		const text = declarations.join("\n");
+		return { text, canonical: text.replace(/\/\*[\s\S]*?\*\/|\/\/.*|\s+/g, ""), valid: true };
+	}
 	const prefix = declarationName === "napi impl Process"
 		? "#\\[napi\\](?:\\s*#\\[[^\\]]+\\])*\\s*impl\\s+Process\\b"
 		: declarationName === "impl Process"
 			? "impl\\s+Process\\b"
-			: `(?:#\\[[^\\]]+\\]\\s*)*pub(?:\\(super\\))?\\s+(?:async\\s+)?fn\\s+${declarationName}\\b`;
+			: declarationName.startsWith("impl ")
+				? declarationName.replaceAll(" ", "\\s+")
+				: declarationName.startsWith("trait ")
+					? `(?:#\\[[^\\]]+\\]\\s*)*pub\\s+trait\\s+${declarationName.slice("trait ".length)}\\b`
+					: `(?:#\\[[^\\]]+\\]\\s*)*(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?fn\\s+${declarationName}\\b`;
 	const pattern = new RegExp(prefix, "g");
 	const matches = [...lexical.code.matchAll(pattern)];
 	if (matches.length === 0) return undefined;
@@ -688,7 +868,7 @@ function rustDeclaration(source: string, selector: string): Declaration {
 		const start = match.index!;
 		const headerEnd = start + match[0].length;
 		const open = lexical.code.indexOf("{", headerEnd);
-		if (open === -1 || /;|\b(?:pub\s+)?(?:async\s+)?fn\b|\bimpl\b/.test(lexical.code.slice(headerEnd, open))) return malformedDeclaration();
+		if (open === -1 || /;|\b(?:pub\s+)?(?:async\s+)?fn\b/.test(lexical.code.slice(headerEnd, open))) return malformedDeclaration();
 		let depth = 0;
 		let end = -1;
 		for (let index = open; index < lexical.code.length; index++) {
@@ -760,12 +940,24 @@ export function evaluate(
 			}
 		}
 	}
+	const baseGuardContractVersion = guardContractVersion(base.get(guardScript));
+	const headGuardContractVersion = guardContractVersion(head.get(guardScript));
+	const guardContractBumped =
+		headGuardContractVersion !== undefined &&
+		headGuardContractVersion > (baseGuardContractVersion ?? Number.POSITIVE_INFINITY);
+	const baseNativeAuthoritySources = manifestNativeAuthoritySources(base.get(manifestScript));
+	const headNativeAuthoritySources = manifestNativeAuthoritySources(head.get(manifestScript));
+	const hasManifestNativeAuthority = baseNativeAuthoritySources.size > 0 || headNativeAuthoritySources.size > 0;
 	for (const source of nativeAuthoritySources) {
 		if (!base.has(source) && !head.has(source)) continue;
 		const before = nativeAuthorityDigest(source, base.get(source));
 		const after = nativeAuthorityDigest(source, head.get(source));
 		const label = `${source}:authority`;
-		if (!before || !after) malformedDeclarations.push(label);
+		if (
+			((!bootstrapping && !guardContractBumped && (!hasManifestNativeAuthority || baseNativeAuthoritySources.has(source))) && !before) ||
+			((!hasManifestNativeAuthority || headNativeAuthoritySources.has(source)) && !after)
+		)
+			malformedDeclarations.push(label);
 		if (before !== after) for (const family of nativeAuthorityFamilies[source]) protectedChanges.push(`${family}:${label}`);
 	}
 	const nativeAuthorityChanges = protectedChanges.filter(change => change.endsWith(":authority"));
@@ -773,11 +965,6 @@ export function evaluate(
 		!bootstrapping &&
 		(canonicalSource(base.get(guardScript) ?? "") !== canonicalSource(head.get(guardScript) ?? "") ||
 			manifestPolicySignature(base.get(manifestScript)) !== manifestPolicySignature(head.get(manifestScript)));
-	const baseGuardContractVersion = guardContractVersion(base.get(guardScript));
-	const headGuardContractVersion = guardContractVersion(head.get(guardScript));
-	const guardContractBumped =
-		headGuardContractVersion !== undefined &&
-		(headGuardContractVersion > (baseGuardContractVersion ?? Number.POSITIVE_INFINITY));
 	const oldTelegramGeneration = generation(base.get(telegramContract));
 	const newTelegramGeneration = generation(head.get(telegramContract));
 	const telegramGenerationBumped =

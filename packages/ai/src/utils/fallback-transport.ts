@@ -1,9 +1,29 @@
 export type FallbackTriggerClass = "rate_limit" | "quota" | "auth" | "server" | "unknown" | "other";
 
+/**
+ * Refinement of an `auth` trigger.
+ *
+ * The transport deliberately collapses HTTP 401 and 403 into a single `auth`
+ * class, but the two demand opposite handling: a credential problem may be
+ * recoverable by trying a different stored credential, whereas a plain
+ * `forbidden` is an authorization or configuration defect that rotation would
+ * only hide — it would cycle and block every otherwise-healthy credential.
+ *
+ * This is a refinement rather than a new {@link FallbackTriggerClass} member so
+ * every existing `trigger.class === "auth"` consumer keeps compiling and keeps
+ * its current behavior until it explicitly opts into the distinction.
+ */
+export type AuthDisposition = "credential" | "forbidden";
+
 export interface FallbackTrigger {
 	class: FallbackTriggerClass;
 	retryAfterMs?: number;
+	/** Present only when `class === "auth"`. */
+	authDisposition?: AuthDisposition;
 }
+
+/** Stable code for streams that time out before producing semantic progress. */
+export const STREAM_FIRST_EVENT_TIMEOUT_PROVIDER_CODE = "stream_first_event_timeout";
 
 export type TransportHeaders = Headers | Record<string, string | undefined>;
 
@@ -155,7 +175,13 @@ export function transportFailureFacts(
 		finiteStatus(propertyOf(value, "status")) ??
 		finiteStatus(propertyOf(response, "status")) ??
 		finiteStatus(propertyOf(capturedResponse, "status"));
-	const anthropicErrorType = stringValue(propertyOf(nestedError, "type")) ?? stringValue(propertyOf(value, "type"));
+	// `anthropicErrorType` is also read from its own key so re-normalizing an
+	// already-built facts object (which consumers do deliberately) preserves it
+	// instead of silently dropping the Anthropic code on the second pass.
+	const anthropicErrorType =
+		stringValue(propertyOf(nestedError, "type")) ??
+		stringValue(propertyOf(value, "anthropicErrorType")) ??
+		stringValue(propertyOf(value, "type"));
 	const openaiErrorCode =
 		stringValue(propertyOf(value, "openaiErrorCode")) ?? stringValue(propertyOf(nestedError, "code"));
 	const providerCode =
@@ -185,7 +211,8 @@ export function transportFailureFacts(
 		!isQuotaCode(normalizedCode) &&
 		!isAuthCode(normalizedCode) &&
 		!isRateLimitCode(normalizedCode) &&
-		!isContextOverflowCode(normalizedCode)
+		!isContextOverflowCode(normalizedCode) &&
+		normalizedCode !== STREAM_FIRST_EVENT_TIMEOUT_PROVIDER_CODE
 	) {
 		return undefined;
 	}
@@ -225,15 +252,48 @@ function isQuotaCode(code: string | undefined): boolean {
 	);
 }
 
-function isAuthCode(code: string | undefined): boolean {
+const FORBIDDEN_AUTH_CODE = "forbidden";
+
+/** Auth codes that name a credential problem rather than an authorization one. */
+function isCredentialAuthCode(code: string | undefined): boolean {
 	return (
 		code === "authentication_error" ||
 		code === "invalid_api_key" ||
 		code === "invalid_token" ||
 		code === "token_expired" ||
-		code === "unauthorized" ||
-		code === "forbidden"
+		code === "unauthorized"
 	);
+}
+
+function isAuthCode(code: string | undefined): boolean {
+	return isCredentialAuthCode(code) || code === FORBIDDEN_AUTH_CODE;
+}
+
+/**
+ * Resolves the {@link AuthDisposition} for an `auth` trigger.
+ *
+ * Precedence is explicit and ordered by specificity rather than by field,
+ * because transport facts can carry a first-party typed code and a
+ * `providerCode` that disagree:
+ *
+ * 1. A code naming a concrete credential fault (`invalid_api_key`,
+ *    `authentication_error`, …) wins, from whichever field it arrives in: it is
+ *    a specific diagnosis, while `forbidden` is the generic bucket this
+ *    refinement exists to distrust.
+ * 2. Otherwise a `forbidden` code in any field is terminal, so
+ *    `{status: 401, providerCode: "forbidden"}` does not mutate credentials.
+ * 3. Otherwise the HTTP status decides, and an unknown-status `auth` defaults to
+ *    `credential` because that is the classification the pre-refinement code
+ *    already produced.
+ *
+ * Trigger-class selection deliberately keeps its single-code precedence
+ * (`openaiErrorCode ?? anthropicErrorType ?? providerCode`); only this auth
+ * refinement reads every code field.
+ */
+function resolveAuthDisposition(codes: readonly (string | undefined)[], status: number | undefined): AuthDisposition {
+	if (codes.some(code => isCredentialAuthCode(code))) return "credential";
+	if (codes.some(code => code === FORBIDDEN_AUTH_CODE)) return "forbidden";
+	return status === 403 ? "forbidden" : "credential";
 }
 
 function isRateLimitCode(code: string | undefined): boolean {
@@ -255,15 +315,35 @@ export function classifyFallbackTrigger(
 	const retryAfterMs =
 		parseRetryAfterMilliseconds(headers?.get("retry-after-ms") ?? null) ??
 		parseRetryAfterSeconds(headers?.get("retry-after") ?? null);
-	const code = (facts.openaiErrorCode ?? facts.anthropicErrorType ?? facts.providerCode)?.toLowerCase();
-	const triggerClass: FallbackTriggerClass = isQuotaCode(code)
-		? "quota"
-		: facts.status === 401 || facts.status === 403 || isAuthCode(code)
-			? "auth"
-			: facts.status === 429 || isRateLimitCode(code)
-				? "rate_limit"
-				: facts.status !== undefined && facts.status >= 500 && facts.status <= 599
-					? "server"
-					: "other";
-	return retryAfterMs === undefined ? { class: triggerClass } : { class: triggerClass, retryAfterMs };
+	const codes = [facts.openaiErrorCode, facts.anthropicErrorType, facts.providerCode].map(value =>
+		value?.toLowerCase(),
+	);
+	const code = codes[0] ?? codes[1] ?? codes[2];
+	const triggerClass: FallbackTriggerClass =
+		code === STREAM_FIRST_EVENT_TIMEOUT_PROVIDER_CODE
+			? "server"
+			: isQuotaCode(code)
+				? "quota"
+				: facts.status === 401 || facts.status === 403 || isAuthCode(code)
+					? "auth"
+					: facts.status === 429 || isRateLimitCode(code)
+						? "rate_limit"
+						: facts.status !== undefined && facts.status >= 500 && facts.status <= 599
+							? "server"
+							: "other";
+	const trigger: FallbackTrigger = { class: triggerClass };
+	if (retryAfterMs !== undefined) trigger.retryAfterMs = retryAfterMs;
+	if (triggerClass === "auth") trigger.authDisposition = resolveAuthDisposition(codes, facts.status);
+	return trigger;
+}
+
+/**
+ * True when a failure is an `auth` failure that must NOT rotate credentials.
+ *
+ * Callers that mutate credential state on auth failures should consult this
+ * first so a plain `forbidden` cannot block otherwise-healthy credentials.
+ */
+export function isForbiddenAuthFailure(errorOrFacts: TransportFailureFacts | FallbackTriggerInput | unknown): boolean {
+	const trigger = classifyFallbackTrigger(errorOrFacts);
+	return trigger.class === "auth" && trigger.authDisposition === "forbidden";
 }

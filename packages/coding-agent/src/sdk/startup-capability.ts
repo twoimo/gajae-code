@@ -22,6 +22,12 @@ const MAX_MESSAGE_BYTES = 512;
 
 /** Internal symbols for lifecycle-only SDK startup construction and bus wiring. */
 export const lifecycleStartupCapabilityOption: unique symbol = Symbol("lifecycleStartupCapability");
+/**
+ * Internal option carrying the startup budget for ACP lifecycle MCP launches.
+ * Only set when the lifecycle request actually supplies `mcpServers`, so the
+ * longer ceiling never leaks to ordinary CLI/SDK `mcpConfigPath` consumers.
+ */
+export const lifecycleMcpStartupTimeoutOption: unique symbol = Symbol("lifecycleMcpStartupTimeout");
 const lifecycleStartupCapabilityOnApi: unique symbol = Symbol("lifecycleStartupCapabilityOnApi");
 
 export function attachLifecycleStartupCapability(api: object, capability: SdkStartupCapability): void {
@@ -166,7 +172,16 @@ export class SdkStartupCapability {
 		this.#cancelled = true;
 	}
 
-	constructor(readonly rollback?: SdkStartupRollbackTracker) {}
+	/**
+	 * The broker-issued, session-scoped readiness intent this child was launched
+	 * with. It is carried on the capability rather than read from the ambient
+	 * environment so bus wiring can never mistake an inherited process-global
+	 * flag for a broker-managed preparation.
+	 */
+	constructor(
+		readonly rollback?: SdkStartupRollbackTracker,
+		readonly readiness: "immediate" | "deferred" = "immediate",
+	) {}
 
 	normalizeFailure(phase: SdkStartupPhase, reason: SdkStartupReason, error?: unknown): SdkStartupFailure {
 		return normalizeSdkStartupFailure(phase, reason, error, lifecycleKnownSecrets());

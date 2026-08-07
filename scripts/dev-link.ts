@@ -7,10 +7,13 @@
  * (`packages/coding-agent/src/cli.ts`) instead of a compiled binary or a
  * published npm install. Running from source is the only mode that can
  * dynamically load `@gajae-code/natives` for skills — a `bun build --compile`
- * standalone binary cannot.
+ * standalone binary cannot. If you don't need that, `--binary` links this
+ * checkout's compiled `dist/gjc` instead (build it first with
+ * `bun run --cwd=packages/coding-agent build`).
  *
  * Usage:
  *   bun scripts/dev-link.ts            # link `gjc` -> src/cli.ts on PATH
+ *   bun scripts/dev-link.ts --binary   # link `gjc` -> dist/gjc compiled binary
  *   bun scripts/dev-link.ts --check    # doctor: fail if `gjc` has drifted
  *
  * Env:
@@ -24,6 +27,7 @@ import * as path from "node:path";
 const repoRoot = path.join(import.meta.dir, "..");
 const cliSource = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
 const cliSourceReal = realpath(cliSource) ?? cliSource;
+const binarySource = path.join(repoRoot, "packages", "coding-agent", "dist", "gjc");
 const HOME = os.homedir();
 const targetDir = process.env.GJC_DEV_LINK_DIR ?? path.join(HOME, ".local", "bin");
 const BUN_SHIM_VERSION = 5478;
@@ -258,6 +262,7 @@ export function isLocalWindowsBunShim(file: string, root = repoRoot, bunExecutab
 function describe(real: string | null): string {
 	if (!real) return "broken symlink / unresolved";
 	if (real === cliSourceReal) return "workspace source (cli.ts) — OK";
+	if (real === realpath(binarySource)) return "workspace compiled binary (dist/gjc) — OK";
 	if (/[/\\]dist[/\\]/.test(real)) return `compiled binary: ${real}`;
 	if (real.includes("$bunfs")) return `compiled binary (bunfs): ${real}`;
 	if (real.includes(`${path.sep}node_modules${path.sep}gajae-code${path.sep}`)) return `published wrapper: ${real}`;
@@ -278,20 +283,34 @@ export function isApprovedWorkspaceSource(
 	bunExecutable = process.execPath,
 ): boolean {
 	const source = path.join(root, "packages", "coding-agent", "src", "cli.ts");
-	return real === (realpath(source) ?? source) || (platform === "win32" && isLocalWindowsBunShim(file, root, bunExecutable));
+	const binary = realpath(path.join(root, "packages", "coding-agent", "dist", "gjc"));
+	return (
+		real === (realpath(source) ?? source) ||
+		(real !== null && real === binary) ||
+		(platform === "win32" && isLocalWindowsBunShim(file, root, bunExecutable))
+	);
+}
+
+export function isRemovableWorkspaceShadow(hit: GjcHit, root = repoRoot): boolean {
+	const repoBinShadow = path.join(root, "node_modules", ".bin", "gjc");
+	if (hit.file === repoBinShadow) return true;
+	if (!hit.real) return false;
+	const repoBinShadowReal = realpath(repoBinShadow);
+	const workspaceWrapperReal = realpath(path.join(root, "packages", "coding-agent", "bin", "gjc.js"));
+	return hit.real === repoBinShadowReal || hit.real === workspaceWrapperReal;
 }
 
 function isApprovedSource(winner: GjcHit): boolean {
 	return isApprovedWorkspaceSource(winner.file, winner.real);
 }
 
-function assertResolvedGjcIsSource(winner: GjcHit | undefined): void {
-	if (!winner || isApprovedSource(winner)) return;
+function assertResolvedGjcMatchesTarget(winner: GjcHit | undefined, expectedReal: string): void {
+	if (!winner || winner.real === expectedReal) return;
 	console.error("");
 	console.error("✗ Linked, but `gjc` still resolves to a different command earlier on PATH.");
 	console.error(`  Resolved: ${winner.file}`);
 	console.error(`       -> ${describe(winner.real)}`);
-	console.error(`  Expected source: ${cliSourceReal}`);
+	console.error(`  Expected target: ${expectedReal}`);
 	console.error(`  The managed link was created at: ${path.join(targetDir, "gjc")}`);
 	console.error("  Move the managed link directory earlier on PATH or remove the shadowing command.");
 	process.exit(1);
@@ -348,7 +367,7 @@ function check(): never {
 	console.log(`            -> ${describe(winner.real)}`);
 	if (!isApprovedSource(winner)) {
 		console.error("");
-		console.error("✗ `gjc` is NOT this checkout's source — it has drifted.");
+		console.error("✗ `gjc` is NOT this checkout's source or dist binary — it has drifted.");
 		console.error(`  Expected: ${cliSourceReal}`);
 		console.error("  Fix: bun run dev:link");
 		process.exit(1);
@@ -361,11 +380,11 @@ function check(): never {
 		console.error("  Fix: bun run dev:link  (and rebuild natives if needed: bun run build:native)");
 		process.exit(1);
 	}
-	console.log("✓ gjc runs this checkout's source and natives load (smoke-test: ok).");
+	console.log("✓ gjc runs this checkout and natives load (smoke-test: ok).");
 	process.exit(0);
 }
 
-function link(): never {
+function link(binary: boolean): never {
 	assertSourceExists();
 	assertWorkspaceLinksLocal();
 	if (process.platform === "win32") {
@@ -374,22 +393,28 @@ function link(): never {
 		console.error("  bun --cwd=packages/coding-agent link");
 		process.exit(1);
 	}
+	if (binary && !fs.existsSync(binarySource)) {
+		console.error(`✗ Compiled binary not found at ${binarySource}`);
+		console.error("  Build it first: bun run --cwd=packages/coding-agent build");
+		process.exit(1);
+	}
+	const linkSource = binary ? binarySource : cliSource;
+	const linkSourceReal = realpath(linkSource) ?? linkSource;
 	fs.mkdirSync(targetDir, { recursive: true });
 	const target = path.join(targetDir, "gjc");
 	if (lexists(target)) fs.rmSync(target, { force: true });
-	fs.symlinkSync(cliSource, target);
-	console.log(`✓ Linked ${target} -> ${cliSource}`);
+	fs.symlinkSync(linkSource, target);
+	console.log(`✓ Linked ${target} -> ${linkSource}`);
 	if (!isOnPath(targetDir)) {
 		console.warn(`! ${targetDir} is not on your PATH — add it so \`gjc\` resolves:`);
 		console.warn(`    export PATH="${targetDir}:$PATH"`);
 	}
-	const repoBinShadow = path.join(repoRoot, "node_modules", ".bin", "gjc");
 	for (const hit of findGjcOnPath()) {
 		if (hit.file === target) break;
-		if (hit.real === cliSourceReal) continue;
-		if (realpath(hit.file) === realpath(repoBinShadow) || hit.file === repoBinShadow) {
+		if (hit.real === linkSourceReal) continue;
+		if (isRemovableWorkspaceShadow(hit)) {
 			fs.rmSync(hit.file, { force: true });
-			console.log(`✓ Removed in-repo shadow: ${hit.file}`);
+			console.log(`✓ Removed workspace shadow: ${hit.file}`);
 			continue;
 		}
 		console.warn("");
@@ -398,7 +423,7 @@ function link(): never {
 		console.warn(`    Remove it: rm "${hit.file}"`);
 	}
 	const winner = findGjcOnPath()[0];
-	assertResolvedGjcIsSource(winner);
+	assertResolvedGjcMatchesTarget(winner, linkSourceReal);
 	const smoke = smokeTest(winner?.file ?? target);
 	if (!smoke.ok) {
 		console.error("");
@@ -407,11 +432,13 @@ function link(): never {
 		console.error("  Try rebuilding natives: bun run build:native");
 		process.exit(1);
 	}
-	console.log("✓ smoke-test: ok — `gjc` runs this checkout's source with natives loaded.");
+	console.log(
+		`✓ smoke-test: ok — \`gjc\` runs this checkout's ${binary ? "compiled binary" : "source"} with natives loaded.`,
+	);
 	process.exit(0);
 }
 
 if (import.meta.main) {
 	if (process.argv.includes("--check")) check();
-	else link();
+	else link(process.argv.includes("--binary"));
 }

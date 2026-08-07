@@ -8,7 +8,7 @@ type JsonObject = Record<string, unknown>;
 
 /** The small agent-side ACP surface used for reverse requests. */
 export interface AcpReverseConnection {
-	request?(method: string, params: JsonObject): Promise<unknown>;
+	request?(method: string, params: JsonObject, options?: { cancellationSignal?: AbortSignal }): Promise<unknown>;
 	[key: string]: unknown;
 }
 
@@ -42,6 +42,7 @@ export type AcpReconnectFailedHandler = (error: SdkClientError) => void;
 export type AcpFrameHandler = (frame: SdkFrame) => void;
 type ReverseRequest = {
 	state: "pending" | "cancelled";
+	controller?: AbortController;
 	cancelTimer?: NodeJS.Timeout;
 };
 
@@ -142,7 +143,10 @@ export class AcpSdkAdapter {
 		if (this.#closed) return;
 		this.#closed = true;
 		if (this.#heartbeat) clearInterval(this.#heartbeat);
-		for (const request of this.#reverseRequests.values()) if (request.cancelTimer) clearTimeout(request.cancelTimer);
+		for (const request of this.#reverseRequests.values()) {
+			request.controller?.abort();
+			if (request.cancelTimer) clearTimeout(request.cancelTimer);
+		}
 		this.#reverseRequests.clear();
 		this.#unsubscribe?.();
 		this.#unsubscribeReconnect?.();
@@ -179,7 +183,14 @@ export class AcpSdkAdapter {
 		this.#assertGenericDisposition("global", operation);
 		if (isLifecycleOperation(operation) && !idempotencyKey)
 			throw new AcpSdkAdapterError("invalid_input", "idempotencyKey is required for lifecycle operations.");
-		return await this.#client.global(operation, input, { idempotencyKey });
+		const readinessTimeoutMs =
+			typeof input.readinessTimeoutMs === "number" && Number.isSafeInteger(input.readinessTimeoutMs)
+				? input.readinessTimeoutMs
+				: undefined;
+		return await this.#client.global(operation, input, {
+			idempotencyKey,
+			...(readinessTimeoutMs ? { timeoutMs: readinessTimeoutMs + 1_000 } : {}),
+		});
 	}
 
 	async sdkControl(params: { operation: string; input?: JsonObject }): Promise<unknown> {
@@ -256,6 +267,7 @@ export class AcpSdkAdapter {
 		if (this.#closed || !this.#providers.length) return;
 		if (this.#reclaiming) return await this.#reclaiming;
 		this.#reclaiming = (async () => {
+			this.#abortActiveReverseRequests();
 			this.#connectionId = this.#client.connectionId;
 			if (!this.#connectionId) this.#connectionId = await this.#waitForConnectionId();
 			for (const provider of this.#providers) await this.registerProvider(provider);
@@ -342,13 +354,14 @@ export class AcpSdkAdapter {
 			!this.#ownsReverseLease(connectionId, capability, leaseId)
 		)
 			return;
-		const active: ReverseRequest = { state: "pending" };
+		const controller = new AbortController();
+		const active: ReverseRequest = { state: "pending", controller };
 		this.#reverseRequests.set(id, active);
 		try {
 			const request = frame.payload as JsonObject | undefined;
 			const method = typeof request?.method === "string" ? request.method : "";
 			const payload = request?.payload && typeof request.payload === "object" ? (request.payload as JsonObject) : {};
-			const result = await this.#forwardReverse(method, payload);
+			const result = await this.#forwardReverse(method, payload, controller.signal);
 			if (!this.#canRespondToReverse(id, active, connectionId, capability, leaseId)) return;
 
 			this.#client.send({ type: "reverse_response", id, connectionId, leaseId, ok: true, result });
@@ -397,6 +410,7 @@ export class AcpSdkAdapter {
 		const request: ReverseRequest = this.#reverseRequests.get(id) ?? { state: "pending" };
 		if (request.state === "cancelled") return;
 		request.state = "cancelled";
+		request.controller?.abort();
 		request.cancelTimer = setTimeout(() => this.#finishReverse(id, request), this.#reverseCancelTtlMs);
 		this.#reverseRequests.set(id, request);
 	}
@@ -407,9 +421,18 @@ export class AcpSdkAdapter {
 		this.#reverseRequests.delete(id);
 	}
 
-	async #forwardReverse(method: string, payload: JsonObject): Promise<unknown> {
+	#abortActiveReverseRequests(): void {
+		for (const [id, request] of this.#reverseRequests) {
+			request.state = "cancelled";
+			request.controller?.abort();
+			this.#finishReverse(id, request);
+		}
+	}
+
+	async #forwardReverse(method: string, payload: JsonObject, signal: AbortSignal): Promise<unknown> {
 		if (!method || !this.#connection) throw new AcpSdkAdapterError("acp_reverse_unavailable");
-		if (this.#connection.request) return await this.#connection.request(method, payload);
+		if (this.#connection.request)
+			return await this.#connection.request(method, payload, { cancellationSignal: signal });
 		const target = this.#connection[method];
 		if (typeof target !== "function")
 			throw new AcpSdkAdapterError("acp_reverse_unsupported", `ACP client does not support ${method}.`);

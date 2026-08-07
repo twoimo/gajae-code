@@ -1,12 +1,5 @@
-import {
-	$credentialEnv,
-	$env,
-	$inheritedEnv,
-	extractHttpStatusFromError,
-	logger,
-	structuredCloneJSON,
-} from "@gajae-code/utils";
-import OpenAI from "openai";
+import { $credentialEnv, extractHttpStatusFromError, logger, structuredCloneJSON } from "@gajae-code/utils";
+import OpenAI, { APIConnectionTimeoutError } from "openai";
 import type {
 	Tool as OpenAITool,
 	ResponseCreateParamsStreaming,
@@ -34,6 +27,7 @@ import {
 	getOpenAIResponsesHistoryItems,
 	getOpenAIResponsesHistoryPayload,
 	isInvalidPromptError,
+	neutralizeReservedControlTokens,
 	neutralizeResponsesInputControlTokens,
 	normalizeSystemPrompts,
 	resolveCacheRetention,
@@ -44,10 +38,12 @@ import { AssistantMessageEventStream } from "../utils/event-stream";
 import { transportFailureFacts } from "../utils/fallback-transport";
 import { finalizeErrorMessage, type RawHttpRequestDump, rewriteCopilotError } from "../utils/http-inspector";
 import {
-	createWatchdog,
+	FirstEventTimeoutError,
 	getOpenAIStreamIdleTimeoutMs,
+	getProviderFirstEventTimeoutFallbackMs,
 	getStreamFirstEventTimeoutMs,
 	iterateWithIdleTimeout,
+	resolveOpenAISdkRequestTimeoutMs,
 } from "../utils/idle-iterator";
 import { parseGitHubCopilotApiKey } from "../utils/oauth/github-copilot";
 import { notifyProviderResponse } from "../utils/provider-response";
@@ -68,6 +64,7 @@ import {
 	resolveToolChoice,
 } from "../utils/tool-choice-capability";
 import { COMPOSER_EDIT_DISCIPLINE_PROMPT, isComposerHarnessModel } from "./composer-discipline";
+import { mergeDashScopeTokenPlanHeaders } from "./dashscope-token-plan-headers";
 import {
 	buildCopilotDynamicHeaders,
 	hasCopilotVisionInput,
@@ -89,6 +86,7 @@ import {
 	convertResponsesAssistantMessage,
 	convertResponsesInputContent,
 	createInitialResponsesAssistantMessage,
+	isOpenAIResponsesProgressEvent,
 	normalizeResponsesToolCallIdForTransform,
 	processResponsesStream,
 	repairOrphanResponsesToolOutputs,
@@ -130,7 +128,6 @@ export interface OpenAIResponsesOptions extends StreamOptions {
 }
 
 const OPENAI_RESPONSES_PROVIDER_SESSION_STATE_PREFIX = "openai-responses:";
-const ALIBABA_TOKEN_PLAN_FIRST_EVENT_TIMEOUT_MS = 300_000;
 const OPENAI_RESPONSES_FIRST_EVENT_TIMEOUT_MESSAGE =
 	"OpenAI responses stream timed out while waiting for the first event";
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -159,7 +156,10 @@ function resolveOpenAIProviderBaseUrl(
 	authCredentialType: "api_key" | "oauth" | undefined,
 ): string {
 	if (authCredentialType === "oauth") return OPENAI_DEFAULT_BASE_URL;
-	const envBaseUrl = $inheritedEnv("OPENAI_BASE_URL") ?? $env.OPENAI_BASE_URL?.trim();
+	// Trusted sources only: this base URL becomes the request endpoint that carries
+	// the OpenAI credential, and `$env` merges the caller's `cwd/.env`, so reading it
+	// there would let repository content redirect authenticated traffic.
+	const envBaseUrl = $credentialEnv("OPENAI_BASE_URL");
 	const configuredBaseUrl = baseUrl?.trim();
 	if (envBaseUrl && (!configuredBaseUrl || isDefaultOpenAIBaseUrl(configuredBaseUrl))) {
 		return envBaseUrl;
@@ -167,30 +167,68 @@ function resolveOpenAIProviderBaseUrl(
 	return configuredBaseUrl || envBaseUrl || OPENAI_DEFAULT_BASE_URL;
 }
 
-const OPENAI_RESPONSES_PROGRESS_EVENT_TYPES = new Set([
-	"response.created",
-	"response.output_item.added",
-	"response.reasoning_summary_part.added",
-	"response.reasoning_summary_text.delta",
-	"response.reasoning_summary_part.done",
-	"response.reasoning_text.delta",
-	"response.content_part.added",
-	"response.output_text.delta",
-	"response.refusal.delta",
-	"response.function_call_arguments.delta",
-	"response.function_call_arguments.done",
-	"response.custom_tool_call_input.delta",
-	"response.custom_tool_call_input.done",
-	"response.output_item.done",
-	"response.completed",
-	"response.failed",
-	"error",
-]);
+/** Test seam: the provider base URL as resolved from trusted env. */
+export function resolveOpenAIProviderBaseUrlForTest(
+	baseUrl: string | undefined,
+	authCredentialType: "api_key" | "oauth" | undefined,
+): string {
+	return resolveOpenAIProviderBaseUrl(baseUrl, authCredentialType);
+}
 
-function isOpenAIResponsesProgressEvent(event: unknown): boolean {
-	if (!event || typeof event !== "object") return false;
-	const type = (event as { type?: unknown }).type;
-	return typeof type === "string" && OPENAI_RESPONSES_PROGRESS_EVENT_TYPES.has(type);
+function appendUrlPath(baseUrl: string | undefined, path: string): string | undefined {
+	if (!baseUrl) return undefined;
+	const normalizedPath = path.replace(/^\/+/g, "");
+	try {
+		const parsed = new URL(baseUrl);
+		parsed.pathname = `${parsed.pathname.replace(/\/+$/g, "")}/${normalizedPath}`;
+		return parsed.toString();
+	} catch {
+		return `${baseUrl.replace(/\/+$/g, "")}/${normalizedPath}`;
+	}
+}
+
+type OpenAIResponsesQuery = string;
+
+function splitBaseUrlQuery(baseUrl: string | undefined): {
+	baseUrl: string | undefined;
+	query?: OpenAIResponsesQuery;
+} {
+	if (!baseUrl) return { baseUrl };
+	try {
+		const parsed = new URL(baseUrl);
+		if (!parsed.search) return { baseUrl };
+		const queryStart = baseUrl.indexOf("?");
+		const fragmentStart = baseUrl.indexOf("#", queryStart);
+		const query = baseUrl.slice(queryStart + 1, fragmentStart === -1 ? undefined : fragmentStart);
+		if (!query) return { baseUrl };
+		parsed.search = "";
+		return {
+			baseUrl: parsed.toString(),
+			query,
+		};
+	} catch {
+		return { baseUrl };
+	}
+}
+
+function appendRawQuery(url: string, query: OpenAIResponsesQuery | undefined): string {
+	if (!query) return url;
+	const fragmentStart = url.indexOf("#");
+	const beforeFragment = fragmentStart === -1 ? url : url.slice(0, fragmentStart);
+	const fragment = fragmentStart === -1 ? "" : url.slice(fragmentStart);
+	return `${beforeFragment}${beforeFragment.includes("?") ? "&" : "?"}${query}${fragment}`;
+}
+
+function buildRequestUrl(baseUrl: string | undefined, path: string, query?: OpenAIResponsesQuery): string | undefined {
+	const url = appendUrlPath(baseUrl, path);
+	return url ? appendRawQuery(url, query) : undefined;
+}
+
+function appendQueryToRequest(input: string | URL | Request, query?: OpenAIResponsesQuery): string | URL | Request {
+	if (!query) return input;
+	const url = appendRawQuery(input instanceof Request ? input.url : String(input), query);
+	if (input instanceof Request) return new Request(url, input as unknown as RequestInit);
+	return url;
 }
 
 interface OpenAIResponsesProviderSessionState extends ProviderSessionState {
@@ -253,6 +291,7 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 	(async () => {
 		const startTime = Date.now();
 		let firstTokenTime: number | undefined;
+		let streamConnected = false;
 
 		const output: AssistantMessage = createInitialResponsesAssistantMessage(
 			"openai-responses",
@@ -261,14 +300,13 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 		);
 		let rawRequestDump: RawHttpRequestDump | undefined;
 		const abortTracker = createAbortSourceTracker(options?.signal);
-		const firstEventTimeoutAbortError = new Error(OPENAI_RESPONSES_FIRST_EVENT_TIMEOUT_MESSAGE);
 		const { requestAbortController, requestSignal } = abortTracker;
 
 		try {
 			// Keep request headers and prompt-cache routing on the same session-derived value.
 			const cacheSessionId = getOpenAIResponsesCacheSessionId(options);
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-			const { client, copilotPremiumRequests, baseUrl } = createClient(
+			const { client, copilotPremiumRequests, baseUrl, requestBaseUrl, requestQuery } = createClient(
 				model,
 				context,
 				apiKey,
@@ -280,18 +318,20 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 				options?.authCredentialType,
 				options?.requestMaxRetries,
 				options?.maxRetryDelayMs,
+				options?.attemptScope,
+				options?.streamFirstEventTimeoutMs,
 			);
 			const premiumRequestsTotal = copilotPremiumRequests;
 			const providerSessionState = getOpenAIResponsesProviderSessionState(model, options?.providerSessionState);
 			const { params } = buildParams(model, context, options, providerSessionState, baseUrl);
 			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs();
-			options?.onPayload?.(params);
+			options?.onPayload?.(params, undefined, options?.attemptScope);
 			rawRequestDump = {
 				provider: model.provider,
 				api: output.api,
 				model: model.id,
 				method: "POST",
-				url: `${baseUrl}/responses`,
+				url: buildRequestUrl(requestBaseUrl, "responses", requestQuery),
 				body: params,
 			};
 			const openaiStream = await callWithCopilotModelRetry(
@@ -331,12 +371,10 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 				await notifyProviderResponse(options, response, model, request_id);
 				return data;
 			});
-			const firstEventFallbackMs =
-				model.provider === "alibaba-token-plan" ? ALIBABA_TOKEN_PLAN_FIRST_EVENT_TIMEOUT_MS : undefined;
-			const firstEventWatchdog = createWatchdog(
-				options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs, firstEventFallbackMs),
-				() => abortTracker.abortLocally(firstEventTimeoutAbortError),
-			);
+			streamConnected = true;
+			const firstEventFallbackMs = getProviderFirstEventTimeoutFallbackMs(model.provider);
+			const firstEventTimeoutMs =
+				options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs, firstEventFallbackMs);
 			if (premiumRequestsTotal !== undefined) output.usage.premiumRequests = premiumRequestsTotal;
 			stream.push({ type: "start", partial: output });
 
@@ -344,9 +382,11 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 			await processResponsesStream(
 				iterateWithIdleTimeout(openaiStream, {
 					idleTimeoutMs,
-					watchdog: firstEventWatchdog,
+					firstItemTimeoutMs: firstEventTimeoutMs,
+					firstItemErrorMessage: OPENAI_RESPONSES_FIRST_EVENT_TIMEOUT_MESSAGE,
 					errorMessage: "OpenAI responses stream stalled while waiting for the next event",
 					onIdle: () => requestAbortController.abort(),
+					onFirstItemTimeout: () => requestAbortController.abort(),
 					abortSignal: options?.signal,
 					isProgressItem: isOpenAIResponsesProgressEvent,
 				}),
@@ -385,12 +425,17 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) delete (block as { index?: number }).index;
-			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
+			const localAbortReason = abortTracker.getLocalAbortReason();
+			const normalizedError =
+				!streamConnected && model.provider === "alibaba-token-plan" && error instanceof APIConnectionTimeoutError
+					? new FirstEventTimeoutError(OPENAI_RESPONSES_FIRST_EVENT_TIMEOUT_MESSAGE)
+					: error;
 			output.stopReason = abortTracker.wasCallerAbort() ? "aborted" : "error";
-			output.errorStatus = extractHttpStatusFromError(error);
-			output.transportFailure = transportFailureFacts(error);
-			output.errorMessage = firstEventTimeoutError?.message ?? (await finalizeErrorMessage(error, rawRequestDump));
-			output.errorMessage = rewriteCopilotError(output.errorMessage, error, model.provider);
+			output.errorStatus = extractHttpStatusFromError(localAbortReason ?? normalizedError);
+			output.transportFailure = transportFailureFacts(localAbortReason ?? normalizedError);
+			output.errorMessage =
+				localAbortReason?.message ?? (await finalizeErrorMessage(normalizedError, rawRequestDump));
+			output.errorMessage = rewriteCopilotError(output.errorMessage, normalizedError, model.provider);
 			// Explicitly mark the poisoned-history rejection so the shared
 			// `invalid_prompt` contract is present even when the SDK error surfaces
 			// only a message (no structured code). This keeps the responses
@@ -429,10 +474,14 @@ function createClient(
 	authCredentialType?: OpenAIResponsesOptions["authCredentialType"],
 	requestMaxRetries?: number,
 	maxRetryDelayMs?: number,
+	attemptScope?: import("../types.js").AttemptScopeRef,
+	streamFirstEventTimeoutOverride?: number,
 ): {
 	client: OpenAI;
 	copilotPremiumRequests: number | undefined;
 	baseUrl: string | undefined;
+	requestBaseUrl: string | undefined;
+	requestQuery: OpenAIResponsesQuery | undefined;
 } {
 	if (!apiKey) {
 		apiKey = $credentialEnv("OPENAI_API_KEY");
@@ -444,8 +493,17 @@ function createClient(
 	}
 	const rawApiKey = apiKey;
 
+	const baseHeaders =
+		model.provider === "alibaba-token-plan"
+			? // Emit Qwen Code's canonical DashScope request fingerprint (User-Agent /
+				// X-DashScope-CacheControl / X-DashScope-UserAgent / X-DashScope-AuthType)
+				// so DashScope treats the caller identically to upstream QwenLM/qwen-code.
+				// Canonical identity is the base; caller headers win per key (upstream
+				// `{...default, ...customHeaders}`). #3557.
+				mergeDashScopeTokenPlanHeaders({ ...(model.headers ?? {}), ...(extraHeaders ?? {}) })
+			: { ...(model.headers ?? {}), ...(extraHeaders ?? {}) };
 	const headers = applyOpenAIRequestTransformHeaders(
-		{ ...(model.headers ?? {}), ...(extraHeaders ?? {}) },
+		baseHeaders,
 		model.requestTransform,
 		`Gajae-Code/${packageJson.version}`,
 	);
@@ -474,26 +532,39 @@ function createClient(
 		headers.session_id ??= sessionId;
 		headers["x-client-request-id"] ??= sessionId;
 	}
+	const { baseUrl: clientBaseUrl, query: endpointQuery } = splitBaseUrlQuery(baseUrl);
 	const baseFetch = fetchOverride ?? fetch;
-	const boundedFetch = wrapOpenAIFetchForBoundedRateLimits(baseFetch, maxRetryDelayMs);
+	const queryFetch = Object.assign(
+		async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+			return baseFetch(appendQueryToRequest(input, endpointQuery), init);
+		},
+		baseFetch.preconnect ? { preconnect: baseFetch.preconnect } : {},
+	);
+	const boundedFetch = wrapOpenAIFetchForBoundedRateLimits(queryFetch, maxRetryDelayMs);
 	const transformedFetch = wrapFetchForOpenAIRequestTransform(
 		boundedFetch,
 		model.requestTransform,
 		`Gajae-Code/${packageJson.version}`,
 	);
+	// Bound HTTP request timeout to the first-event window so a stalled-before-headers
+	// fetch cannot wait the SDK's 10-minute default before the transport watchdog arms.
+	const sdkTimeoutMs = resolveOpenAISdkRequestTimeoutMs(model.provider, streamFirstEventTimeoutOverride);
 	return {
 		client: new OpenAI({
 			apiKey,
-			baseURL: baseUrl,
+			baseURL: clientBaseUrl,
 			dangerouslyAllowBrowser: true,
 			maxRetries: resolveRetryBudget(requestMaxRetries, 5),
 			defaultHeaders: headers,
 			fetch: onSseEvent
-				? wrapFetchForSseDebug(transformedFetch, event => onSseEvent(event, model))
+				? wrapFetchForSseDebug(transformedFetch, event => onSseEvent(event, model, attemptScope))
 				: transformedFetch,
+			...(sdkTimeoutMs !== undefined ? { timeout: sdkTimeoutMs } : {}),
 		}),
 		copilotPremiumRequests,
 		baseUrl,
+		requestBaseUrl: clientBaseUrl,
+		requestQuery: endpointQuery,
 	};
 }
 
@@ -521,7 +592,13 @@ function buildParams(
 	);
 	const messages: ResponseInput = neutralizeResponsesInputControlTokens(conversationMessages);
 
-	const systemPrompts = normalizeSystemPrompts(context.systemPrompt);
+	// Neutralize leaked Harmony control tokens in the system prompt too: the
+	// `instructions` field and developer-role messages bypass the `input`
+	// request-boundary sanitizer above, and a poisoned system prompt (e.g.
+	// injected project context quoting `<|channel|>` markers) rejects EVERY
+	// turn with `Request blocked (code=invalid_prompt)` — unrepairable by the
+	// history circuit breaker.
+	const systemPrompts = normalizeSystemPrompts(context.systemPrompt).map(neutralizeReservedControlTokens);
 	if (isComposerHarnessModel(model.id)) {
 		systemPrompts.unshift(COMPOSER_EDIT_DISCIPLINE_PROMPT);
 	}
@@ -743,7 +820,7 @@ function isForcedOpenAIResponsesToolChoice(choice: unknown): boolean {
 /** @internal Exported for tests. */
 export function convertTools(tools: Tool[], strictMode: boolean, model: Model<"openai-responses">): OpenAITool[] {
 	const allowFreeform = supportsFreeformApplyPatch(model);
-	return tools.map(tool => {
+	const payloads = tools.map(tool => {
 		if (allowFreeform && tool.customFormat) {
 			return {
 				type: "custom",
@@ -771,4 +848,8 @@ export function convertTools(tools: Tool[], strictMode: boolean, model: Model<"o
 			...(effectiveStrict && { strict: true }),
 		} as OpenAITool;
 	});
+	// Tool definitions bypass the `input`/`instructions` sanitizers, so a
+	// leaked Harmony marker in an MCP/skill tool description or schema string
+	// rejects every gpt-5.x request (`Request blocked`).
+	return neutralizeResponsesInputControlTokens(payloads);
 }

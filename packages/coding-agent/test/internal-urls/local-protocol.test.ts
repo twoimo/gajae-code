@@ -94,12 +94,12 @@ it("migrates opaque managed legacy topology, retires exactly once, and verifies 
 	});
 });
 
-it("rolls back managed migration publication on a destination collision without retiring the source", async () => {
+it("rolls back a sorted managed partial install and retries the same identity", async () => {
 	const sessionId = `managed-collision-${crypto.randomUUID()}`;
 	const snapshot = { rootDev: "1", rootIno: "2", entries: [] } as never;
 	let retired = 0;
 	await withLocalRoot(sessionId, async localRoot => {
-		await fs.writeFile(path.join(localRoot, "second"), "existing");
+		await fs.writeFile(path.join(localRoot, "02-second"), "existing");
 		const options = {
 			getSessionId: () => sessionId,
 			getManagedLegacyLocalMigrationSource: () => ({
@@ -108,13 +108,13 @@ it("rolls back managed migration publication on a destination collision without 
 					entries: [
 						{ relativePath: "", kind: "directory" as const },
 						{
-							relativePath: "first",
+							relativePath: "01-first",
 							kind: "file" as const,
 							bytes: Buffer.from("first"),
 							sha256: "a7937b64b8caa58f03721bb6bacf5c78cb235febe0e70b1b84cd99541461a08e",
 						},
 						{
-							relativePath: "second",
+							relativePath: "02-second",
 							kind: "file" as const,
 							bytes: Buffer.from("second"),
 							sha256: "16367aacb67a4a017c8da8ab95682ccb390863780f7114dda0a0e0c55644c7c4",
@@ -125,12 +125,54 @@ it("rolls back managed migration publication on a destination collision without 
 			}),
 		};
 		await expect(initializeLocalRoot(options)).rejects.toThrow("destination is ambiguous");
-		await expect(fs.lstat(path.join(localRoot, "first"))).rejects.toMatchObject({ code: "ENOENT" });
-		expect(await fs.readFile(path.join(localRoot, "second"), "utf8")).toBe("existing");
+		await expect(fs.lstat(path.join(localRoot, "01-first"))).rejects.toMatchObject({ code: "ENOENT" });
+		expect(await fs.readFile(path.join(localRoot, "02-second"), "utf8")).toBe("existing");
 		expect(retired).toBe(0);
 		await expect(fs.lstat(path.join(localRoot, ".gjc-local-legacy-migrated-v1"))).rejects.toMatchObject({
 			code: "ENOENT",
 		});
+
+		await fs.rm(path.join(localRoot, "02-second"));
+		await initializeLocalRoot(options);
+		expect(await fs.readFile(path.join(localRoot, "01-first"), "utf8")).toBe("first");
+		expect(await fs.readFile(path.join(localRoot, "02-second"), "utf8")).toBe("second");
+		expect(await fs.readFile(path.join(localRoot, ".gjc-local-legacy-migrated-v1"), "utf8")).toBe("verified\n");
+		expect(retired).toBe(1);
+	});
+});
+
+it("fails closed for real managed payloads above the 64 MiB safe size without writing a marker or retiring the source", async () => {
+	const sessionId = `managed-oversize-${crypto.randomUUID()}`;
+	const snapshot = { rootDev: "1", rootIno: "2", entries: [] } as never;
+	let retired = 0;
+	// Production sums entry.bytes.byteLength before install; use a real byteLength without
+	// allocating a full 64 MiB+ buffer into the process heap.
+	const oversizeBytes = { byteLength: 64 * 1024 * 1024 + 1 } as Buffer;
+	await withLocalRoot(sessionId, async localRoot => {
+		const options = {
+			getSessionId: () => sessionId,
+			getManagedLegacyLocalMigrationSource: () => ({
+				capture: async () => ({
+					snapshot,
+					entries: [
+						{ relativePath: "", kind: "directory" as const },
+						{
+							relativePath: "huge.bin",
+							kind: "file" as const,
+							bytes: oversizeBytes,
+							sha256: "deadbeef",
+						},
+					],
+				}),
+				retire: () => retired++,
+			}),
+		};
+		await expect(initializeLocalRoot(options)).rejects.toThrow("exceeds the safe size limit");
+		await expect(fs.lstat(path.join(localRoot, "huge.bin"))).rejects.toMatchObject({ code: "ENOENT" });
+		await expect(fs.lstat(path.join(localRoot, ".gjc-local-legacy-migrated-v1"))).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+		expect(retired).toBe(0);
 	});
 });
 
@@ -379,6 +421,68 @@ describe("LocalProtocolHandler", () => {
 		});
 	});
 
+	it("component-encodes listing hrefs and follows delimiter and literal-percent siblings", async () => {
+		await withTempDir(async tempDir => {
+			const sessionId = `encoded-listing-${path.basename(tempDir)}`;
+			await withLocalRoot(sessionId, async localRoot => {
+				await Bun.write(path.join(localRoot, "report%3Araw.txt"), "literal-percent");
+				await Bun.write(path.join(localRoot, "report:raw.txt"), "colon-sibling");
+				await Bun.write(path.join(localRoot, "report).txt"), "root-delimiter");
+				await fs.mkdir(path.join(localRoot, "batch(1)"));
+				await Bun.write(path.join(localRoot, "batch(1)", "report).txt"), "nested-delimiter");
+				await Bun.write(path.join(localRoot, "report](other.txt"), "root-label-delimiter");
+				await fs.mkdir(path.join(localRoot, "batch[1]"));
+				await Bun.write(path.join(localRoot, "batch[1]", "report](other.txt"), "nested-label-delimiter");
+				LocalProtocolHandler.setOverride(localOptions(sessionId, path.join(tempDir, "artifacts")));
+				const router = InternalUrlRouter.instance();
+				const listing = await router.resolve("local://");
+				expect(listing.content).toContain("[report%3Araw.txt](local://report%253Araw.txt)");
+				expect(listing.content).toContain("[report:raw.txt](local://report%3Araw.txt)");
+				expect(listing.content).toContain("[report).txt](local://report%29.txt)");
+				expect(listing.content).toContain("[batch(1)/report).txt](local://batch%281%29/report%29.txt)");
+				expect(listing.content).toContain("[report\\](other.txt](local://report%5D%28other.txt)");
+				expect(listing.content).toContain(
+					"[batch\\[1\\]/report\\](other.txt](local://batch%5B1%5D/report%5D%28other.txt)",
+				);
+				expect((await router.resolve("local://report%253Araw.txt")).content).toBe("literal-percent");
+				expect((await router.resolve("local://report%3Araw.txt")).content).toBe("colon-sibling");
+				expect((await router.resolve("local://report%29.txt")).content).toBe("root-delimiter");
+				expect((await router.resolve("local://batch%281%29/report%29.txt")).content).toBe("nested-delimiter");
+				expect((await router.resolve("local://report%5D%28other.txt")).content).toBe("root-label-delimiter");
+				expect((await router.resolve("local://batch%5B1%5D/report%5D%28other.txt")).content).toBe(
+					"nested-label-delimiter",
+				);
+				expect((await router.resolve("LOCAL://report%5D%28other.txt")).content).toBe("root-label-delimiter");
+				await expect(router.resolve("local://report%2Graw.txt")).rejects.toThrow(
+					"Invalid URL encoding in local:// path",
+				);
+			});
+		});
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"keeps CR and LF filenames on one listing bullet and follows exact hrefs",
+		async () => {
+			await withTempDir(async tempDir => {
+				const sessionId = `multiline-listing-${path.basename(tempDir)}`;
+				await withLocalRoot(sessionId, async localRoot => {
+					await Bun.write(path.join(localRoot, "line\nbreak.txt"), "line-feed");
+					await fs.mkdir(path.join(localRoot, "batch\rname"));
+					await Bun.write(path.join(localRoot, "batch\rname", "report\nraw.txt"), "nested-controls");
+					LocalProtocolHandler.setOverride(localOptions(sessionId, path.join(tempDir, "artifacts")));
+					const router = InternalUrlRouter.instance();
+					const listing = await router.resolve("local://");
+					const bullets = listing.content.split("\n").filter(line => line.startsWith("- ["));
+					expect(bullets).toHaveLength(2);
+					expect(bullets).toContain("- [line\\nbreak.txt](local://line%0Abreak.txt)");
+					expect(bullets).toContain("- [batch\\rname/report\\nraw.txt](local://batch%0Dname/report%0Araw.txt)");
+					expect((await router.resolve("local://line%0Abreak.txt")).content).toBe("line-feed");
+					expect((await router.resolve("local://batch%0Dname/report%0Araw.txt")).content).toBe("nested-controls");
+				});
+			});
+		},
+	);
+
 	it("blocks path traversal attempts", async () => {
 		await withTempDir(async tempDir => {
 			const sessionId = `session-c-${path.basename(tempDir)}`;
@@ -395,6 +499,34 @@ describe("LocalProtocolHandler", () => {
 		});
 	});
 
+	it("preserves literal percent escapes in the authority while decoding only the pathname", async () => {
+		await withTempDir(async tempDir => {
+			const sessionId = `percent-authority-${path.basename(tempDir)}`;
+			await withLocalRoot(sessionId, async localRoot => {
+				const literalPercent = path.join(localRoot, "report%3Araw.txt");
+				const decodedSibling = path.join(localRoot, "report:raw.txt");
+				await fs.writeFile(literalPercent, "literal");
+				await fs.writeFile(decodedSibling, "decoded");
+				const options = localOptions(sessionId, path.join(tempDir, "artifacts"));
+
+				expect(resolveLocalUrlToPath("local://report%253Araw.txt", options)).toBe(literalPercent);
+				expect(resolveLocalUrlToPath("local://report:raw.txt", options)).toBe(decodedSibling);
+			});
+		});
+	});
+
+	it("rejects malformed pathname escapes without decoding the authority again", async () => {
+		await withTempDir(async tempDir => {
+			const sessionId = `percent-malformed-${path.basename(tempDir)}`;
+			await withLocalRoot(sessionId, async () => {
+				const options = localOptions(sessionId, path.join(tempDir, "artifacts"));
+				expect(() => resolveLocalUrlToPath("local://report%253Araw.txt/%ZZ", options)).toThrow(
+					"Invalid URL encoding in local:// path",
+				);
+			});
+		});
+	});
+
 	it("resolves a stable external path before initialization", async () => {
 		const options = {
 			getSessionId: () => "session/fallback",
@@ -405,6 +537,44 @@ describe("LocalProtocolHandler", () => {
 		expect(resolveLocalUrlToPath("local://memo.txt", options)).toBe(path.join(root, "memo.txt"));
 		await initializeLocalRoot(options);
 		expect(resolveLocalUrlToPath("local://memo.txt", options)).toBe(path.join(root, "memo.txt"));
+	});
+
+	it("resolves against a cleanup_pending root the async gate already settled", async () => {
+		// The async gate treats `cleanup_pending` as settled: entries are installed and
+		// content-verified, only legacy-source retirement is outstanding. The sync
+		// resolver used to reject that same marker as unsafe, so a session whose
+		// migration ended in `cleanup_pending` failed closed on every local:// read.
+		await withTempDir(async artifactsDir => {
+			const sessionId = `cleanup-pending-sync-${path.basename(artifactsDir)}`;
+			await withLocalRoot(sessionId, async localRoot => {
+				await Bun.write(path.join(localRoot, "carried.json"), '{"carried":true}');
+				await fs.writeFile(path.join(localRoot, ".gjc-local-legacy-migrated-v1"), "cleanup_pending\n", {
+					mode: 0o600,
+				});
+
+				const options = localOptions(sessionId, artifactsDir);
+				expect(resolveLocalUrlToPath("local://carried.json", options)).toBe(path.join(localRoot, "carried.json"));
+				// Idempotent: a second resolution must not rewrite or reject the marker.
+				expect(resolveLocalUrlToPath("local://", options)).toBe(localRoot);
+				expect(await fs.readFile(path.join(localRoot, ".gjc-local-legacy-migrated-v1"), "utf8")).toBe(
+					"cleanup_pending\n",
+				);
+			});
+		});
+	});
+
+	it("still rejects an unrecognized migration marker value", async () => {
+		await withTempDir(async artifactsDir => {
+			const sessionId = `unsafe-marker-sync-${path.basename(artifactsDir)}`;
+			await withLocalRoot(sessionId, async localRoot => {
+				await fs.writeFile(path.join(localRoot, ".gjc-local-legacy-migrated-v1"), "definitely-not-a-state\n", {
+					mode: 0o600,
+				});
+				expect(() => resolveLocalUrlToPath("local://memo.txt", localOptions(sessionId, artifactsDir))).toThrow(
+					"Unsafe local:// migration marker",
+				);
+			});
+		});
 	});
 
 	it("blocks symlink escapes outside local root", async () => {

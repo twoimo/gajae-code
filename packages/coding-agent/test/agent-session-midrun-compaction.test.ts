@@ -1,7 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@gajae-code/agent-core";
+import {
+	Agent,
+	type AgentEvent,
+	type AgentTool,
+	type StreamFn,
+	setAgentTerminalOwnerContext,
+} from "@gajae-code/agent-core";
 
 import type { AssistantMessage, Model, StopReason } from "@gajae-code/ai";
 
@@ -337,6 +343,24 @@ describe("AgentSession mid-run compaction (issue #2035)", () => {
 		await Bun.sleep(10);
 	}
 
+	async function seedPrunableLoop(session: AgentSession, count: number, toolCallPrefix: string): Promise<void> {
+		await seedLoop(session, [
+			{ role: "user", content: "old request", timestamp: Date.now() },
+			...Array.from({ length: count }, (_, index) => ({
+				role: "toolResult",
+				toolCallId: `${toolCallPrefix}-${index}`,
+				toolName: "bash",
+				content: [{ type: "text", text: "x".repeat(120_000) }],
+				timestamp: Date.now(),
+			})),
+		]);
+		// Drain the old outputs first so this user turn lands after them. The real
+		// prompt then forms the two protected turns while the old outputs stay eligible.
+		await seedLoop(session, [
+			{ role: "user", content: "recent request before prune maintenance", timestamp: Date.now() },
+		]);
+	}
+
 	async function seedCompactableLoop(session: AgentSession, selectedModel: Model = model): Promise<void> {
 		await seedLoop(
 			session,
@@ -521,16 +545,7 @@ describe("AgentSession mid-run compaction (issue #2035)", () => {
 		let closed = 0;
 		loop.session.providerSessionState.set("openai-codex-responses", { close: () => closed++ });
 		try {
-			await seedLoop(loop.session, [
-				{ role: "user", content: "old request", timestamp: Date.now() },
-				...Array.from({ length: 3 }, (_, index) => ({
-					role: "toolResult",
-					toolCallId: `old-prunable-${index}`,
-					toolName: "bash",
-					content: [{ type: "text", text: "x".repeat(120_000) }],
-					timestamp: Date.now(),
-				})),
-			]);
+			await seedPrunableLoop(loop.session, 3, "old-prunable");
 			await loop.session.prompt("go", { skipCompactionCheck: true });
 			await loop.session.waitForIdle();
 
@@ -674,13 +689,21 @@ describe("AgentSession mid-run compaction (issue #2035)", () => {
 				assistantFor(model, { content: [{ type: "text", text: "unused" }], totalTokens: 1, stopReason: "stop" }),
 		});
 		try {
-			loop.session.agent.emitExternalEvent({
+			const resourceRunId = "aborted-maintenance-terminal-owner";
+			const domain = loop.session.agent.resourceLedger.open(resourceRunId);
+			if (!domain) throw new Error("Expected aborted maintenance resource domain");
+			const claimProducer = vi.spyOn(loop.session.agent.resourceLedger, "claimProducer");
+			const event = {
 				type: "agent_end",
 				messages: [],
 				stopReason: "maintenance",
 				maintenanceOutcome: "aborted",
-			});
-			await Bun.sleep(0);
+			} satisfies AgentEvent;
+			setAgentTerminalOwnerContext(event, { resourceRunId, domain });
+			loop.session.agent.emitExternalEvent(event);
+			loop.session.agent.resourceLedger.seal(resourceRunId);
+			await loop.session.waitForIdle();
+			expect(claimProducer).toHaveBeenCalledWith(resourceRunId, domain, expect.anything());
 			expect(
 				loop.events.filter(
 					event =>
@@ -813,16 +836,7 @@ describe("AgentSession mid-run compaction (issue #2035)", () => {
 			try {
 				// Five 30k-token outputs leave 90k pruneable after the 40k protection
 				// window, enough to avert the 100k threshold from the 180k usage anchor.
-				await seedLoop(loop.session, [
-					{ role: "user", content: "old request", timestamp: Date.now() },
-					...Array.from({ length: 5 }, (_, index) => ({
-						role: "toolResult",
-						toolCallId: `${operation}-prunable-${index}`,
-						toolName: "bash",
-						content: [{ type: "text", text: "x".repeat(120_000) }],
-						timestamp: Date.now(),
-					})),
-				]);
+				await seedPrunableLoop(loop.session, 5, `${operation}-prunable`);
 				const prompt = loop.session.prompt("go", { skipCompactionCheck: true });
 				await rewriteEntered.promise;
 				const cancellation = operation === "dispose" ? loop.session.dispose() : loop.session.newSession();
@@ -1074,16 +1088,7 @@ describe("AgentSession mid-run compaction (issue #2035)", () => {
 		try {
 			// Five 30k-token outputs leave 90k pruneable after the 40k protection
 			// window, enough to avert the 100k threshold from the 180k usage anchor.
-			await seedLoop(loop.session, [
-				{ role: "user", content: "old request", timestamp: Date.now() },
-				...Array.from({ length: 5 }, (_, index) => ({
-					role: "toolResult" as const,
-					toolCallId: `old-prunable-output-${index}`,
-					toolName: "bash",
-					content: [{ type: "text" as const, text: "x".repeat(120_000) }],
-					timestamp: Date.now(),
-				})),
-			]);
+			await seedPrunableLoop(loop.session, 5, "old-prunable-output");
 			const prompt = loop.session.prompt("go", { skipCompactionCheck: true });
 			await rewriteEntered.promise;
 			const abort = loop.session.abort();

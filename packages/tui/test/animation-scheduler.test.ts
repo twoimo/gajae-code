@@ -42,8 +42,10 @@ describe("shared animation scheduler", () => {
 		expect(__animationSchedulerTestHooks.getActiveTimerCount(80)).toBe(0);
 	});
 
-	it("recomputes declared time-dependent loaders at 16ms and default loaders at 80ms", () => {
+	it("recomputes time-dependent colors at 80ms on constrained terminals", () => {
 		vi.useFakeTimers();
+		const previousSshConnection = process.env.SSH_CONNECTION;
+		process.env.SSH_CONNECTION = "test";
 		let tick = 0;
 		const defaultRequests = vi.fn();
 		const animatedRequests = vi.fn();
@@ -57,7 +59,7 @@ describe("shared animation scheduler", () => {
 
 		try {
 			expect(__animationSchedulerTestHooks.getActiveTimerCount(80)).toBe(1);
-			expect(__animationSchedulerTestHooks.getActiveTimerCount(16)).toBe(1);
+			expect(__animationSchedulerTestHooks.getActiveTimerCount(16)).toBe(0);
 			const initialDefaultRequests = defaultRequests.mock.calls.length;
 			const initialAnimatedRequests = animatedRequests.mock.calls.length;
 
@@ -67,16 +69,18 @@ describe("shared animation scheduler", () => {
 			}
 
 			expect(defaultRequests.mock.calls.length).toBe(initialDefaultRequests);
-			expect(animatedRequests.mock.calls.length).toBe(initialAnimatedRequests + 4);
+			expect(animatedRequests.mock.calls.length).toBe(initialAnimatedRequests);
 
 			tick += 1;
 			vi.advanceTimersByTime(16);
 
 			expect(defaultRequests.mock.calls.length).toBe(initialDefaultRequests + 1);
-			expect(animatedRequests.mock.calls.length).toBe(initialAnimatedRequests + 5);
+			expect(animatedRequests.mock.calls.length).toBe(initialAnimatedRequests + 1);
 		} finally {
 			defaultLoader.stop();
 			animatedLoader.stop();
+			if (previousSshConnection === undefined) delete process.env.SSH_CONNECTION;
+			else process.env.SSH_CONNECTION = previousSshConnection;
 		}
 	});
 });

@@ -20,7 +20,6 @@ use pi_shell::{
 
 use crate::task;
 const SHELL_CALLBACK_QUEUE_CAPACITY: usize = 1024;
-const SHELL_LOSS_MARKER_PREFIX: &str = "\n[Shell output truncated: ";
 
 /// N-API opt-in handle for the minimizer.
 #[napi(object)]
@@ -274,10 +273,6 @@ pub fn execute_shell<'env>(
 	})
 }
 
-fn shell_loss_marker(dropped_chunks: usize, dropped_bytes: usize) -> String {
-	format!("{SHELL_LOSS_MARKER_PREFIX}{dropped_chunks} chunks / {dropped_bytes} bytes dropped]\n")
-}
-
 fn bridge_chunks(
 	on_chunk: Option<ThreadsafeFunction<String>>,
 ) -> (Option<mpsc::UnboundedSender<String>>, Option<napi::tokio::task::JoinHandle<()>>) {
@@ -288,36 +283,15 @@ fn bridge_chunks(
 	let (bounded_tx, mut bounded_rx) = mpsc::channel::<String>(SHELL_CALLBACK_QUEUE_CAPACITY);
 	let handle = napi::tokio::spawn(async move {
 		let forwarder = napi::tokio::spawn(async move {
-			let mut dropped_chunks = 0usize;
-			let mut dropped_bytes = 0usize;
-			// The upstream pi_shell sender is unbounded; this bridge re-bounds it and
-			// marks dropped output at the N-API callback boundary instead of silently
-			// losing it, so truncation is always observable to the caller.
+			// The upstream pi_shell sender is unbounded; this bridge re-bounds it so at
+			// most SHELL_CALLBACK_QUEUE_CAPACITY chunks are in flight toward the N-API
+			// callback. A full queue applies backpressure instead of dropping output:
+			// shell chunks are arbitrary byte slices, so discarding one silently
+			// corrupts the surviving stream rather than merely shortening it.
 			while let Some(chunk) = rx.recv().await {
-				if dropped_chunks > 0 {
-					match bounded_tx.try_send(shell_loss_marker(dropped_chunks, dropped_bytes)) {
-						Ok(()) => {
-							dropped_chunks = 0;
-							dropped_bytes = 0;
-						},
-						Err(mpsc::error::TrySendError::Full(_)) => {},
-						Err(mpsc::error::TrySendError::Closed(_)) => break,
-					}
+				if bounded_tx.send(chunk).await.is_err() {
+					break;
 				}
-				let chunk_len = chunk.len();
-				match bounded_tx.try_send(chunk) {
-					Ok(()) => {},
-					Err(mpsc::error::TrySendError::Full(_)) => {
-						dropped_chunks = dropped_chunks.saturating_add(1);
-						dropped_bytes = dropped_bytes.saturating_add(chunk_len);
-					},
-					Err(mpsc::error::TrySendError::Closed(_)) => break,
-				}
-			}
-			if dropped_chunks > 0 {
-				let _ = bounded_tx
-					.send(shell_loss_marker(dropped_chunks, dropped_bytes))
-					.await;
 			}
 		});
 		while let Some(chunk) = bounded_rx.recv().await {
@@ -367,9 +341,7 @@ mod tests {
 	};
 	use tokio::{sync::mpsc, task::yield_now, time};
 
-	use super::{
-		CoreShell, SHELL_CALLBACK_QUEUE_CAPACITY, SHELL_LOSS_MARKER_PREFIX, shell_loss_marker,
-	};
+	use super::{CoreShell, SHELL_CALLBACK_QUEUE_CAPACITY};
 
 	mod child_session_action_tests {
 		use pi_shell::{ChildSessionAction, child_session_action};
@@ -481,31 +453,39 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn final_shell_loss_marker_is_delivered_when_callback_queue_is_full() {
+	async fn full_callback_queue_backpressures_instead_of_dropping_chunks() {
 		let (tx, mut rx) = mpsc::channel::<String>(SHELL_CALLBACK_QUEUE_CAPACITY);
 		for i in 0..SHELL_CALLBACK_QUEUE_CAPACITY {
 			tx.try_send(format!("chunk-{i}"))
 				.expect("queue fill should succeed");
 		}
-		let final_sender = tokio::spawn(async move {
-			tx.send(shell_loss_marker(1, "dropped-tail".len()))
+		let overflow_sender = tokio::spawn(async move {
+			tx.send("chunk-overflow".to_string())
 				.await
 				.expect("receiver should remain open");
 		});
 
 		yield_now().await;
-		assert!(!final_sender.is_finished(), "final marker send should wait for capacity");
+		assert!(!overflow_sender.is_finished(), "overflowing send should wait for capacity");
 
-		let mut output = String::new();
+		let mut received = Vec::new();
 		while let Some(chunk) = rx.recv().await {
-			output.push_str(&chunk);
-			if output.contains(SHELL_LOSS_MARKER_PREFIX) {
+			let last = chunk == "chunk-overflow";
+			received.push(chunk);
+			if last {
 				break;
 			}
 		}
-		final_sender.await.expect("final sender should not panic");
+		overflow_sender
+			.await
+			.expect("overflow sender should not panic");
 
-		assert!(output.contains(SHELL_LOSS_MARKER_PREFIX));
-		assert!(output.contains("1 chunks / 12 bytes dropped"));
+		assert_eq!(received.len(), SHELL_CALLBACK_QUEUE_CAPACITY + 1);
+		assert_eq!(received[0], "chunk-0");
+		assert_eq!(
+			received[SHELL_CALLBACK_QUEUE_CAPACITY - 1],
+			format!("chunk-{}", SHELL_CALLBACK_QUEUE_CAPACITY - 1)
+		);
+		assert_eq!(received[SHELL_CALLBACK_QUEUE_CAPACITY], "chunk-overflow");
 	}
 }

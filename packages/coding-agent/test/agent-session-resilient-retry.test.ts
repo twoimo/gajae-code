@@ -9,6 +9,7 @@ import { ModelRegistry } from "@gajae-code/coding-agent/config/model-registry";
 import { Settings } from "@gajae-code/coding-agent/config/settings";
 import { ExtensionRunner } from "@gajae-code/coding-agent/extensibility/extensions/runner";
 import type { Extension } from "@gajae-code/coding-agent/extensibility/extensions/types";
+import { createAgentSession } from "@gajae-code/coding-agent/sdk";
 import { AgentSession, type AgentSessionEvent } from "@gajae-code/coding-agent/session/agent-session";
 import { AuthStorage } from "@gajae-code/coding-agent/session/auth-storage";
 import { SessionManager } from "@gajae-code/coding-agent/session/session-manager";
@@ -125,6 +126,7 @@ describe("AgentSession resilient retry", () => {
 		messageModel?: string;
 		requestedModels?: string[];
 		settingsOverrides?: Record<string, unknown>;
+		onStreamStart?: () => void;
 	}): AgentSession {
 		const model = options.model ?? getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled test model to exist");
@@ -135,8 +137,9 @@ describe("AgentSession resilient retry", () => {
 			getApiKey: provider => `${provider}-test-key`,
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 			streamFn: (requestedModel, context, opts) => {
-				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
 				calls++;
+				options.onStreamStart?.();
+				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
 				if (calls > 1 && options.recoveredContent) {
 					return createMockModel({ responses: [{ content: [options.recoveredContent] }] }).stream(
 						requestedModel,
@@ -245,8 +248,12 @@ describe("AgentSession resilient retry", () => {
 		const agent = new Agent({
 			getApiKey: provider => `${provider}-test-key`,
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
-			transformContext: extensionRunner ? messages => extensionRunner.emitContext(messages) : undefined,
-			onPayload: extensionRunner ? payload => extensionRunner.emitBeforeProviderRequest(payload) : undefined,
+			transformContext: extensionRunner
+				? (messages, _signal, scope) => extensionRunner.emitContext(messages, scope)
+				: undefined,
+			onPayload: extensionRunner
+				? (payload, _model, scope) => extensionRunner.emitBeforeProviderRequest(payload, scope)
+				: undefined,
 			streamFn: (requestedModel, context, opts) => {
 				requestedModels.push(`${requestedModel.provider}/${requestedModel.id}`);
 				options.onStreamStart?.(agent);
@@ -264,8 +271,8 @@ describe("AgentSession resilient retry", () => {
 			modelRegistry,
 			extensionRunner,
 			onResponse: extensionRunner
-				? async (response, model) => {
-						await extensionRunner.emitAfterProviderResponse(response, model);
+				? async (response, model, scope) => {
+						await extensionRunner.emitAfterProviderResponse(response, model, scope);
 					}
 				: undefined,
 		});
@@ -280,6 +287,9 @@ describe("AgentSession resilient retry", () => {
 		const agent = new Agent({
 			getApiKey: provider => `${provider}-test-key`,
 			initialState: { model, systemPrompt: ["Test"], tools: options.tools ?? [], messages: [] },
+			transformContext: options.extensionRunner
+				? (messages, _signal, scope) => options.extensionRunner!.emitContext(messages, scope)
+				: undefined,
 			streamFn: options.streamFn,
 		});
 		const settings = Settings.isolated({ "compaction.enabled": false });
@@ -363,6 +373,97 @@ describe("AgentSession resilient retry", () => {
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: true });
 		expect(lastAssistant(session).stopReason).toBe("stop");
+	});
+
+	it("does not auto-retry configured legacy unknown errors after partial stream progress (#3791)", async () => {
+		// Proxy-style terminal stream failure after partial output crossed the public
+		// stream boundary. Under explicit retry.* settings the unclassified failure
+		// is bounded-unknown-retry eligible, but replaying after observable content
+		// is unsafe for non-idempotent tool side effects.
+		const cases: Array<{
+			partialContent: string;
+			errorMessage: string;
+			transportFailure?: AssistantMessage["transportFailure"];
+		}> = [
+			{
+				partialContent: "already streamed",
+				errorMessage: "upstream request failed: stream interrupted before terminal response event",
+				transportFailure: { kind: "transport", providerCode: "upstream_stream_error" },
+			},
+			{
+				partialContent: "partial thinking leaked as text",
+				errorMessage: "weird unclassified glitch after progress",
+			},
+		];
+		for (const testCase of cases) {
+			const requestedModels: string[] = [];
+			session = buildStatusErrorSession({
+				errorMessage: testCase.errorMessage,
+				transportFailure: testCase.transportFailure,
+				partialContent: testCase.partialContent,
+				recoveredContent: "should-not-retry",
+				requestedModels,
+			});
+			vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+			const { retryStartEvents } = track(session);
+
+			await session.prompt("partial progress then terminal stream failure");
+			await session.waitForIdle();
+
+			expect(retryStartEvents).toHaveLength(0);
+			expect(requestedModels).toHaveLength(1);
+			const last = lastAssistant(session);
+			expect(last.stopReason).toBe("error");
+			expect(last.errorMessage).toBe(testCase.errorMessage);
+			expect(last.content).toEqual([{ type: "text", text: testCase.partialContent }]);
+			await session.dispose();
+			session = undefined;
+		}
+	});
+
+	it("does not auto-retry configured legacy transient errors after partial stream progress (#3791)", async () => {
+		const requestedModels: string[] = [];
+		session = buildStatusErrorSession({
+			errorMessage: "stream stall: connection terminated mid-response",
+			partialContent: "hello from the partial stream",
+			recoveredContent: "should-not-retry",
+			requestedModels,
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents } = track(session);
+
+		await session.prompt("partial progress then transient-class stream failure");
+		await session.waitForIdle();
+
+		expect(retryStartEvents).toHaveLength(0);
+		expect(requestedModels).toHaveLength(1);
+		const last = lastAssistant(session);
+		expect(last.stopReason).toBe("error");
+		expect(last.content).toEqual([{ type: "text", text: "hello from the partial stream" }]);
+	});
+
+	it("still retries content-free configured legacy unknown errors after the replay-safety gate (#3791)", async () => {
+		// Content-free clean failures keep the existing bounded unknown retry policy.
+		const requestedModels: string[] = [];
+		session = buildStatusErrorSession({
+			errorMessage: "upstream request failed: stream interrupted before terminal response event",
+			transportFailure: { kind: "transport", providerCode: "upstream_stream_error" },
+			recoveredContent: "recovered",
+			requestedModels,
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents, retryEndEvents } = track(session);
+
+		await session.prompt("content-free upstream_stream_error");
+		await session.waitForIdle();
+
+		expect(requestedModels).toHaveLength(2);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryEndEvents).toEqual([expect.objectContaining({ success: true })]);
+		expect(lastAssistant(session)).toMatchObject({
+			stopReason: "stop",
+			content: [{ type: "text", text: "recovered" }],
+		});
 	});
 
 	it("surfaces terminal coded errors without retrying", async () => {
@@ -515,15 +616,15 @@ describe("AgentSession resilient retry", () => {
 		expect(lastAssistant(session).stopReason).toBe("stop");
 	});
 
-	it("does not retry when retry.enabled is false", async () => {
+	it("does not retry the canonical wrapped timeout when retry.enabled is false", async () => {
 		session = buildSession({
-			responses: [{ throw: "503 service unavailable: overloaded_error" }],
+			responses: [{ throw: "Error: Provider stream timed out while waiting for the first event" }],
 			settingsOverrides: { "retry.enabled": false },
 		});
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const { retryStartEvents } = track(session);
 
-		await session.prompt("trigger transient with retry disabled");
+		await session.prompt("canonical timeout with retry disabled");
 		await session.waitForIdle();
 
 		expect(retryStartEvents).toHaveLength(0);
@@ -566,12 +667,13 @@ describe("AgentSession resilient retry", () => {
 		expect(lastAssistant(session).stopReason).toBe("stop");
 	});
 
-	it("abortRetry cancels the retry and surfaces the error", async () => {
+	it("abortRetry cancels a canonical first-event retry and surfaces cancellation", async () => {
+		const errorMessage = "Error: Provider stream timed out while waiting for the first event";
 		session = buildSession({
-			responses: [{ throw: "503 service unavailable: overloaded_error" }, { content: ["should not reach"] }],
+			responses: [{ throw: errorMessage }, { content: ["should not reach"] }],
 			settingsOverrides: { "retry.baseDelayMs": 600_000, "retry.maxDelayMs": 600_000 },
 		});
-		const { retryEndEvents } = track(session);
+		const { retryStartEvents, retryEndEvents } = track(session);
 		let resolveStarted!: () => void;
 		const started = new Promise<void>(r => {
 			resolveStarted = r;
@@ -597,6 +699,7 @@ describe("AgentSession resilient retry", () => {
 		expect(retryEndEvents).toHaveLength(1);
 		expect(retryEndEvents[0]).toMatchObject({ success: false });
 		expect(retryEndEvents[0].finalError).toContain("cancelled");
+		expect(retryStartEvents).toEqual([expect.objectContaining({ errorMessage, unbounded: false, maxAttempts: 2 })]);
 		// The errored assistant message was stripped in preparation for the retry,
 		// so cancellation simply returns to idle (the error remains in session history).
 		expect(session.isRetrying).toBe(false);
@@ -770,9 +873,33 @@ describe("AgentSession resilient retry", () => {
 		const cases = [
 			{
 				model: responsesModel,
+				errorMessage: "Provider stream timed out while waiting for the first event",
+				settingsOverrides: { "retry.maxRetries": 10 },
+				bareDefault: false,
+			},
+			{
+				model: responsesModel,
+				errorMessage: "Error: Provider stream timed out while waiting for the first event",
+				settingsOverrides: { "retry.maxRetries": 10 },
+				bareDefault: false,
+			},
+			{
+				model: responsesModel,
 				errorMessage: "OpenAI responses stream timed out while waiting for the first event",
 				settingsOverrides: { "retry.maxRetries": 10 },
 				bareDefault: false,
+			},
+			{
+				model: completionsModel,
+				errorMessage: "Provider stream timed out while waiting for the first event",
+				settingsOverrides: undefined,
+				bareDefault: true,
+			},
+			{
+				model: completionsModel,
+				errorMessage: "Error: Provider stream timed out while waiting for the first event",
+				settingsOverrides: undefined,
+				bareDefault: true,
 			},
 			{
 				model: completionsModel,
@@ -824,7 +951,7 @@ describe("AgentSession resilient retry", () => {
 		const alibabaModel = getBundledModel("alibaba-token-plan", "qwen3.8-max-preview");
 		const anthropicModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!alibabaModel || !anthropicModel) throw new Error("Expected bundled test models");
-		const timeoutMessage = "OpenAI responses stream timed out while waiting for the first event";
+		const timeoutMessage = "Provider stream timed out while waiting for the first event";
 		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 
 		const retryRequestedModels: string[] = [];
@@ -953,25 +1080,37 @@ describe("AgentSession resilient retry", () => {
 		expect(last.errorMessage).toContain("first event");
 		expect(waitSpy).toHaveBeenCalled();
 	});
-	it("surfaces a Kimi Code first-event timeout after its continuous wait without replaying the request", async () => {
+	it("surfaces raw and wrapped Kimi Code first-event timeouts without replaying", async () => {
 		const model = getBundledModel("kimi-code", "kimi-k2.5");
 		if (!model) throw new Error("Expected bundled Kimi Code test model to exist");
-		const requestedModels: string[] = [];
-		session = buildStatusErrorSession({
-			model,
-			errorMessage: "Provider stream timed out while waiting for the first event",
-			requestedModels,
-		});
-		const { retryStartEvents, retryEndEvents } = track(session);
+		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		for (const errorMessage of [
+			"Provider stream timed out while waiting for the first event",
+			"Error: Provider stream timed out while waiting for the first event",
+		]) {
+			const requestedModels: string[] = [];
+			session = buildStatusErrorSession({
+				model,
+				errorMessage,
+				requestedModels,
+				settingsOverrides: { "retry.maxRetries": 10 },
+			});
+			const { retryStartEvents, retryEndEvents } = track(session);
 
-		await session.prompt("slow Kimi request");
-		await session.waitForIdle();
+			await session.prompt("slow Kimi request");
+			await session.waitForIdle();
 
-		expect(retryStartEvents).toHaveLength(0);
-		expect(retryEndEvents).toHaveLength(0);
-		expect(requestedModels).toHaveLength(1);
-		expect(lastAssistant(session).stopReason).toBe("error");
-		expect(lastAssistant(session).errorMessage).toContain("first event");
+			expect(retryStartEvents).toHaveLength(0);
+			expect(retryEndEvents).toHaveLength(0);
+			expect(requestedModels).toEqual([`${model.provider}/${model.id}`]);
+			expect(waitSpy).not.toHaveBeenCalled();
+			expect(lastAssistant(session)).toMatchObject({ stopReason: "error", errorMessage });
+			expect(session.isRetrying).toBe(false);
+			expect(session.isStreaming).toBe(false);
+			await session.dispose();
+			session = undefined;
+			waitSpy.mockClear();
+		}
 	});
 
 	it("keeps first-party first-event timeout retries unbounded (#713 scope guard)", async () => {
@@ -1026,26 +1165,280 @@ describe("AgentSession resilient retry", () => {
 		expect(retryEndEvents[0]).toMatchObject({ success: true });
 		expect(lastAssistant(session).stopReason).toBe("stop");
 	});
-	it("retries a bare-default watchdog with an empty extension runner", async () => {
+	it("retries the reported Codex capacity overload under bare defaults", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.4-mini");
+		if (!model) throw new Error("Expected bundled Codex test model to exist");
 		const requestedModels: string[] = [];
-		session = buildBareRetrySession({
-			responses: [
-				{ throw: "Example Provider Watchdog stream timed out while waiting for the first event" },
-				{ content: ["recovered"] },
-			],
+		session = buildStatusErrorSession({
+			model,
+			bareDefault: true,
+			errorMessage:
+				"Codex error event: Our servers are currently overloaded. Please try again later. (code=server_is_overloaded)",
+			recoveredContent: "recovered after provider retries",
 			requestedModels,
-			extensionRunner: createExtensionRunner(),
 		});
-		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
 		const { retryStartEvents, retryEndEvents } = track(session);
 
-		await session.prompt("bare-config empty extension watchdog");
+		await session.prompt("recover Codex overload");
 		await session.waitForIdle();
 
 		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0]?.delayMs).toBeGreaterThan(0);
+		expect(waitSpy).toHaveBeenCalledWith(retryStartEvents[0]?.delayMs, expect.anything());
 		expect(requestedModels).toHaveLength(2);
 		expect(retryEndEvents).toEqual([expect.objectContaining({ success: true })]);
+		expect(lastAssistant(session).content).toEqual([{ type: "text", text: "recovered after provider retries" }]);
+	});
+	it("does not retry near-miss or non-Codex overload errors under bare defaults", async () => {
+		const codexModel = getBundledModel("openai-codex", "gpt-5.4-mini");
+		const anthropicModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!codexModel || !anthropicModel) throw new Error("Expected bundled test models to exist");
+		for (const testCase of [
+			{
+				model: codexModel,
+				errorMessage:
+					"Codex error event: Our servers are currently overloaded. Please try again later. (code=server_error)",
+			},
+			{
+				model: anthropicModel,
+				errorMessage:
+					"Codex error event: Our servers are currently overloaded. Please try again later. (code=server_is_overloaded)",
+			},
+		]) {
+			const requestedModels: string[] = [];
+			session = buildStatusErrorSession({
+				model: testCase.model,
+				bareDefault: true,
+				errorMessage: testCase.errorMessage,
+				recoveredContent: "should not retry",
+				requestedModels,
+			});
+			const { retryStartEvents } = track(session);
+
+			await session.prompt("surface non-admitted overload");
+			await session.waitForIdle();
+
+			expect(retryStartEvents).toHaveLength(0);
+			expect(requestedModels).toHaveLength(1);
+			expect(lastAssistant(session).stopReason).toBe("error");
+			await session.dispose();
+			session = undefined;
+		}
+	});
+	it("forwards only explicit first-event timeout settings to provider stream options", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled Anthropic test model to exist");
+
+		for (const testCase of [
+			{ name: "absent", setting: undefined, expected: undefined },
+			{ name: "zero", setting: 0, expected: 0 },
+			{ name: "positive", setting: 12_345, expected: 12_345 },
+		]) {
+			const capturedTimeouts: Array<number | undefined> = [];
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				...(testCase.setting === undefined ? {} : { "retry.streamFirstEventTimeoutMs": testCase.setting }),
+			});
+			const { session: configuredSession } = await createAgentSession({
+				cwd: tempDir.path(),
+				agentDir: tempDir.path(),
+				model,
+				modelRegistry,
+				settings,
+				sessionManager: SessionManager.inMemory(),
+				disableExtensionDiscovery: true,
+				skills: [],
+				rules: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+				toolNames: [],
+				workspaceTree: {
+					rootPath: tempDir.path(),
+					rendered: "",
+					truncated: false,
+					totalLines: 0,
+					agentsMdFiles: [],
+				},
+			});
+			session = configuredSession;
+			const mock = createMockModel({ responses: [{ content: ["ok"] }] });
+			configuredSession.agent.streamFn = (streamModel, context, options) => {
+				capturedTimeouts.push(options?.streamFirstEventTimeoutMs);
+				return mock.stream(streamModel, context, options);
+			};
+
+			expect(configuredSession.agent.streamFirstEventTimeoutMs, testCase.name).toBe(testCase.expected);
+			await configuredSession.prompt(`first-event timeout ${testCase.name}`);
+			await configuredSession.waitForIdle();
+			expect(capturedTimeouts, testCase.name).toEqual([testCase.expected]);
+
+			await configuredSession.dispose();
+			session = undefined;
+		}
+	}, 30_000);
+	it("replays typed first-event timeouts only up to retry.maxRetries + 1 total attempts", async () => {
+		const requestedModels: string[] = [];
+		session = buildStatusErrorSession({
+			errorMessage: "provider message is not used for timeout classification",
+			transportFailure: { kind: "transport", providerCode: "stream_first_event_timeout" },
+			requestedModels,
+			settingsOverrides: { "retry.maxRetries": 2 },
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents } = track(session);
+
+		await session.prompt("typed first-event timeout");
+		await session.waitForIdle();
+
+		expect(requestedModels).toHaveLength(3);
+		expect(retryStartEvents).toHaveLength(2);
+		expect(retryStartEvents.every(event => event.maxAttempts === 3 && event.unbounded === false)).toBe(true);
+		expect(lastAssistant(session).errorMessage).toMatch(/exhausted after 3 attempts; waited \d+ms total/);
+	});
+	it("replays a typed first-event timeout before progress and never after progress", async () => {
+		const noProgressModels: string[] = [];
+		session = buildStatusErrorSession({
+			errorMessage: "provider message is not used for timeout classification",
+			transportFailure: { kind: "transport", providerCode: "stream_first_event_timeout" },
+			recoveredContent: "recovered",
+			requestedModels: noProgressModels,
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+		await session.prompt("typed timeout before progress");
+		await session.waitForIdle();
+
+		expect(noProgressModels).toHaveLength(2);
 		expect(lastAssistant(session).stopReason).toBe("stop");
+		await session.dispose();
+		session = undefined;
+
+		const progressModels: string[] = [];
+		session = buildStatusErrorSession({
+			errorMessage: "provider message is not used for timeout classification",
+			transportFailure: { kind: "transport", providerCode: "stream_first_event_timeout" },
+			partialContent: "already streamed",
+			requestedModels: progressModels,
+		});
+
+		await session.prompt("typed timeout after progress");
+		await session.waitForIdle();
+
+		expect(progressModels).toHaveLength(1);
+		expect(lastAssistant(session).stopReason).toBe("error");
+	});
+	it("retries a typed clean first-event timeout without manual attempt-scope seeding", async () => {
+		const requestedModels: string[] = [];
+		session = buildStatusErrorSession({
+			bareDefault: true,
+			errorMessage: "Error: Provider stream timed out while waiting for the first event",
+			transportFailure: { kind: "transport", providerCode: "stream_first_event_timeout" },
+			recoveredContent: "recovered",
+			requestedModels,
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+		await session.prompt("typed clean timeout");
+		await session.waitForIdle();
+
+		expect(requestedModels).toHaveLength(2);
+		expect(lastAssistant(session).content).toEqual([{ type: "text", text: "recovered" }]);
+	});
+	it("recovers a typed first-event timeout in the same bare-default turn", async () => {
+		const errorMessage = "Error: Provider stream timed out while waiting for the first event";
+		const requestedModels: string[] = [];
+		session = buildStatusErrorSession({
+			bareDefault: true,
+			errorMessage,
+			transportFailure: { kind: "transport", providerCode: "stream_first_event_timeout" },
+			recoveredContent: "recovered",
+			requestedModels,
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents, retryEndEvents } = track(session);
+		const maxAttempts = session.settings.getGroup("retry").maxRetries + 1;
+
+		await session.prompt("bare-config canonical wrapped timeout");
+		await session.waitForIdle();
+
+		expect(requestedModels).toHaveLength(2);
+		expect(retryStartEvents).toEqual([
+			expect.objectContaining({ attempt: 1, maxAttempts, errorMessage, unbounded: false }),
+		]);
+		expect(retryEndEvents).toEqual([expect.objectContaining({ success: true, attempt: 1 })]);
+		expect(lastAssistant(session)).toMatchObject({
+			stopReason: "stop",
+			content: [{ type: "text", text: "recovered" }],
+		});
+	});
+
+	it("bounds canonical wrapped first-event timeout exhaustion with exact diagnostics", async () => {
+		const errorMessage = "Error: Provider stream timed out while waiting for the first event";
+		const requestedModels: string[] = [];
+		session = buildStatusErrorSession({
+			errorMessage,
+			transportFailure: { kind: "transport", providerCode: "stream_first_event_timeout" },
+			requestedModels,
+			settingsOverrides: { "retry.maxRetries": 2 },
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents } = track(session);
+
+		await session.prompt("exhaust canonical wrapped timeout");
+		await session.waitForIdle();
+
+		expect(requestedModels).toHaveLength(3);
+		expect(retryStartEvents).toHaveLength(2);
+		expect(retryStartEvents.every(event => event.maxAttempts === 3 && event.unbounded === false)).toBe(true);
+		expect(lastAssistant(session).errorMessage).toMatch(
+			/^First-event stream timeout exhausted after 3 attempts; waited \d+ms total: Error: Provider stream timed out while waiting for the first event$/,
+		);
+	});
+
+	it("bounds the exact no-the first-event compatibility message under explicit retry policy", async () => {
+		const errorMessage = "Provider stream timed out while waiting for first event";
+		const requestedModels: string[] = [];
+		session = buildStatusErrorSession({
+			errorMessage,
+			transportFailure: { kind: "transport", providerCode: "stream_first_event_timeout" },
+			requestedModels,
+			settingsOverrides: { "retry.maxRetries": 1 },
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents } = track(session);
+
+		await session.prompt("exact no-the first-event timeout");
+		await session.waitForIdle();
+
+		expect(requestedModels).toHaveLength(2);
+		expect(retryStartEvents).toEqual([
+			expect.objectContaining({ attempt: 1, maxAttempts: 2, errorMessage, unbounded: false }),
+		]);
+		expect(lastAssistant(session).errorMessage).toContain("exhausted after 2 attempts");
+	});
+	it("reseeds first-event timeout accounting at the first retryable failure", async () => {
+		let now = 10;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		let calls = 0;
+		session = buildStatusErrorSession({
+			errorMessage: "Error: Provider stream timed out while waiting for the first event",
+			transportFailure: { kind: "transport", providerCode: "stream_first_event_timeout" },
+			settingsOverrides: { "retry.maxRetries": 1 },
+			onStreamStart: () => {
+				now = ++calls === 1 ? 100 : 160;
+			},
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+
+		await session.prompt("deterministic first-event timeout accounting");
+		await session.waitForIdle();
+
+		expect(lastAssistant(session).errorMessage).toContain("waited 60ms total");
 	});
 	it("does not replay a bare-default watchdog after a reasoning summary start hook participates", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
@@ -1060,7 +1453,7 @@ describe("AgentSession resilient retry", () => {
 						model,
 						[],
 						"error",
-						"Example Provider Watchdog stream stalled while waiting for the next event",
+						"Error: Provider stream timed out while waiting for the first event",
 					);
 					stream.push({ type: "start", partial: failure });
 					stream.push({ type: "reasoning_summary_start", contentIndex: 0, partial: failure });
@@ -1097,7 +1490,7 @@ describe("AgentSession resilient retry", () => {
 		const requestedModels: string[] = [];
 		session = buildBareRetrySession({
 			responses: [
-				{ throw: "Example Provider Watchdog stream timed out while waiting for the first event" },
+				{ throw: "Error: Provider stream timed out while waiting for the first event" },
 				{ content: ["should-not-reach"] },
 			],
 			requestedModels,
@@ -1132,7 +1525,7 @@ describe("AgentSession resilient retry", () => {
 			session = buildBareRetrySession({
 				responses: [
 					{
-						throw: "Example Provider Watchdog stream timed out while waiting for the first event",
+						throw: "Error: Provider stream timed out while waiting for the first event",
 						...(eventType === "after_provider_response" ? { responseHeaders: { "x-request-id": "test" } } : {}),
 					},
 					{ content: ["should-not-reach"] },
@@ -1166,16 +1559,72 @@ describe("AgentSession resilient retry", () => {
 			session = undefined;
 		}
 	});
+	it("rejects a typed watchdog when a handler executes in its current scope", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		let hookCalls = 0;
+		let streamCalls = 0;
+		session = buildBareStreamingSession({
+			streamFn: () => {
+				streamCalls++;
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const failure = assistantMessage(
+						model,
+						[],
+						"error",
+						"Error: Provider stream timed out while waiting for the first event",
+					);
+					failure.transportFailure = { kind: "transport", providerCode: "stream_first_event_timeout" };
+					stream.push({ type: "start", partial: failure });
+					stream.push({ type: "error", reason: "error", error: failure });
+				});
+				return stream;
+			},
+			extensionRunner: createExtensionRunner(
+				new Map([
+					[
+						"context",
+						[
+							async () => {
+								hookCalls++;
+							},
+						],
+					],
+				]),
+			),
+		});
+		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents } = track(session);
+
+		await session.prompt("current scope extension watchdog");
+		await session.waitForIdle();
+
+		expect(hookCalls).toBe(1);
+		expect(streamCalls).toBe(1);
+		expect(retryStartEvents).toHaveLength(0);
+		expect(lastAssistant(session).stopReason).toBe("error");
+	});
 	it("does not replay a second bare-default watchdog after auto_retry_start handlers participate", async () => {
 		let hookCalls = 0;
-		const requestedModels: string[] = [];
-		session = buildBareRetrySession({
-			responses: [
-				{ throw: "Example Provider Watchdog stream timed out while waiting for the first event" },
-				{ throw: "Example Provider Watchdog stream timed out while waiting for the first event" },
-				{ content: ["should-not-reach"] },
-			],
-			requestedModels,
+		let streamCalls = 0;
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		session = buildBareStreamingSession({
+			streamFn: () => {
+				streamCalls++;
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const failure = assistantMessage(
+						model,
+						[],
+						"error",
+						"Error: Provider stream timed out while waiting for the first event",
+					);
+					failure.transportFailure = { kind: "transport", providerCode: "stream_first_event_timeout" };
+					stream.push({ type: "start", partial: failure });
+					stream.push({ type: "error", reason: "error", error: failure });
+				});
+				return stream;
+			},
 			extensionRunner: createExtensionRunner(
 				new Map([
 					[
@@ -1197,7 +1646,7 @@ describe("AgentSession resilient retry", () => {
 
 		expect(hookCalls).toBe(1);
 		expect(retryStartEvents).toHaveLength(1);
-		expect(requestedModels).toHaveLength(2);
+		expect(streamCalls).toBe(2);
 		expect(lastAssistant(session).stopReason).toBe("error");
 	});
 
@@ -1233,7 +1682,7 @@ describe("AgentSession resilient retry", () => {
 							model,
 							[],
 							"error",
-							"Example Provider Watchdog stream timed out while waiting for the first event",
+							"Error: Provider stream timed out while waiting for the first event",
 						);
 						if (!partialOutput) empty.transportFailure = { kind: "transport", status: 503 };
 						stream.push({ type: "start", partial: empty });
@@ -1242,7 +1691,7 @@ describe("AgentSession resilient retry", () => {
 								model,
 								[{ type: "text", text: "already visible" }],
 								"error",
-								"Example Provider Watchdog stream timed out while waiting for the first event",
+								"Error: Provider stream timed out while waiting for the first event",
 							);
 							stream.push({ type: "text_start", contentIndex: 0, partial: empty });
 							stream.push({ type: "text_delta", contentIndex: 0, delta: "already ", partial: visible });
@@ -1278,7 +1727,7 @@ describe("AgentSession resilient retry", () => {
 			session = undefined;
 		}
 	});
-	it("does not replay a bare-default watchdog after a registered tool completes and continues", async () => {
+	it("retries a typed clean watchdog after an earlier tool execution in the same run", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const toolCall: ToolCall = { type: "toolCall", id: "counted-tool-call", name: "counted", arguments: {} };
 		let toolRuns = 0;
@@ -1305,31 +1754,42 @@ describe("AgentSession resilient retry", () => {
 						stream.push({ type: "done", reason: "toolUse", message: response });
 						return;
 					}
-					const failure = assistantMessage(
-						model,
-						[],
-						"error",
-						"Example Provider Watchdog stream timed out while waiting for the first event",
-					);
-					stream.push({ type: "start", partial: failure });
-					stream.push({ type: "error", reason: "error", error: failure });
+					if (streamCalls === 2) {
+						const failure = assistantMessage(
+							model,
+							[],
+							"error",
+							"Error: Provider stream timed out while waiting for the first event",
+						);
+						failure.transportFailure = { kind: "transport", providerCode: "stream_first_event_timeout" };
+						stream.push({ type: "start", partial: failure });
+						stream.push({ type: "error", reason: "error", error: failure });
+						return;
+					}
+					const recovered = assistantMessage(model, [{ type: "text", text: "recovered" }], "stop");
+					stream.push({ type: "start", partial: recovered });
+					stream.push({ type: "done", reason: "stop", message: recovered });
 				});
 				return stream;
 			},
+			extensionRunner: createExtensionRunner(),
 		});
 		vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
 		const { retryStartEvents } = track(session);
 
-		await session.prompt("real counted tool watchdog");
+		await session.prompt("prior tool history, clean watchdog scope");
 		await session.waitForIdle();
 
 		expect(toolRuns).toBe(1);
 		expect(session.agent.state.messages).toContainEqual(
 			expect.objectContaining({ role: "toolResult", toolCallId: toolCall.id, toolName: "counted" }),
 		);
-		expect(streamCalls).toBe(2);
-		expect(retryStartEvents).toHaveLength(0);
-		expect(lastAssistant(session).stopReason).toBe("error");
+		expect(streamCalls).toBe(3);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(lastAssistant(session)).toMatchObject({
+			stopReason: "stop",
+			content: [{ type: "text", text: "recovered" }],
+		});
 	});
 	it("gives an active cancel-and-submit replacement a clean retry epoch", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
@@ -1363,8 +1823,9 @@ describe("AgentSession resilient retry", () => {
 							model,
 							[],
 							"error",
-							"Example Provider Watchdog stream timed out while waiting for the first event",
+							"Error: Provider stream timed out while waiting for the first event",
 						);
+						failure.transportFailure = { kind: "transport", providerCode: "stream_first_event_timeout" };
 						stream.push({ type: "start", partial: failure });
 						stream.push({ type: "error", reason: "error", error: failure });
 						return;
@@ -1403,8 +1864,9 @@ describe("AgentSession resilient retry", () => {
 	it("fails closed on non-canonical watchdog prose under bare defaults", async () => {
 		const nearMisses = [
 			"stream timed out while waiting for the first event",
-			"Error: Provider stream timed out while waiting for the first event",
+			"Provider stream timed out while waiting for first event",
 			"Provider stream timed out while waiting for the first event.",
+			"TypeError: Provider stream timed out while waiting for the first event",
 			"Provider stream timeout waiting for first event",
 		];
 		for (const errorMessage of nearMisses) {

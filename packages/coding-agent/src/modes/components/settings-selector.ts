@@ -22,10 +22,12 @@ import type {
 	StatusLineSeparatorStyle,
 } from "../../config/settings-schema";
 import { SETTING_TABS, TAB_METADATA } from "../../config/settings-schema";
+import type { GjcRuntimeSnapshotProvider } from "../../extensibility/gjc-plugins/runtime-quarantine";
 import { getCurrentThemeName, getSelectListTheme, getSettingsListTheme, theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
 import { getTabBarTheme } from "../shared";
 import { DynamicBorder } from "./dynamic-border";
+import { GjcBundleSettingsComponent } from "./gjc-bundle-settings";
 import {
 	type NotificationsEditorOperations,
 	NotificationsSettingsEditorComponent,
@@ -235,18 +237,16 @@ function getSavedUsageMode(): UsageMode {
 	return segmentOptions.usage?.mode === "remaining" ? "remaining" : "used";
 }
 
-function setSavedUsageMode(mode: string): StatusLineSegmentOptions {
+function getUsageModeSettings(mode: string): StatusLineSegmentOptions {
 	const normalizedMode: UsageMode = mode === "remaining" ? "remaining" : "used";
 	const segmentOptions = settings.get("statusLine.segmentOptions") as StatusLineSegmentOptions;
-	const nextOptions: StatusLineSegmentOptions = {
+	return {
 		...segmentOptions,
 		usage: {
 			...(segmentOptions.usage ?? {}),
 			mode: normalizedMode,
 		},
 	};
-	settings.set("statusLine.segmentOptions", nextOptions as Record<string, unknown>);
-	return nextOptions;
 }
 
 function statusSegmentLabel(id: StatusLineSegmentId): string {
@@ -613,14 +613,17 @@ class StatusLineCustomEditor extends Container {
 	}
 
 	#save(): void {
-		settings.set("statusLine.preset", "custom");
-		settings.set("statusLine.leftSegments", [...this.#draft.leftSegments]);
-		settings.set("statusLine.rightSegments", [...this.#draft.rightSegments]);
-		settings.set("statusLine.separator", this.#draft.separator);
-		settings.set(
-			"statusLine.segmentOptions",
-			cloneSegmentOptions(this.#draft.segmentOptions) as Record<string, unknown>,
-		);
+		const saved = commitInteractiveSettings(this.callbacks, () => {
+			settings.set("statusLine.preset", "custom");
+			settings.set("statusLine.leftSegments", [...this.#draft.leftSegments]);
+			settings.set("statusLine.rightSegments", [...this.#draft.rightSegments]);
+			settings.set("statusLine.separator", this.#draft.separator);
+			settings.set(
+				"statusLine.segmentOptions",
+				cloneSegmentOptions(this.#draft.segmentOptions) as Record<string, unknown>,
+			);
+		});
+		if (!saved) return;
 		this.callbacks.onChange("statusLine.preset", "custom");
 		this.callbacks.onChange("statusLine.leftSegments", [...this.#draft.leftSegments]);
 		this.callbacks.onChange("statusLine.rightSegments", [...this.#draft.rightSegments]);
@@ -649,6 +652,7 @@ function getSettingsTabs(): Tab[] {
 			return { id, label: `${icon} ${meta.label}` };
 		}),
 		{ id: "plugins", label: `${theme.icon.package} Plugins` },
+		{ id: "gjc-bundles", label: `${theme.icon.package} GJC Bundles` },
 	];
 }
 
@@ -671,6 +675,14 @@ export interface SettingsRuntimeContext {
 	petAvailable?: boolean;
 	/** Terminal environment used to select unavailable-pet guidance. Omitted in production to use Bun.env. */
 	terminalEnv?: NodeJS.ProcessEnv;
+	/**
+	 * Runtime evidence published by the session for the current activation
+	 * generation. Omitted when no session published one, in which case the GJC
+	 * Bundles tab honestly reports runtime status as unavailable.
+	 */
+	gjcRuntimeSnapshot?: GjcRuntimeSnapshotProvider;
+	/** Activation generation the published snapshot must match to be merged. */
+	gjcActivationGeneration?: number;
 }
 
 /** Status line settings subset for preview */
@@ -707,8 +719,30 @@ export interface SettingsCallbacks {
 	getStatusLinePreview?: (width?: number) => string;
 	/** Called when plugins change */
 	onPluginsChanged?: () => void;
+	/** Called when asynchronously rebuilt settings content needs a repaint. */
+	onRenderRequested?: () => void;
+	/** Called when an interactive setting cannot be committed. */
+	onError?: (message: string) => void;
 	/** Called when settings panel is closed */
 	onCancel: () => void;
+}
+function commitInteractiveSettings(callbacks: SettingsCallbacks, commit: () => void): boolean {
+	if (!settings.canWriteDurableConfig()) {
+		callbacks.onError?.(
+			"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+		);
+		return false;
+	}
+	try {
+		commit();
+		return true;
+	} catch (error) {
+		if (!settings.canWriteDurableConfig()) {
+			callbacks.onError?.(error instanceof Error ? error.message : String(error));
+			return false;
+		}
+		throw error;
+	}
 }
 
 /**
@@ -719,10 +753,11 @@ export class SettingsSelectorComponent extends Container {
 	#tabBar: TabBar;
 	#currentList: SettingsList | null = null;
 	#pluginComponent: PluginSettingsComponent | null = null;
+	#gjcBundleComponent: GjcBundleSettingsComponent | null = null;
 	#notificationsEditor: NotificationsSettingsEditorComponent | null = null;
 	#statusPreviewContainer: Container | null = null;
 	#statusPreviewText: Text | null = null;
-	#currentTabId: SettingTab | "plugins" = "appearance";
+	#currentTabId: SettingTab | "plugins" | "gjc-bundles" = "appearance";
 	#textInputActive = false;
 
 	constructor(
@@ -738,7 +773,7 @@ export class SettingsSelectorComponent extends Container {
 		// Tab bar
 		this.#tabBar = new TabBar("Settings", getSettingsTabs(), getTabBarTheme());
 		this.#tabBar.onTabChange = () => {
-			this.#switchToTab(this.#tabBar.getActiveTab().id as SettingTab | "plugins");
+			this.#switchToTab(this.#tabBar.getActiveTab().id as SettingTab | "plugins" | "gjc-bundles");
 		};
 
 		this.addChild(this.#tabBar);
@@ -753,7 +788,7 @@ export class SettingsSelectorComponent extends Container {
 		this.addChild(new DynamicBorder());
 	}
 
-	#switchToTab(tabId: SettingTab | "plugins"): void {
+	#switchToTab(tabId: SettingTab | "plugins" | "gjc-bundles"): void {
 		if (this.#currentTabId === "notifications" && tabId !== "notifications" && !this.#disposeNotificationsEditor()) {
 			return;
 		}
@@ -768,6 +803,11 @@ export class SettingsSelectorComponent extends Container {
 			this.removeChild(this.#pluginComponent);
 			this.#pluginComponent = null;
 		}
+		if (this.#gjcBundleComponent) {
+			this.removeChild(this.#gjcBundleComponent);
+			this.#gjcBundleComponent.dispose();
+			this.#gjcBundleComponent = null;
+		}
 		if (this.#statusPreviewContainer) {
 			this.removeChild(this.#statusPreviewContainer);
 			this.#statusPreviewContainer = null;
@@ -780,6 +820,8 @@ export class SettingsSelectorComponent extends Container {
 
 		if (tabId === "plugins") {
 			this.#showPluginsTab();
+		} else if (tabId === "gjc-bundles") {
+			this.#showGjcBundlesTab();
 		} else if (tabId === "notifications") {
 			this.#showNotificationsTab();
 		} else {
@@ -994,11 +1036,18 @@ export class SettingsSelectorComponent extends Container {
 					// The shared pet commit policy rechecks capability immediately
 					// before mutation and persists only on acceptance; the settings
 					// surface must not persist ahead of that result.
-					const accepted = this.callbacks.onPetCommit?.(value) ?? false;
+					let accepted = false;
+					if (
+						!commitInteractiveSettings(this.callbacks, () => {
+							accepted = this.callbacks.onPetCommit?.(value) ?? false;
+						})
+					) {
+						return;
+					}
 					done(accepted ? value : undefined);
 					return;
 				}
-				this.#setSettingValue(def.path, value);
+				if (!commitInteractiveSettings(this.callbacks, () => this.#setSettingValue(def.path, value))) return;
 				this.callbacks.onChange(def.path, value);
 				done(value);
 			},
@@ -1031,7 +1080,7 @@ export class SettingsSelectorComponent extends Container {
 			value => {
 				// Empty string clears the setting; undefined-typed string settings
 				// store "" which the browser.ts expandPath ignores (no-op fallback).
-				this.#setSettingValue(def.path, value);
+				if (!commitInteractiveSettings(this.callbacks, () => this.#setSettingValue(def.path, value))) return;
 				this.callbacks.onChange(def.path, value);
 				wrappedDone(value);
 			},
@@ -1089,7 +1138,15 @@ export class SettingsSelectorComponent extends Container {
 			getSettingsListTheme(),
 			(id, newValue) => {
 				if (id === STATUS_LINE_USAGE_MODE_ID) {
-					const segmentOptions = setSavedUsageMode(newValue);
+					const segmentOptions = getUsageModeSettings(newValue);
+					if (
+						!commitInteractiveSettings(this.callbacks, () => {
+							settings.set("statusLine.segmentOptions", segmentOptions as Record<string, unknown>);
+						})
+					) {
+						this.#refreshCurrentTabItems(defs);
+						return;
+					}
 					this.callbacks.onChange("statusLine.segmentOptions", segmentOptions);
 					if (tabId === "appearance") {
 						this.#triggerStatusLinePreview();
@@ -1105,14 +1162,20 @@ export class SettingsSelectorComponent extends Container {
 
 				if (def.type === "boolean") {
 					const boolValue = newValue === "true";
-					settings.set(path, boolValue as never);
+					if (!commitInteractiveSettings(this.callbacks, () => settings.set(path, boolValue as never))) {
+						this.#refreshCurrentTabItems(defs);
+						return;
+					}
 					this.callbacks.onChange(path, boolValue);
 
 					if (tabId === "appearance") {
 						this.#triggerStatusLinePreview();
 					}
 				} else if (def.type === "enum") {
-					settings.set(path, newValue as never);
+					if (!commitInteractiveSettings(this.callbacks, () => settings.set(path, newValue as never))) {
+						this.#refreshCurrentTabItems(defs);
+						return;
+					}
 					this.callbacks.onChange(path, newValue);
 				}
 				// Submenu/text types already persisted the value inside their own
@@ -1182,7 +1245,7 @@ export class SettingsSelectorComponent extends Container {
 
 	/** Re-evaluate condition gates against the current settings and refresh the active list. */
 	#refreshCurrentTabItems(defs: SettingDef[]): void {
-		if (this.#currentTabId === "plugins" || !this.#currentList) return;
+		if (this.#currentTabId === "plugins" || this.#currentTabId === "gjc-bundles" || !this.#currentList) return;
 		this.#currentList.setItems(this.#buildItemsForTab(defs, this.#currentTabId));
 	}
 
@@ -1226,18 +1289,36 @@ export class SettingsSelectorComponent extends Container {
 		this.#pluginComponent = new PluginSettingsComponent(this.context.cwd, {
 			onClose: () => this.callbacks.onCancel(),
 			onPluginChanged: () => this.callbacks.onPluginsChanged?.(),
+			onRenderRequested: () => this.callbacks.onRenderRequested?.(),
 		});
 		this.addChild(this.#pluginComponent);
 	}
+	#showGjcBundlesTab(): void {
+		this.#gjcBundleComponent = new GjcBundleSettingsComponent(
+			this.context.cwd,
+			{
+				onClose: () => this.callbacks.onCancel(),
+				onBundlesChanged: () => this.callbacks.onPluginsChanged?.(),
+				onRenderRequested: () => this.callbacks.onRenderRequested?.(),
+			},
+			{
+				runtimeSnapshotProvider: this.context.gjcRuntimeSnapshot,
+				activationGeneration: this.context.gjcActivationGeneration,
+			},
+		);
+		this.addChild(this.#gjcBundleComponent);
+	}
 
 	getFocusComponent(): Component {
-		return (this.#currentList || this.#pluginComponent || this.#notificationsEditor)!;
+		return (this.#currentList || this.#pluginComponent || this.#gjcBundleComponent || this.#notificationsEditor)!;
 	}
 
 	override dispose(): void {
 		if (this.#notificationsEditor?.navigationLocked) return;
 		this.#notificationsEditor?.dispose();
 		this.#notificationsEditor = null;
+		this.#gjcBundleComponent?.dispose();
+		this.#gjcBundleComponent = null;
 		super.dispose();
 	}
 
@@ -1259,6 +1340,18 @@ export class SettingsSelectorComponent extends Container {
 			this.#notificationsEditor.handleInput(data);
 			return;
 		}
+		if (this.#gjcBundleComponent && this.#currentTabId === "gjc-bundles") {
+			if (tabNavigation) {
+				if (this.#gjcBundleComponent.navigationLocked) {
+					this.#gjcBundleComponent.handleInput(data);
+					return;
+				}
+				this.#tabBar.handleInput(data);
+				return;
+			}
+			this.#gjcBundleComponent.handleInput(data);
+			return;
+		}
 
 		// Handle tab switching — but NOT when a text input is active, since
 		// arrow keys must reach the cursor and Tab must not switch tabs.
@@ -1275,6 +1368,10 @@ export class SettingsSelectorComponent extends Container {
 		}
 		if (this.#pluginComponent) {
 			this.#pluginComponent.handleInput(data);
+			return;
+		}
+		if (this.#gjcBundleComponent) {
+			this.#gjcBundleComponent.handleInput(data);
 			return;
 		}
 

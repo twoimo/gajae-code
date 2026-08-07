@@ -116,6 +116,7 @@ const controls = [
 	["retry.last", "Retry the last interrupted or failed turn."],
 	["retry.now", "Immediately retry pending backoff."],
 	["bash.background", "Move active managed bash to the background."],
+	["model.profile.set", "Activate a model profile for the current session."],
 ] as const;
 
 const globals = [
@@ -159,6 +160,11 @@ const queries = [
 		"Read the authoritative reconciliation status of a submitted prompt by command/turn IDs or clientRef.",
 	],
 	["models.profiles.list", "List the effective built-in and configured model profiles for this session."],
+	[
+		"skill.invoke_status",
+		"Read the authoritative reconciliation status of a skill.invoke by command/turn IDs or clientRef.",
+	],
+	["providers.list/active", "List active providers."],
 ] as const;
 
 const reverse = [
@@ -196,7 +202,8 @@ function controlDisposition(id: string): Record<Adapter, AdapterDisposition> {
 
 function controlErrors(id: string): string[] {
 	const errors: Record<string, string[]> = {
-		C01: ["client_ref_conflict", "reconciliation_capacity"],
+		C01: ["client_ref_conflict", "reconciliation_capacity", "reconciliation_persist_failed"],
+		C09: ["client_ref_conflict", "reconciliation_capacity", "reconciliation_persist_failed"],
 		C06: ["action_claimed"],
 		C07: ["action_claimed", "terminal_uncertain"],
 		C08: ["action_claimed", "terminal_uncertain"],
@@ -237,7 +244,7 @@ function queryContinuityClass(id: string): QueryContinuityClass {
 }
 
 function queryDisposition(id: string): Record<Adapter, AdapterDisposition> {
-	if (["Q23", "Q24", "Q25", "Q26", "Q27"].includes(id))
+	if (["Q23", "Q24", "Q25", "Q26", "Q27", "Q28", "Q29"].includes(id))
 		return dispositions({ telegram: "prohibited", discord: "prohibited", slack: "prohibited" });
 	return dispositions();
 }
@@ -300,7 +307,9 @@ export const OPERATIONS: readonly Operation[] = [
 			errorCodes:
 				id === "Q27"
 					? ["invalid_request", "resource_gone", "model_profile_registry_error"]
-					: ["invalid_request", "resource_gone"],
+					: id === "Q29"
+						? ["invalid_request", "resource_gone", "internal"]
+						: ["invalid_request", "resource_gone"],
 			continuityClass: queryContinuityClass(id),
 			adapterDispositions: queryDisposition(id),
 			testIds: ["packages/coding-agent/test/sdk-operation-inventory.test.ts"],

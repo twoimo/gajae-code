@@ -62,7 +62,7 @@ export function shouldPromoteRich(input: { enabled?: boolean; send: ThreadedSend
  */
 export async function deliverRichWithFallback(
 	botApi: BotApi,
-	base: { chat_id: string | number; message_thread_id?: number },
+	base: { chat_id: string | number; message_thread_id?: number; disable_notification?: true },
 	send: ThreadedSend,
 	signal: AbortSignal,
 	fallbackDeliver: () => Promise<void>,
@@ -99,7 +99,7 @@ export async function deliverRichWithFallback(
  */
 export async function deliverRichActionWithFallback(
 	botApi: BotApi,
-	base: { chat_id: string | number; message_thread_id?: number },
+	base: { chat_id: string | number; message_thread_id?: number; disable_notification?: true },
 	opts: { markdown: string; replyMarkup?: unknown },
 	signal: AbortSignal,
 	htmlFallback: () => Promise<number | undefined>,
@@ -124,8 +124,9 @@ export async function deliverRichActionWithFallback(
 			const fallbackId = await htmlFallback();
 			return { messageId: fallbackId, usedRich: false, usedFallback: true };
 		}
-		const candidate = (res as { result?: { message_id?: unknown } } | null)?.result?.message_id;
-		if (validMessageId(candidate)) return { messageId: candidate, usedRich: true, usedFallback: false };
+		const candidate = (res as { ok?: unknown; result?: { message_id?: unknown } } | null)?.result?.message_id;
+		if ((res as { ok?: unknown } | null)?.ok === true && validMessageId(candidate))
+			return { messageId: candidate, usedRich: true, usedFallback: false };
 		log?.warn("notifications: sendRichMessage(action) outcome ambiguous; not falling back to HTML");
 	} catch (err) {
 		const failure = err instanceof Error ? err.message : String(err);

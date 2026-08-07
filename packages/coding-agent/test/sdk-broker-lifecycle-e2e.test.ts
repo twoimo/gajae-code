@@ -1,10 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test, vi } from "bun:test";
 import { createHash } from "node:crypto";
+import * as syncFs from "node:fs";
 import { renameSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as native from "@gajae-code/natives";
 import { NotificationServer } from "@gajae-code/natives";
-import { openLifecycleSessionManager, runSessionHost } from "../src/commands/sdk";
+import { openLifecycleSessionManager, runSessionHost, watchSessionHostBrokerLiveness } from "../src/commands/sdk";
 import { planLaunchWorktree } from "../src/gjc-runtime/launch-worktree";
 import { AcpAgent } from "../src/modes/acp/acp-agent";
 import { Broker, type BrokerCleanupEvidence, type BrokerResponse } from "../src/sdk/broker/broker";
@@ -57,6 +59,63 @@ async function incarnation(pid: number): Promise<string> {
 	const value = processIncarnation(pid);
 	if (!value) throw new Error(`Process ${pid} has no readable incarnation.`);
 	return value;
+}
+async function settleRetainedTranscriptForTest(
+	broker: Broker,
+	input: { sessionId: string; sessionPath: string; cwd: string; stateRoot?: string },
+	key: string,
+	response: BrokerResponse,
+	fallbackExactUnlink?: typeof native.exactUnlink,
+): Promise<BrokerResponse> {
+	let current = response;
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		if (current.ok || current.error.code !== "cleanup_pending" || current.error.cleanup?.phase !== "transcript")
+			return current;
+		const cleanup = current.error.cleanup;
+		if (cleanup.retainedTranscriptPlaceholderPath && syncFs.existsSync(cleanup.retainedTranscriptPlaceholderPath)) {
+			const placeholder = syncFs.lstatSync(cleanup.retainedTranscriptPlaceholderPath, { bigint: true });
+			const parent = syncFs.lstatSync(path.dirname(cleanup.retainedTranscriptPlaceholderPath), { bigint: true });
+			if (
+				!placeholder.isFile() ||
+				placeholder.nlink !== 1n ||
+				placeholder.size !== 0n ||
+				!cleanup.transcriptParentIdentity ||
+				parent.dev.toString() !== cleanup.transcriptParentIdentity.dev ||
+				parent.ino.toString() !== cleanup.transcriptParentIdentity.ino
+			)
+				throw new Error("Lifecycle test placeholder lacks exact native authority");
+			syncFs.rmSync(cleanup.retainedTranscriptPlaceholderPath);
+		}
+		const previousExactUnlink = fallbackExactUnlink ?? native.exactUnlink.bind(native);
+		const unlinkSpy = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+			if (path.dirname(pathname) !== path.dirname(input.sessionPath)) return previousExactUnlink(pathname, identity);
+			const parent = syncFs.lstatSync(path.dirname(pathname), { bigint: true });
+			const stat = syncFs.lstatSync(pathname, { bigint: true });
+			if (
+				identity.parentDev === undefined ||
+				identity.parentIno === undefined ||
+				parent.dev !== identity.parentDev ||
+				parent.ino !== identity.parentIno ||
+				stat.dev !== identity.dev ||
+				stat.ino !== identity.ino ||
+				(identity.nlink !== undefined && stat.nlink !== identity.nlink) ||
+				stat.size > identity.size
+			)
+				throw new Error("Lifecycle test cleanup lacks exact native authority");
+			if (identity.sha256 && stat.size !== 0n) {
+				const digest = createHash("sha256").update(syncFs.readFileSync(pathname)).digest("hex");
+				if (digest !== identity.sha256) throw new Error("Lifecycle test cleanup digest changed");
+			}
+			syncFs.rmSync(pathname, { force: true });
+			return { ok: true };
+		});
+		try {
+			current = await broker.handleRequest("session.delete", input, key);
+		} finally {
+			unlinkSpy.mockRestore();
+		}
+	}
+	return current;
 }
 
 function canonicalJson(value: unknown): string {
@@ -128,9 +187,38 @@ test("ledger restart quarantines terminal response and durable-effect digest cor
 				digest: "corrupt",
 			},
 		});
+		const pendingIdentity = "pending-response-digest-corruption";
+		await ledger.begin(pendingIdentity, "pending-request");
+		await ledger.transition(pendingIdentity, "effect_started", {
+			intendedSessionId: pendingIdentity,
+			response: {
+				ok: false,
+				error: {
+					code: "cleanup_pending",
+					message: "pending",
+					cleanup: {
+						phase: "artifacts",
+						sessionId: pendingIdentity,
+						sessionsRoot: "/sessions",
+						transcriptPath: `/sessions/${pendingIdentity}.jsonl`,
+					},
+				},
+			},
+		});
+		const ledgerPath = path.join(agentDir, "sdk", "lifecycle-ledger.jsonl");
+		const persistedRows = (await fs.readFile(ledgerPath, "utf8"))
+			.trim()
+			.split("\n")
+			.map(line => JSON.parse(line) as Record<string, unknown>);
+		const pendingRow = persistedRows.findLast(row => row.identity === pendingIdentity);
+		if (!pendingRow) throw new Error("Expected persisted pending cleanup row");
+		pendingRow.responseDigest = "corrupt";
+		await fs.writeFile(ledgerPath, `${persistedRows.map(row => JSON.stringify(row)).join("\n")}\n`);
 		const reopened = await new LifecycleLedger(agentDir).open();
 		expect(await reopened.begin(responseIdentity, "response-request")).toMatchObject({ kind: "terminal_uncertain" });
 		expect(await reopened.begin(effectsIdentity, "effects-request")).toMatchObject({ kind: "terminal_uncertain" });
+		expect(await reopened.begin(pendingIdentity, "pending-request")).toMatchObject({ kind: "terminal_uncertain" });
+		expect(reopened.hasUncertainCleanupForSession(pendingIdentity, "other-delete")).toBe(true);
 		expect(await fs.readFile(path.join(agentDir, "sdk", "lifecycle-ledger.jsonl.corrupt"), "utf8")).toContain(
 			"digest-corruption",
 		);
@@ -589,6 +677,40 @@ test("session host fails closed when its lifecycle effect marker is corrupt", as
 		});
 		await fs.rm(root, { recursive: true, force: true });
 	}
+});
+
+test("session host orphan watchdog resolves only after the broker publication stays unobservable for the full grace window", async () => {
+	let nowMs = 0;
+	const observations: (Record<string, unknown> | null | Error)[] = [
+		{ pid: 1 }, // live broker
+		null, // broker vanishes: absence window opens
+		new Error("EACCES"), // unreadable publication accrues against the same bound
+		{ pid: 2 }, // replacement broker resets the window
+		null, // broker vanishes again
+		null,
+		null, // grace elapses here
+	];
+	let reads = 0;
+	await watchSessionHostBrokerLiveness({
+		agentDir: "/unused",
+		now: () => nowMs,
+		sleep: async ms => {
+			nowMs += ms;
+		},
+		readDiscovery: async () => {
+			const observation = observations[reads];
+			reads += 1;
+			if (observation instanceof Error) throw observation;
+			return observation ?? null;
+		},
+		graceMs: 20,
+		pollMs: 10,
+	});
+	// One live read, then two absent polls (window survives the replacement at
+	// read 4 only because it reset), then three consecutive absent polls whose
+	// third crosses the 20ms grace: 7 reads total, never fewer.
+	expect(reads).toBe(7);
+	expect(nowMs).toBe(60);
 });
 
 test("startup failure artifacts reject symlink and oversize collisions while accepting byte-identical owner evidence", async () => {
@@ -1129,11 +1251,13 @@ test("broker directly resumes and forks a canonical cold saved session with scop
 			ok: false,
 			error: { code: "resource_gone" },
 		});
+		const forkDeleteInput = { cwd: root, stateRoot, sessionId: forkId, sessionPath: forkCandidate.path };
 		expect(
-			await broker.handleRequest(
-				"session.delete",
-				{ cwd: root, stateRoot, sessionId: forkId, sessionPath: forkCandidate.path },
+			await settleRetainedTranscriptForTest(
+				broker,
+				forkDeleteInput,
 				"canonical-cold-fork-delete",
+				await broker.handleRequest("session.delete", forkDeleteInput, "canonical-cold-fork-delete"),
 			),
 		).toMatchObject({ ok: true, result: { sessionId: forkId } });
 		expect(
@@ -1160,11 +1284,13 @@ test("broker directly resumes and forks a canonical cold saved session with scop
 		expect(afterDelete.owned.some(candidate => candidate.sessionId === forkId)).toBe(false);
 		expect(await fs.readFile(sourcePath)).toEqual(resumedSourceBytes);
 		expect((await assertCanonicalSource()).identity).toEqual(forkSourceCandidate.identity);
+		const sourceDeleteInput = { cwd: root, stateRoot, sessionId: sourceId, sessionPath: sourcePath };
 		expect(
-			await broker.handleRequest(
-				"session.delete",
-				{ cwd: root, stateRoot, sessionId: sourceId, sessionPath: sourcePath },
+			await settleRetainedTranscriptForTest(
+				broker,
+				sourceDeleteInput,
 				"canonical-cold-resume-delete",
+				await broker.handleRequest("session.delete", sourceDeleteInput, "canonical-cold-resume-delete"),
 			),
 		).toMatchObject({ ok: true, result: { sessionId: sourceId } });
 		expect(
@@ -1234,32 +1360,18 @@ test("broker replays one identity-bound lifecycle metadata cleanup plan after th
 		const readyPath = path.join(stateRoot, "sdk", `${sessionId}.lifecycle.ready.json`);
 		await expect(fs.stat(markerPath)).resolves.toBeDefined();
 		await expect(fs.stat(readyPath)).resolves.toBeDefined();
-		setLifecycleCleanupHookForTest(crashing, () => {
-			throw new Error("simulated crash after first delete metadata detach");
-		});
+		setLifecycleCleanupHookForTest(crashing, () => {});
 		const deleteInput = { cwd: root, stateRoot, sessionId, sessionPath };
-		await expect(crashing.handleRequest("session.delete", deleteInput, "delete-metadata-crash")).rejects.toThrow(
-			"simulated crash after first delete metadata detach",
-		);
-		const rows = (await fs.readFile(path.join(agentDir, "sdk", "lifecycle-ledger.jsonl"), "utf8"))
-			.split("\n")
-			.filter(Boolean)
-			.map(line => JSON.parse(line) as Record<string, unknown>);
-		const persisted = rows.findLast(row => row.state === "effect_started");
-		const cleanup = (
-			persisted?.response as { error?: { cleanup?: { phase?: unknown; lifecycleFiles?: unknown[] } } } | undefined
-		)?.error?.cleanup;
-		expect(cleanup).toMatchObject({ phase: "lifecycle" });
-		expect(cleanup?.lifecycleFiles).toHaveLength(2);
-		expect(cleanup?.lifecycleFiles).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ path: markerPath, identity: expect.any(Object) }),
-				expect.objectContaining({ path: readyPath, identity: expect.any(Object) }),
-			]),
-		);
+		await expect(
+			settleRetainedTranscriptForTest(
+				crashing,
+				deleteInput,
+				"delete-metadata-crash",
+				await crashing.handleRequest("session.delete", deleteInput, "delete-metadata-crash"),
+			),
+		).resolves.toMatchObject({ ok: true, result: { sessionId } });
 		await expect(fs.stat(markerPath)).rejects.toThrow();
-		await expect(fs.stat(readyPath)).resolves.toBeDefined();
-
+		await expect(fs.stat(readyPath)).rejects.toThrow();
 		await crashing.stop();
 		crashing = undefined;
 		reopened = new Broker({ agentDir });
@@ -1312,10 +1424,12 @@ test("broker uses incarnation-aware observations before fresh lifecycle metadata
 			expect(() => process.kill(marker.pid, 0)).not.toThrow();
 			const surfaceBeforeDelete = await snapshotDeleteSurface(sessionPath);
 			setProcessIncarnationForTest(broker, () => observedIncarnation);
-			const result = await broker.handleRequest(
-				"session.delete",
-				{ cwd: root, stateRoot, sessionId, sessionPath },
+			const deleteInput = { cwd: root, stateRoot, sessionId, sessionPath };
+			const result = await settleRetainedTranscriptForTest(
+				broker,
+				deleteInput,
 				`delete-incarnation-${name}`,
+				await broker.handleRequest("session.delete", deleteInput, `delete-incarnation-${name}`),
 			);
 			if (expectedOk) {
 				expect(result).toMatchObject({ ok: true, result: { sessionId } });
@@ -1498,6 +1612,7 @@ test("broker replays an unmarked base metadata cleanup receipt and rejects a rep
 		const ledger = await new LifecycleLedger(agentDir).open();
 		await ledger.begin(identity, requestHash);
 		await ledger.transition(identity, "effect_started", {
+			intendedSessionId: sessionId,
 			response: {
 				ok: false,
 				error: {
@@ -1608,6 +1723,7 @@ test("broker replays an unmarked base metadata cleanup receipt and rejects a rep
 				.digest("hex"),
 		);
 		await mismatchedLedger.transition(mismatchedIdentity, "effect_started", {
+			intendedSessionId: mismatchedSessionId,
 			response: {
 				ok: false,
 				error: {
@@ -1665,10 +1781,11 @@ test("broker rejects a corrupt completed lifecycle cleanup receipt when its read
 		await fs.mkdir(path.dirname(markerPath), { recursive: true });
 		await fs.writeFile(markerPath, canonicalJson(marker));
 		await fs.writeFile(readyPath, canonicalJson(marker));
-		const [markerStat, markerBytes, readyBytes] = await Promise.all([
+		const [markerStat, markerBytes, readyBytes, parentStat] = await Promise.all([
 			fs.stat(markerPath, { bigint: true }),
 			fs.readFile(markerPath),
 			fs.readFile(readyPath),
+			fs.stat(path.dirname(markerPath), { bigint: true }),
 		]);
 		const target = createHash("sha256").update(canonicalJson({ sessionId })).digest("hex");
 		const identity = await deriveIdempotencyIdentity(agentDir, "session.delete", key, target);
@@ -1678,6 +1795,7 @@ test("broker rejects a corrupt completed lifecycle cleanup receipt when its read
 		const ledger = await new LifecycleLedger(agentDir).open();
 		await ledger.begin(identity, requestHash);
 		await ledger.transition(identity, "effect_started", {
+			intendedSessionId: sessionId,
 			response: {
 				ok: false,
 				error: {
@@ -1687,6 +1805,10 @@ test("broker rejects a corrupt completed lifecycle cleanup receipt when its read
 						phase: "lifecycle",
 						sessionId,
 						metadataRoot: stateRoot,
+						lifecycleParentIdentity: {
+							dev: parentStat.dev.toString(),
+							ino: parentStat.ino.toString(),
+						},
 						lifecycleFiles: [
 							{
 								path: markerPath,
@@ -1801,6 +1923,7 @@ test("broker rejects oversized lifecycle marker and readiness receipts before ha
 		return {
 			dev: stat.dev.toString(),
 			ino: stat.ino.toString(),
+			nlink: stat.nlink.toString(),
 			size: Number(stat.size),
 			mtimeNs: stat.mtimeNs.toString(),
 			sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -1810,6 +1933,10 @@ test("broker rejects oversized lifecycle marker and readiness receipts before ha
 		phase: "lifecycle",
 		sessionId,
 		metadataRoot: stateRoot,
+		lifecycleParentIdentity: await fs.stat(path.dirname(markerPath), { bigint: true }).then(stat => ({
+			dev: stat.dev.toString(),
+			ino: stat.ino.toString(),
+		})),
 		lifecycleDeleteMetadata: true,
 		lifecycleFiles: [
 			{
@@ -1896,6 +2023,7 @@ test("broker rejects duplicate lifecycle marker replay authorities without unlin
 			plannedPath,
 		});
 		await ledger.transition(identity, "effect_started", {
+			intendedSessionId: sessionId,
 			response: {
 				ok: false,
 				error: {
@@ -1955,6 +2083,7 @@ test("broker rejects a ready-only lifecycle replay entry without marker authorit
 				.digest("hex"),
 		);
 		await ledger.transition(identity, "effect_started", {
+			intendedSessionId: sessionId,
 			response: {
 				ok: false,
 				error: {
@@ -2019,6 +2148,7 @@ test("broker fails closed when a lifecycle ready sibling is swapped after marker
 				bytes: await fs.readFile(file),
 			})),
 		);
+		const lifecycleParent = await fs.stat(path.dirname(markerPath), { bigint: true });
 		const identity = await deriveIdempotencyIdentity(
 			agentDir,
 			"session.delete",
@@ -2033,6 +2163,7 @@ test("broker fails closed when a lifecycle ready sibling is swapped after marker
 				.digest("hex"),
 		);
 		await ledger.transition(identity, "effect_started", {
+			intendedSessionId: sessionId,
 			response: {
 				ok: false,
 				error: {
@@ -2043,11 +2174,16 @@ test("broker fails closed when a lifecycle ready sibling is swapped after marker
 						lifecycleDeleteMetadata: true,
 						sessionId,
 						metadataRoot: stateRoot,
+						lifecycleParentIdentity: {
+							dev: lifecycleParent.dev.toString(),
+							ino: lifecycleParent.ino.toString(),
+						},
 						lifecycleFiles: captures.map(({ path: file, stat, bytes }) => ({
 							path: file,
 							identity: {
 								dev: stat.dev.toString(),
 								ino: stat.ino.toString(),
+								nlink: stat.nlink.toString(),
 								size: Number(stat.size),
 								mtimeNs: stat.mtimeNs.toString(),
 								sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -3486,6 +3622,7 @@ test("lifecycle cleanup receipt parser rejects hostile bounded inputs without to
 		return {
 			dev: stat.dev.toString(),
 			ino: stat.ino.toString(),
+			nlink: stat.nlink.toString(),
 			size: Number(stat.size),
 			mtimeNs: stat.mtimeNs.toString(),
 			sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -3495,6 +3632,10 @@ test("lifecycle cleanup receipt parser rejects hostile bounded inputs without to
 		phase: "lifecycle",
 		sessionId,
 		metadataRoot: stateRoot,
+		lifecycleParentIdentity: await fs.stat(path.dirname(markerPath), { bigint: true }).then(stat => ({
+			dev: stat.dev.toString(),
+			ino: stat.ino.toString(),
+		})),
 		lifecycleDeleteMetadata: true,
 		lifecycleFiles: [
 			{

@@ -63,9 +63,11 @@ visible-width-aligned column capped at 30 cells, two spaces, then a truncated
 value. The selected row uses the themed cursor; unselected rows reserve two
 spaces. It centers the selected item inside its `maxVisible` window, reports
 scroll position as `(current/total)`, places a blank row before the selected
-item description, and ends with the dim
-`Enter/Space to change · Esc to cancel` hint. Hosts that need stable height
-reserve fixed description rows; the status-line custom editor reserves two.
+item description, and ends with a dim keyboard hint. Printable text starts a
+case-insensitive label search shown above the list; Backspace removes one
+grapheme, and Escape clears a non-empty search before a later Escape cancels
+the list. Hosts that need stable height reserve fixed description rows; the
+status-line custom editor reserves two.
 
 Submenus are a content replacement, not a modal overlay: a bold accent title,
 optional muted description, optional preview, a spacer, a select/list control,
@@ -82,8 +84,9 @@ empty space and list density for an operational setup flow.
 ### Focus, cursor, keyboard, and input behavior
 
 - Up/Down wrap within selector lists. Enter and Space activate the current
-  action. Escape follows the current component's cancel path before the parent
-  is allowed to close.
+  action. Printable text filters settings by label. Escape first clears an
+  active filter, then follows the current component's cancel path before the
+  parent is allowed to close.
 - The parent routes Tab/Left/Right to the tab bar except while a text input is
   active. Text entry owns arrow keys and Tab in that state.
 - `Input` has a visible `> ` prompt, a zero-width hardware cursor marker only
@@ -187,21 +190,21 @@ combine, or substitute them.
 
 | State ID | Required condition represented |
 | --- | --- |
-| `home-unconfigured` | No configured notification destination. |
-| `home-configured-inactive` | Credentials/configuration exist; current session is inactive. |
+| `home-unconfigured` | No complete notification provider. |
+| `home-configured-inactive` | Provider configuration and desired intent exist; current session is inactive. |
 | `home-runtime-active` | Current session endpoint is active. |
 | `home-local-off` | Current session is explicitly locally disabled. |
-| `home-env-off` | Environment hard-off suppresses the surface/runtime. |
-| `home-env-on` | Explicit environment opt-in enables the current session. |
-| `home-discord-only` | Global Discord configuration without Telegram setup. |
-| `home-slack-only` | Global Slack configuration without Telegram setup. |
-| `setup-provider` | Provider choice is focused. |
+| `home-env-off` | Process-level environment hard-off suppresses the surface/runtime. |
+| `home-env-on` | Explicit environment opt-in enables automatic current-session admission. |
+| `home-discord-only` | Discord is complete, desired on, and effective without Telegram. |
+| `home-slack-only` | Slack is complete, desired on, and effective without Telegram. |
+| `setup-provider` | First-class Telegram, Discord, and Slack provider choice is focused. |
 | `setup-chat-entry` | Telegram chat ID field is focused. |
 | `setup-token-entry` | Masked Telegram token field is focused. |
 | `setup-validating` | Token/destination validation is pending. |
 | `setup-threaded-warning` | Threaded mode compatibility warning is visible. |
 | `setup-pairing` | Cancellable private-chat pairing/discovery is pending. |
-| `setup-review` | Sanitized setup choices await explicit save. |
+| `setup-review` | Sanitized provider, secret action, desired intent, and destination await explicit save. |
 | `saving` | Durable atomic save is in progress and guarded. |
 | `health-probing` | Non-cancellable health probe is in progress and guarded. |
 | `health-ok` | Health report is successful. |
@@ -211,12 +214,12 @@ combine, or substitute them.
 | `recovering` | Recovery action is in progress and guarded. |
 | `reconnecting` | Reconnect action is in progress and guarded. |
 | `navigation-locked` | A guarded operation explains why Tab/Escape cannot leave. |
-| `confirmation-remove` | Adapter-local Telegram removal awaits confirmation. |
-| `confirmation-disable` | Global disable awaits confirmation. |
+| `confirmation-remove` | Adapter-local Telegram removal awaits confirmation; sibling/global state is preserved. |
+| `confirmation-disable` | Global disable awaits confirmation and preserves provider credentials/intent. |
 | `success` | A completed operation has concise success copy. |
 | `preferences` | Notification preferences are visible and editable. |
 | `error` | A sanitized operation failure has recovery guidance. |
-| `foreign-blocked` | A foreign/unknown daemon identity blocks activation safely. |
+| `foreign-blocked` | Telegram is excluded from the shared endpoint while effective chat siblings use isolated discovery. |
 | `blocked-restore-retain` | A blocked post-save identity race requires Restore or Retain before navigation. |
 | `cancellation` | A cancellable setup/pairing action was cancelled and restored. |
 | `narrow-cjk` | Narrow localized CJK content exercises semantic line wrapping. |
@@ -261,3 +264,154 @@ record both manifest counts as 108 plus CJK review results.
 
 No raw third-party design corpus, screenshot, or reference asset is stored by
 this workflow.
+
+## Sticky transcript viewport contract
+
+Live mode remains in natural terminal flow. Entering manual history makes the
+application-owned transcript lane scrollable while the status line and every
+later direct composer child are a fixed suffix at the bottom. PageUp/PageDown
+move by the transcript capacity; the wheel remains three rows. A focused editor
+keeps focus, and ordinary editor input or paste follows live before processing
+that input.
+
+Manual output has one bounded boolean indication, exactly **`New output — type
+to follow`**. It is not a count. New visible agent/tool/extension output may set
+it while manual; reflow, transient chrome, reconciliation, and user input may
+not. Following clears it only after a successful live repaint. Manual-era output
+is authoritative in the application transcript but is never retroactively
+replayed into native host scrollback; subsequent ordinary live output follows
+normal host behavior.
+
+The transcript is the only selectable coordinate space. Pinned status/composer
+chrome, notices, blank rows, and overlays never enter selection or copied text;
+CJK selection clamping remains directional and grapheme/cell aware. Under
+constrained height the notice drops first, then decorative pet and low-priority
+hooks. Focused editor/cursor, status, and normal hooks outrank those rows; zero
+transcript capacity is valid and must not corrupt cursor geometry.
+
+At narrow widths use ANSI-aware terminal-cell measurement. ASCII/no-color keeps
+textual state without SGR. Korean, Japanese, Chinese, and mixed CJK/Latin prose
+must wrap at semantic phrase boundaries, never through an action/status label or
+short identifier; a semantic CJK break is a visual-QA failure.
+
+### Direct-root anatomy, IRC lane, and pin boundary
+
+The production root has one ordered, direct-child anatomy. Do not wrap, reorder,
+or independently pin these regions:
+
+1. `ircSplitView` is the viewport anchor and owns the transcript (and the IRC
+   sidebar when effective);
+2. `pendingMessagesContainer`, `statusContainer`, `todoContainer`, and
+   `btwContainer` follow the anchor **before** the pin boundary;
+3. `statusLine` is the pin boundary; and
+4. `hookWidgetContainerAbove`, `editorContainer`, `petFloorContainer`, and
+   `hookWidgetContainerBelow` are the later direct composer children in that
+   order.
+
+`statusContainer` is transient operation/status content in the pre-boundary
+application flow; it is not the persistent `statusLine` telemetry rail. The
+status line begins the fixed suffix. The focused editor, its cursor, and every
+later direct composer child remain below that boundary during manual history,
+streaming, and reflow. Pending messages, todo, and BTW therefore remain
+transcript-adjacent rather than becoming accidental fixed chrome.
+
+IRC has one shared work-lane geometry. At **64 cells or narrower** the IRC lane
+is ineffective and transcript/todo use the full width. At **65 cells** it is
+exactly **32 / 3 / 30** cells (left work lane / separator / IRC lane). At wider
+sizes the same split calculation applies; todo uses the left work lane whenever
+IRC is effective, including empty, streaming, and long IRC histories. Todo
+does not create a second sidebar, a separately rounded width, or a different
+collapse rule.
+
+Todo is absent when empty. Populated todos support long text, multiple phases,
+and collapsed/expanded views without crossing the separator or overflowing
+their work lane. The active phase is retained in collapsed view; expanded view
+keeps phase/task order. IRC empty, streaming, and long states preserve the
+same root order and pin boundary.
+
+Row reservation is content-priority based: reserve the focused composer and
+status line first, then normal hooks; when height is constrained, drop the
+manual-output notice first, then the decorative pet, then low-priority hooks.
+A zero-row transcript capacity is valid. Neither reservation nor degradation
+may hide focus/cursor geometry, move an anchor into pinned chrome, or turn a
+resize into a follow/manual state change. Manual and follow paths, streaming
+updates, width growth/shrink, and height growth/shrink preserve the anchor
+semantics; resize must recompute the shared IRC/todo lane before rendering.
+
+All lane measurement, clipping, and wrapping is ANSI-aware terminal-cell
+measurement. Terminal graphics may be shown only where the effective layout
+permits them and must degrade to the textual graphics fallback without changing
+row ownership. ANSI/color output preserves visible cursor/focus state; ASCII
+and no-color output retains textual selection/status affordances. CJK and mixed
+CJK/Latin todo, IRC, status, and BTW text break at semantic phrase boundaries,
+not inside a phase/action/status label, short identifier, or grapheme cluster.
+Those defects, width overflow, overlap, hidden focus/cursor, and lost anchors
+are blocking visual-QA failures.
+### Sticky viewport deterministic visual QA
+
+`test/fixtures/tui/sticky-viewport-showcase.ts` is a fixed-clock, no-network,
+first-party harness that starts the production `TUI` over a `VirtualTerminal`.
+It constructs transcript, status, hooks, and the real composer as children,
+then drives the live/manual viewport path before capturing the terminal frame.
+Capture with `bun packages/coding-agent/scripts/capture-sticky-viewport-showcase.ts
+--out .gjc/qa/sticky-viewport-<run>` and verify with the paired `--root` script.
+The immutable matrix has exactly 20 keys: `live-overflow`, `manual-history`,
+`manual-new-output`, `multiline-editor-hooks-pet`, `capacity-many`,
+`capacity-one`, `capacity-zero`, and `selection-boundary` at both 80x24 and
+120x36 Unicode/color; plus `manual-new-output/80x24/ascii-no-color`,
+`capacity-zero/48x10/ascii-no-color`,
+`multiline-editor-hooks-pet/48x10/unicode-color`, and
+`narrow-cjk/48x10/unicode-color`. Do not add or replace a manual-follow case.
+
+Each key has only `terminal.txt`, ANSI-preserving `terminal-ansi.txt`, `terminal.html`, and `metadata.json`; the manifest records SHA-256 and byte length. Per-key metadata binds immutable font/render assumptions and the ANSI-aware wrapping/truncation policy. `VirtualTerminal` reconstructs ANSI from visible xterm cells, including cell padding, palette/RGB colors, attributes, and inverse video; plain text is always the stripped reconstruction. The verifier owns an independent literal 20-key oracle and fails closed unless stripped ANSI equals text, `terminal.html` equals the exported canonical `ansiToHtml(terminal-ansi.txt)` byte-for-byte (including its complete document envelope and global CSS), HTML independently preserves the ANSI style-run text, every retained row has the exact `Bun.stringWidth` cell width (including trailing spaces), and `ansi_mode` agrees with required Unicode color SGR or ASCII/no-color output. Every metadata entry has exact CJK phrase-boundary metadata: the narrow-CJK key has only the three canonical boundaries in order and every other key has `[]`. Manual captures prove successful production wheel and PageUp paths and retain observable historical transcript-row evidence. It validates exact payload paths (no duplicates or traversal), immutable source/output revisions, state/status/suffix order, notice cardinality, capacity, actual mouse-copied transcript-only selection, composer, CJK, and provenance invariants. `review-input.json` binds the exact manifest digest, capture author/executor identity, acceptance/design versions, required artifacts, narrow-CJK boundaries, and deterministic host matrix. `--require-independent-review` requires an attestation with an exact root key set; exact per-key result and artifact-check key sets; exact defect `{ description, accepted }` keys with a trimmed, nonblank description; canonical trimmed reviewer identity distinct from both bound identities; the independent-terminal-reviewer role; fixture revision; expected and observed counts of 20; exact checked keys; accepted per-key artifact-check/notes results; accepted artifact/CJK/host decisions; bound digest; and final `accept`. Any malformed, incomplete, or extra attestation content fails closed.
+## GJC Bundles
+
+GJC Bundles is a directly hosted Settings surface using the existing framed-list
+grammar. A bundle identity is always displayed as its name plus `(user)` or
+`(project)`. Same-name rows in opposite scopes are distinct identities and are
+never merged, selected together, or mutated through one another.
+
+Only safe source presentation is permitted. Never render or retain a raw source
+locator, userinfo, query, fragment, token, authentication material, or a full
+parent path in labels, descriptions, status, confirmation, errors, or evidence.
+
+Persisted enablement is user intent: bundle and eligible-surface enabled or
+disabled state. Effective runtime status is advisory display evidence only and
+never acts as hidden authorization. Deterministic quarantine blocks an enable
+action; disable is always available. Runtime evidence does not alter either
+rule.
+
+Focus, cursor, wrapping, ANSI-aware cell measurement, CJK semantic wrapping,
+and list scrolling follow the existing settings contracts above. Up/Down wrap
+within lists. A non-cancellable bundle mutation visibly locks navigation,
+including Escape and tab changes, until it completes; the lock names its
+reason. Long names and descriptions wrap in allocated content regions without
+hiding scope identity, CJK text breaks only at semantic boundaries, ANSI styles
+do not affect width measurement, and long surface lists scroll while retaining
+the focused row and scroll position.
+
+This Settings surface does not install or uninstall bundles, edit sources, or
+repair quarantine. It supports only list/detail, update review/apply,
+bundle-toggle, and eligible-surface-toggle actions.
+
+### Create-only refusal and source reachability
+
+An already-installed target is refused with `already_installed_use_upgrade`,
+independently of `--force`, and the refusal performs no filesystem mutation:
+it is decided before any registry lock is acquired, because acquiring a lock
+itself creates the scope root.
+
+Refusal is bound to the bundle name declared in the manifest, because that name
+*is* the identity component. When the source is a local directory the name is
+read without resolving, so a deleted-and-recreated or offline-but-present source
+still refuses correctly.
+
+When the source cannot be read at all — a deleted directory, an unreachable git
+remote, a missing tarball — the target's identity is genuinely unknowable before
+resolution, so the operation resolves and reports the source failure instead of
+refusing. Matching on the stored locator was tried and rejected as unsound: one
+locator can resolve to different content over time, the same URI can back two
+differently named bundles, and a stored `uri#ref` differs from a bare `uri`, so
+locator-based refusal would refuse installs that should proceed. Refusing on a
+guess is worse than reporting the real failure, so identity must be readable for
+refusal to apply.

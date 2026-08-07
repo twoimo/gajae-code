@@ -59,3 +59,7 @@ Add a persistent/detached session mode for `gjc_rpc`:
   - on client `stop()`, **detach** (leave the session running) by default rather
     than terminate.
 - Pairs with issue 10 (a registry so clients can find the endpoint to attach to).
+
+## Status
+
+**Deferred architectural follow-up.** The retired stdio RPC mode has no implementation lane on current `dev`; persistent/detached session support remains a separate design project rather than an active low-hanging fix.

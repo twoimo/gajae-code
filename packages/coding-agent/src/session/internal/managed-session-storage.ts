@@ -6,8 +6,11 @@ import {
 	applyOwnerOnlyFdSecurity,
 	applyOwnerOnlyPathSecurity,
 	exactRemoveDirectoryTree,
+	exactReplacePath,
 	exactUnlink,
+	linkNoReplacePath,
 	type NativeDirectoryTreeSnapshot,
+	type NativeExactUnlinkResult,
 	type NativeOwnerOnlySecurityResult,
 	openRecoveryFsRoot,
 	type RecoveryFsRoot,
@@ -34,7 +37,6 @@ const LOCK_LEASE_MS = 60_000;
 const LOCK_HEARTBEAT_MS = 10_000;
 const LOCK_WAIT_MS = 5_000;
 
-const LOCK_STALE_RECHECK_MS = 100;
 export class ManagedPublishError extends Error {
 	readonly classification:
 		| "destination_conflict"
@@ -51,6 +53,28 @@ export class ManagedPublishError extends Error {
 		this.name = "ManagedPublishError";
 		this.classification = classification;
 		this.diagnostic = formatNativePublishDiagnostic(outcome);
+	}
+}
+export class ManagedReplaceError extends Error {
+	readonly code: string;
+	readonly cleanupReceiptPath: string;
+	readonly detachedPath: string | undefined;
+	readonly retainedSuccessorPath: string | undefined;
+	readonly retainedPlaceholderPath: string | undefined;
+	readonly retainedUnknownPath: string | undefined;
+	readonly replacementCause: unknown;
+
+	constructor(result: NativeExactUnlinkResult, cleanupReceiptPath: string, replacementCause?: unknown) {
+		const code = result.code ?? "unknown";
+		super(`managed_replace_failed:${code}`, replacementCause === undefined ? undefined : { cause: replacementCause });
+		this.name = "ManagedReplaceError";
+		this.code = code;
+		this.cleanupReceiptPath = cleanupReceiptPath;
+		this.detachedPath = result.detachedPath;
+		this.retainedSuccessorPath = result.retainedSuccessorPath;
+		this.retainedPlaceholderPath = result.retainedPlaceholderPath;
+		this.retainedUnknownPath = result.retainedUnknownPath;
+		this.replacementCause = replacementCause;
 	}
 }
 
@@ -72,6 +96,17 @@ function publishFailure(outcome: NativePublishOutcome): ManagedPublishError {
 	return new ManagedPublishError(classification, outcome);
 }
 
+function exactUnlinkCompleted(result: NativeExactUnlinkResult): boolean {
+	return (
+		result.ok ||
+		(result.code === "cleanup_pending" &&
+			result.payloadDurable === true &&
+			result.detachedPath !== undefined &&
+			result.retainedSuccessorPath === undefined &&
+			result.retainedUnknownPath === undefined)
+	);
+}
+
 /** A same-filesystem rename updates the moved root's ctime but no other tree identity. */
 function sameDirectoryTreeSnapshotAfterRename(
 	left: NativeDirectoryTreeSnapshot,
@@ -89,6 +124,7 @@ function sameDirectoryTreeSnapshotAfterRename(
 				entry.kind === other.kind &&
 				entry.dev === other.dev &&
 				entry.ino === other.ino &&
+				entry.nlink === other.nlink &&
 				entry.size === other.size &&
 				entry.mtimeNs === other.mtimeNs &&
 				(entry.relativePath === "" || entry.ctimeNs === other.ctimeNs) &&
@@ -110,6 +146,21 @@ class ManagedTreeMoveOutcomeError extends Error {
 /** Cleanup is safe only when the native move reports that it did not commit. */
 export function mayCleanManagedTreeStaging(error: unknown): boolean {
 	return !(error instanceof ManagedTreeMoveOutcomeError) || error.stagingCleanupSafe;
+}
+
+/**
+ * A filesystem that implements no `renameat2` rename flag at all rejects the no-replace publish
+ * before mutating anything: NFS answers `EINVAL` (`invalid_request`) and kernels older than 3.15
+ * answer `ENOSYS` (`atomic_unavailable`). Only those two pre-mutation outcomes authorize the
+ * `linkat` stand-in; every other failure describes a publish that was actually attempted, and
+ * retrying it under a different primitive could publish twice.
+ */
+export function renameFlagsUnsupported(outcome: NativePublishOutcome): boolean {
+	return (
+		!outcome.ok &&
+		mayCleanCurrentStaging(outcome) &&
+		(outcome.reason === "atomic_unavailable" || outcome.reason === "invalid_request")
+	);
 }
 
 export type ManagedSessionSecurityPolicy = "default" | "windows-existing-verify-first";
@@ -137,7 +188,164 @@ export interface ManagedStorageLock {
 
 export interface ManagedFileSnapshot {
 	bytes: Buffer;
-	identity: { dev: bigint; ino: bigint; size: number; mtimeNs: bigint; ctimeNs: bigint; sha256: string };
+	identity: {
+		dev: bigint;
+		ino: bigint;
+		nlink: bigint;
+		size: number;
+		mtimeNs: bigint;
+		ctimeNs: bigint;
+		sha256: string;
+	};
+}
+
+type SerializedReplacementIdentity = {
+	dev: string;
+	ino: string;
+	nlink: string;
+	size: string;
+	mtimeNs: string;
+	ctimeNs: string;
+	sha256: string;
+};
+
+type ReplacementCleanupReceipt = {
+	version: 3;
+	staging: string;
+	destination: string;
+	successor: SerializedReplacementIdentity;
+	predecessor: SerializedReplacementIdentity;
+};
+
+type LegacyReplacementCleanupIdentity = {
+	dev: bigint;
+	ino: bigint;
+	nlink: bigint;
+	size: bigint;
+	mtimeNs: bigint;
+	ctimeNs: bigint;
+	sha256: string;
+};
+
+const U64_MAX = 18_446_744_073_709_551_615n;
+
+function parseCanonicalU64(value: unknown): bigint | undefined {
+	if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value) || value.length > 20) return undefined;
+	const parsed = BigInt(value);
+	return parsed <= U64_MAX ? parsed : undefined;
+}
+
+function parseLegacyHexU64(value: string): bigint | undefined {
+	if (!/^[0-9a-f]+$/.test(value) || value.length > 16) return undefined;
+	const parsed = BigInt(`0x${value}`);
+	return parsed <= U64_MAX ? parsed : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function legacyReplacementCleanupReceiptBinding(name: string): { dev: bigint; ino: bigint } | undefined {
+	const match = /^\.gjc-replace-cleanup-([0-9a-f]+)-([0-9a-f]+)\.json$/.exec(name);
+	if (!match?.[1] || !match[2]) return undefined;
+	const dev = parseLegacyHexU64(match[1]);
+	const ino = parseLegacyHexU64(match[2]);
+	return dev !== undefined && ino !== undefined ? { dev, ino } : undefined;
+}
+
+function parseLegacyReplacementCleanupIdentity(value: unknown): LegacyReplacementCleanupIdentity | undefined {
+	const identity = asRecord(value);
+	if (!identity) return undefined;
+	const dev = parseCanonicalU64(identity.dev);
+	const ino = parseCanonicalU64(identity.ino);
+	const nlink = parseCanonicalU64(identity.nlink);
+	const size = parseCanonicalU64(identity.size);
+	const mtimeNs = parseCanonicalU64(identity.mtimeNs);
+	const ctimeNs = parseCanonicalU64(identity.ctimeNs);
+	const sha256 = identity.sha256;
+	if (
+		dev === undefined ||
+		ino === undefined ||
+		nlink === undefined ||
+		size === undefined ||
+		mtimeNs === undefined ||
+		ctimeNs === undefined ||
+		typeof sha256 !== "string" ||
+		!/^[0-9a-f]{64}$/.test(sha256)
+	)
+		return undefined;
+	return { dev, ino, nlink, size, mtimeNs, ctimeNs, sha256 };
+}
+
+function parseLegacyReplacementCleanupReceipt(
+	bytes: Uint8Array,
+): { predecessor: string; successor: string; identity: LegacyReplacementCleanupIdentity } | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(Buffer.from(bytes).toString("utf8")) as unknown;
+	} catch {
+		return undefined;
+	}
+	const receipt = asRecord(value);
+	if (receipt?.version !== 1 || typeof receipt.predecessor !== "string" || typeof receipt.successor !== "string")
+		return undefined;
+	const identity = parseLegacyReplacementCleanupIdentity(receipt.identity);
+	return identity ? { predecessor: receipt.predecessor, successor: receipt.successor, identity } : undefined;
+}
+
+function replacementCleanupReceiptBinding(
+	name: string,
+): { predecessor: { dev: bigint; ino: bigint }; receipt: { dev: bigint; ino: bigint } } | undefined {
+	const match =
+		/^\.gjc-replace-cleanup-(0|[1-9a-f][0-9a-f]*)-(0|[1-9a-f][0-9a-f]*)-receipt-(0|[1-9a-f][0-9a-f]*)-(0|[1-9a-f][0-9a-f]*)\.json$/.exec(
+			name,
+		);
+	if (!match?.[1] || !match[2] || !match[3] || !match[4]) return undefined;
+	const predecessor = { dev: BigInt(`0x${match[1]}`), ino: BigInt(`0x${match[2]}`) };
+	const receipt = { dev: BigInt(`0x${match[3]}`), ino: BigInt(`0x${match[4]}`) };
+	return predecessor.dev <= U64_MAX && predecessor.ino <= U64_MAX && receipt.dev <= U64_MAX && receipt.ino <= U64_MAX
+		? { predecessor, receipt }
+		: undefined;
+}
+
+function serializeReplacementIdentity(identity: ManagedFileSnapshot["identity"]): SerializedReplacementIdentity {
+	return {
+		dev: identity.dev.toString(),
+		ino: identity.ino.toString(),
+		nlink: identity.nlink.toString(),
+		size: String(identity.size),
+		mtimeNs: identity.mtimeNs.toString(),
+		ctimeNs: identity.ctimeNs.toString(),
+		sha256: identity.sha256,
+	};
+}
+
+function replacementReceiptPath(
+	baseDir: string,
+	predecessor: ManagedFileSnapshot["identity"],
+	receipt: ManagedFileSnapshot["identity"],
+): string {
+	return path.join(
+		baseDir,
+		`.gjc-replace-cleanup-${predecessor.dev.toString(16)}-${predecessor.ino.toString(16)}-receipt-${receipt.dev.toString(16)}-${receipt.ino.toString(16)}.json`,
+	);
+}
+
+function replacementReceiptRetirementName(
+	receipt: { dev: bigint; ino: bigint },
+	predecessor: { dev: bigint; ino: bigint },
+): string {
+	return `.gjc-receipt-remove-${receipt.dev.toString(16)}-${receipt.ino.toString(16)}-${predecessor.dev.toString(16)}-${predecessor.ino.toString(16)}`;
+}
+
+function replacementReceiptPlaceholderRetirementName(
+	placeholder: { dev: bigint; ino: bigint },
+	predecessor: { dev: bigint; ino: bigint },
+	receipt: { dev: bigint; ino: bigint },
+): string {
+	return `.gjc-receipt-placeholder-remove-${placeholder.dev.toString(16)}-${placeholder.ino.toString(16)}-${predecessor.dev.toString(16)}-${predecessor.ino.toString(16)}-${receipt.dev.toString(16)}-${receipt.ino.toString(16)}`;
 }
 
 const ACL_FAILURE_CODES = new Set(["acl_denied", "acl_io_error", "acl_present", "acl_malformed", "acl_unknown"]);
@@ -263,7 +471,18 @@ type LockRecord = {
 	createdAt: number;
 	heartbeatAt: number;
 	leaseExpiresAt: number;
+	released?: boolean;
 };
+
+export interface ManagedLockRetirementTestEvent {
+	readonly path: string;
+	readonly attemptId: string;
+}
+
+/** Test-only seam immediately before exact retirement of one observed lock identity. */
+export const ManagedLockTestHooks: {
+	beforeObservedRetirement?: (event: ManagedLockRetirementTestEvent) => void;
+} = {};
 
 /** Captured configured-root authority for managed paths only. */
 export interface ManagedDirectoryRoot {
@@ -377,12 +596,31 @@ function managedRelativePath(root: ManagedDirectoryRoot, pathname: string): read
 
 const PROCESS_START_ID = randomUUID();
 
+class ManagedSecurityError extends Error {
+	readonly #classification: string;
+
+	constructor(pathname: string, result: NativeSecurity) {
+		const classification = result.ok ? "unexpected_security_state" : result.code;
+		super(
+			result.ok
+				? `Unexpected security state for ${pathname}`
+				: `Owner-only security rejected ${pathname}: ${classification}`,
+		);
+		this.name = "ManagedSecurityError";
+		this.#classification = classification;
+	}
+
+	getClassification(): string {
+		return this.#classification;
+	}
+}
+
+export function managedSecurityFailureClassification(error: unknown): string | undefined {
+	return error instanceof ManagedSecurityError ? error.getClassification() : undefined;
+}
+
 function securityError(pathname: string, result: NativeSecurity): Error {
-	return new Error(
-		result.ok
-			? `Unexpected security state for ${pathname}`
-			: `Owner-only security rejected ${pathname}: ${result.code}`,
-	);
+	return new ManagedSecurityError(pathname, result);
 }
 
 function secure(pathname: string, kind: "directory" | "file"): void {
@@ -453,7 +691,12 @@ export class ManagedSessionDescendantStore {
 	readonly #baseDir: string;
 	readonly #policy: ManagedSessionSecurityPolicy;
 	readonly #authority: RecoveryFsRoot | undefined;
+	#ownsAuthority = false;
+	#closed = false;
+	#reconcilingReplacementCleanup = false;
 	readonly #authorityBaseDir: string;
+	/** Logical profile root inherited by nested managed session destinations. */
+	readonly #profileAgentDir: string;
 	readonly #subtreeRoot: ManagedDirectoryRoot;
 
 	constructor(
@@ -461,12 +704,14 @@ export class ManagedSessionDescendantStore {
 		baseDir: string,
 		retained?: { authority: RecoveryFsRoot; authorityBaseDir: string },
 		policy?: ManagedSessionSecurityPolicy,
+		profileAgentDir?: string,
 	) {
 		managedRelativePath(root, baseDir);
 
 		this.#root = root;
 		this.#baseDir = path.resolve(baseDir);
 		this.#policy = policy ?? "default";
+		this.#profileAgentDir = profileAgentDir ?? root.canonicalPath;
 		this.#authorityBaseDir = retained?.authorityBaseDir ?? this.#baseDir;
 		if (retained) {
 			const relative = path.relative(retained.authorityBaseDir, this.#baseDir).split(path.sep).join("/");
@@ -501,6 +746,7 @@ export class ManagedSessionDescendantStore {
 				throw new Error("Managed descendant root identity changed");
 			}
 			this.#authority = authority;
+			this.#ownsAuthority = true;
 		}
 	}
 
@@ -520,10 +766,15 @@ export class ManagedSessionDescendantStore {
 		return this.#policy;
 	}
 
+	get profileAgentDir(): string {
+		return this.#profileAgentDir;
+	}
+
 	deriveSubtree(relativePath: string): ManagedSessionDescendantStore {
 		const child = this.ensureDirectory(relativePath);
 		const resolved = this.#resolve(relativePath);
-		if (!this.#authority) return new ManagedSessionDescendantStore(this.#root, resolved, undefined, this.#policy);
+		if (!this.#authority)
+			return new ManagedSessionDescendantStore(this.#root, resolved, undefined, this.#policy, this.#profileAgentDir);
 		const retainedChild = this.#authority.retainManagedDirectory(
 			this.#relative(resolved),
 			child.dev.toString(),
@@ -537,6 +788,7 @@ export class ManagedSessionDescendantStore {
 				authorityBaseDir: resolved,
 			},
 			this.#policy,
+			this.#profileAgentDir,
 		);
 	}
 
@@ -547,6 +799,16 @@ export class ManagedSessionDescendantStore {
 			this.#subtreeRoot.dev.toString(),
 			this.#subtreeRoot.ino.toString(),
 		);
+	}
+
+	/**
+	 * Release an authority this store opened itself. Retained authorities are owned by
+	 * the security context that supplied them and are never closed here. Idempotent.
+	 */
+	close(): void {
+		if (this.#closed || !this.#ownsAuthority || !this.#authority) return;
+		this.#closed = true;
+		this.#authority.close();
 	}
 
 	assertBound(): void {
@@ -607,7 +869,173 @@ export class ManagedSessionDescendantStore {
 		}
 	}
 
+	#recoverReplacementCleanupPlaceholder(
+		receiptPath: string,
+		binding: { predecessor: { dev: bigint; ino: bigint }; receipt: { dev: bigint; ino: bigint } },
+		placeholder: ManagedFileSnapshot,
+	): boolean {
+		if (placeholder.bytes.byteLength !== 0) return false;
+		const detachedReceiptPath = path.join(
+			this.#baseDir,
+			replacementReceiptRetirementName(binding.receipt, binding.predecessor),
+		);
+		let detachedReceipt: ManagedFileSnapshot;
+		try {
+			detachedReceipt = captureManagedFileNoFollow(detachedReceiptPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+			throw error;
+		}
+		if (detachedReceipt.identity.dev !== binding.receipt.dev || detachedReceipt.identity.ino !== binding.receipt.ino)
+			return false;
+
+		const quarantineName = replacementReceiptPlaceholderRetirementName(
+			placeholder.identity,
+			binding.predecessor,
+			binding.receipt,
+		);
+		const removed = exactUnlink(receiptPath, {
+			dev: placeholder.identity.dev,
+			ino: placeholder.identity.ino,
+			nlink: placeholder.identity.nlink,
+			parentDev: this.#subtreeRoot.dev,
+			parentIno: this.#subtreeRoot.ino,
+			size: BigInt(placeholder.identity.size),
+			mtimeNs: placeholder.identity.mtimeNs,
+			sha256: placeholder.identity.sha256,
+			quarantineName,
+		});
+		if (
+			(!exactUnlinkCompleted(removed) && removed.code !== "not_found") ||
+			removed.retainedSuccessorPath !== undefined ||
+			removed.retainedUnknownPath !== undefined
+		)
+			throw new Error(`managed_replace_receipt_cleanup_pending:${removed.code ?? "unknown"}`);
+		fsyncDirectory(this.#baseDir);
+		return true;
+	}
+
+	#detachReplacementCleanupReceipt(receiptPath: string): void {
+		const binding = replacementCleanupReceiptBinding(path.basename(receiptPath));
+		if (!binding) throw new Error("managed_replace_cleanup_receipt_invalid");
+		let receipt: ManagedFileSnapshot;
+		try {
+			receipt = captureManagedFileNoFollow(receiptPath);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
+		}
+		if (receipt.identity.dev !== binding.receipt.dev || receipt.identity.ino !== binding.receipt.ino) {
+			if (this.#recoverReplacementCleanupPlaceholder(receiptPath, binding, receipt)) return;
+			throw new Error("managed_replace_cleanup_receipt_invalid");
+		}
+		const predecessor = binding.predecessor;
+		const quarantineName = replacementReceiptRetirementName(receipt.identity, predecessor);
+		const detached = exactUnlink(receiptPath, {
+			dev: receipt.identity.dev,
+			ino: receipt.identity.ino,
+			nlink: receipt.identity.nlink,
+			parentDev: this.#subtreeRoot.dev,
+			parentIno: this.#subtreeRoot.ino,
+			size: BigInt(receipt.identity.size),
+			mtimeNs: receipt.identity.mtimeNs,
+			sha256: receipt.identity.sha256,
+			detachOnly: true,
+			quarantineName,
+		});
+		if (
+			(!detached.ok && detached.code !== "cleanup_pending") ||
+			detached.detachedPath !== path.join(this.#baseDir, quarantineName) ||
+			detached.retainedSuccessorPath ||
+			detached.retainedUnknownPath
+		)
+			throw new Error(`managed_replace_receipt_cleanup_pending:${detached.code ?? "unknown"}`);
+		fsyncDirectory(this.#baseDir);
+	}
+
+	#reconcileLegacyReplacementCleanupReceipt(receiptPath: string, name: string): void {
+		const binding = legacyReplacementCleanupReceiptBinding(name);
+		if (!binding) throw new Error("managed_replace_cleanup_receipt_invalid");
+		const receipt = captureManagedFileNoFollow(receiptPath);
+		const parsed = parseLegacyReplacementCleanupReceipt(receipt.bytes);
+		const expectedPredecessor = path.join(
+			this.#baseDir,
+			`.gjc-exact-replace-destination-${binding.dev.toString(16)}-${binding.ino.toString(16)}`,
+		);
+		if (
+			!parsed ||
+			parsed.identity.dev !== binding.dev ||
+			parsed.identity.ino !== binding.ino ||
+			path.resolve(parsed.predecessor) !== expectedPredecessor ||
+			path.dirname(path.resolve(parsed.successor)) !== this.#baseDir
+		)
+			throw new Error("managed_replace_cleanup_receipt_invalid");
+
+		const retired = exactUnlink(expectedPredecessor, {
+			dev: parsed.identity.dev,
+			ino: parsed.identity.ino,
+			nlink: parsed.identity.nlink,
+			parentDev: this.#subtreeRoot.dev,
+			parentIno: this.#subtreeRoot.ino,
+			size: parsed.identity.size,
+			mtimeNs: parsed.identity.mtimeNs,
+			sha256: parsed.identity.sha256,
+			quarantineName: `.gjc-replace-retry-${parsed.identity.dev.toString(16)}-${parsed.identity.ino.toString(16)}`,
+		});
+		if (!exactUnlinkCompleted(retired) && retired.code !== "not_found")
+			throw new Error(`managed_replace_cleanup_pending:${retired.code ?? "unknown"}`);
+
+		const currentReceipt = captureManagedFileNoFollow(receiptPath);
+		if (
+			!sameIdentity(currentReceipt.identity, receipt.identity) ||
+			currentReceipt.identity.sha256 !== receipt.identity.sha256
+		)
+			throw new Error("managed_replace_cleanup_receipt_invalid");
+		const removed = exactUnlink(receiptPath, {
+			dev: currentReceipt.identity.dev,
+			ino: currentReceipt.identity.ino,
+			nlink: currentReceipt.identity.nlink,
+			parentDev: this.#subtreeRoot.dev,
+			parentIno: this.#subtreeRoot.ino,
+			size: BigInt(currentReceipt.identity.size),
+			mtimeNs: currentReceipt.identity.mtimeNs,
+			sha256: currentReceipt.identity.sha256,
+			quarantineName: `.gjc-receipt-remove-${currentReceipt.identity.dev.toString(16)}-${currentReceipt.identity.ino.toString(16)}`,
+		});
+		if (!exactUnlinkCompleted(removed) && removed.code !== "not_found")
+			throw new Error(`managed_replace_receipt_cleanup_pending:${removed.code ?? "unknown"}`);
+		fsyncDirectory(this.#baseDir);
+	}
+
+	#reconcileReplacementCleanupReceipts(): void {
+		if (this.#reconcilingReplacementCleanup) return;
+		this.#reconcilingReplacementCleanup = true;
+		try {
+			for (const name of fs.readdirSync(this.#baseDir)) {
+				if (!name.startsWith(".gjc-replace-cleanup-")) continue;
+				if (replacementCleanupReceiptBinding(name)) {
+					this.#detachReplacementCleanupReceipt(path.join(this.#baseDir, name));
+					continue;
+				}
+				if (legacyReplacementCleanupReceiptBinding(name)) {
+					this.#reconcileLegacyReplacementCleanupReceipt(path.join(this.#baseDir, name), name);
+					continue;
+				}
+				throw new Error("managed_replace_cleanup_receipt_invalid");
+			}
+		} finally {
+			this.#reconcilingReplacementCleanup = false;
+		}
+	}
+
+	#beforeMutation(): void {
+		this.#assertBound();
+		this.#reconcileReplacementCleanupReceipts();
+		this.#assertBound();
+	}
+
 	ensureDirectory(relativePath = ""): ManagedDirectoryRoot {
+		this.#beforeMutation();
 		this.#assertBound();
 		if (this.#authority) {
 			const relative = this.#relative(this.#resolve(relativePath));
@@ -627,6 +1055,7 @@ export class ManagedSessionDescendantStore {
 	}
 
 	async publishNoReplace(relativePath: string, bytes: Uint8Array): Promise<void> {
+		this.#beforeMutation();
 		const resolved = this.#resolve(relativePath);
 		if (this.#authority) {
 			this.#assertBound();
@@ -638,6 +1067,7 @@ export class ManagedSessionDescendantStore {
 	}
 
 	publishNoReplaceSync(relativePath: string, bytes: Uint8Array): void {
+		this.#beforeMutation();
 		const resolved = this.#resolve(relativePath);
 		if (!this.#authority) {
 			publishManagedFileNoReplaceSync(resolved, bytes, this.#root, this.#policy);
@@ -650,10 +1080,17 @@ export class ManagedSessionDescendantStore {
 	}
 
 	async replace(relativePath: string, bytes: Uint8Array): Promise<void> {
+		this.#beforeMutation();
 		this.#assertBound();
 		const resolved = this.#resolve(relativePath);
 		if (!this.#authority) {
-			await replaceManagedFile(resolved, bytes, this.#subtreeRoot, this.#policy);
+			try {
+				const expected = captureManagedFileNoFollow(resolved);
+				replaceManagedFileSync(resolved, bytes, this.#subtreeRoot, this.#policy, undefined, expected.identity);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				await publishManagedFileNoReplace(resolved, bytes, undefined, this.#subtreeRoot, this.#policy);
+			}
 			this.#assertBound();
 			return;
 		}
@@ -662,11 +1099,42 @@ export class ManagedSessionDescendantStore {
 		this.#assertBound();
 	}
 
-	replaceSync(relativePath: string, bytes: Uint8Array): void {
+	replaceExpected(relativePath: string, bytes: Uint8Array, expected: ManagedFileSnapshot): void {
+		this.#beforeMutation();
 		this.#assertBound();
 		const resolved = this.#resolve(relativePath);
 		if (!this.#authority) {
-			replaceManagedFileSync(resolved, bytes, this.#subtreeRoot, this.#policy);
+			const current = captureManagedFileNoFollow(resolved);
+			if (!sameIdentity(current.identity, expected.identity) || current.identity.sha256 !== expected.identity.sha256)
+				throw new Error("managed_replace_identity_mismatch");
+			replaceManagedFileSync(resolved, bytes, this.#subtreeRoot, this.#policy, undefined, expected.identity);
+			return;
+		}
+		const replaced = (this.#authority as RecoveryFsRoot & RetainedManagedReplacer).replaceManaged(
+			this.#relative(resolved),
+			bytes,
+			expected.identity.dev.toString(),
+			expected.identity.ino.toString(),
+			String(expected.identity.size),
+			expected.identity.mtimeNs.toString(),
+			expected.identity.ctimeNs.toString(),
+			expected.identity.sha256,
+		);
+		if (!replaced.ok) throw new Error(replaced.code ?? "managed_replace_failed");
+		this.#assertBound();
+	}
+	replaceSync(relativePath: string, bytes: Uint8Array): void {
+		this.#beforeMutation();
+		this.#assertBound();
+		const resolved = this.#resolve(relativePath);
+		if (!this.#authority) {
+			try {
+				const expected = captureManagedFileNoFollow(resolved);
+				replaceManagedFileSync(resolved, bytes, this.#subtreeRoot, this.#policy, undefined, expected.identity);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				publishManagedFileNoReplaceSync(resolved, bytes, this.#subtreeRoot, this.#policy);
+			}
 			this.#assertBound();
 			return;
 		}
@@ -675,9 +1143,10 @@ export class ManagedSessionDescendantStore {
 	}
 
 	appendSync(relativePath: string, bytes: Uint8Array): void {
+		this.#beforeMutation();
 		this.#assertBound();
 		const resolved = this.#resolve(relativePath);
-		let existing = this.readExpected(relativePath);
+		const existing = this.readExpected(relativePath);
 		if (!existing) throw new Error("managed_append_missing");
 		if (this.#authority) {
 			const appended = this.#authority.appendManaged(
@@ -694,52 +1163,18 @@ export class ManagedSessionDescendantStore {
 			this.#assertBound();
 			return;
 		}
-		// On Darwin, the first write-append open can change only ctime (e.g. com.apple.provenance)
-		// while leaving dev/ino/size/mtime/content intact. Allow one bounded refresh+retry for that
-		// transition only; any other identity change or a second ctime transition stays fail-closed.
-		// See https://github.com/Yeachan-Heo/gajae-code/issues/2944
-		let fd: number | undefined;
-		let darwinCtimeRefreshConsumed = false;
-		try {
-			for (;;) {
-				fd = fs.openSync(resolved, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
-				const before = identity(fs.fstatSync(fd, { bigint: true }));
-				if (!sameIdentity(before, existing.identity)) {
-					const allowDarwinCtimeRefresh =
-						process.platform === "darwin" &&
-						!darwinCtimeRefreshConsumed &&
-						isCtimeOnlyIdentityMismatch(before, existing.identity);
-					if (!allowDarwinCtimeRefresh) throw new Error("identity_mismatch");
-					fs.closeSync(fd);
-					fd = undefined;
-					darwinCtimeRefreshConsumed = true;
-					const original = existing;
-					const refreshed = this.readExpected(relativePath);
-					if (
-						!refreshed ||
-						!sameStableIdentityIgnoringCtime(refreshed.identity, original.identity) ||
-						refreshed.identity.sha256 !== original.identity.sha256 ||
-						!refreshed.bytes.equals(original.bytes)
-					) {
-						throw new Error("identity_mismatch");
-					}
-					existing = refreshed;
-					continue;
-				}
-				secureFileDescriptor(resolved, fd, "verify");
-				let offset = 0;
-				while (offset < bytes.byteLength) offset += fs.writeSync(fd, bytes, offset, bytes.byteLength - offset);
-				fs.fsyncSync(fd);
-				secureFileDescriptor(resolved, fd, "verify");
-				const after = identity(fs.fstatSync(fd, { bigint: true }));
-				const named = identity(fs.lstatSync(resolved, { bigint: true }));
-				if (!sameIdentity(after, named) || after.dev !== before.dev || after.ino !== before.ino)
-					throw new Error("identity_mismatch");
-				break;
-			}
-		} finally {
-			if (fd !== undefined) fs.closeSync(fd);
-		}
+		// Darwin has no retained native root authority. Do not append in place:
+		// a short write can leave a malformed JSONL tail with no safe recovery
+		// boundary. Replace the exact captured file instead so the old transcript
+		// or the complete successor remains recoverable after every reported error.
+		replaceManagedFileSync(
+			resolved,
+			Buffer.concat([existing.bytes, Buffer.from(bytes)]),
+			this.#subtreeRoot,
+			this.#policy,
+			undefined,
+			existing.identity,
+		);
 		this.#assertBound();
 	}
 
@@ -872,6 +1307,7 @@ export class ManagedSessionDescendantStore {
 			identity: {
 				dev: BigInt(read.identity.dev),
 				ino: BigInt(read.identity.ino),
+				nlink: BigInt(read.identity.nlink),
 				size: Number(read.identity.size),
 				mtimeNs: BigInt(read.identity.mtimeNs),
 				ctimeNs: BigInt(read.identity.ctimeNs),
@@ -882,6 +1318,7 @@ export class ManagedSessionDescendantStore {
 
 	/** Remove an exact captured file without reopening its pathname as authority. */
 	removeExpected(relativePath: string, expected: ManagedFileSnapshot): void {
+		this.#beforeMutation();
 		this.#assertBound();
 		if (!this.#authority) {
 			const removed = exactUnlink(this.#resolve(relativePath), {
@@ -921,6 +1358,7 @@ export class ManagedSessionDescendantStore {
 	}
 	/** Read and remove one managed descendant through retained authority. */
 	async consume(relativePath: string): Promise<Uint8Array | null> {
+		this.#beforeMutation();
 		this.#assertBound();
 		const resolved = this.#resolve(relativePath);
 		if (this.#authority) {
@@ -959,6 +1397,7 @@ export class ManagedSessionDescendantStore {
 
 	/** Remove one managed descendant through retained authority when it exists. */
 	async remove(relativePath: string): Promise<void> {
+		this.#beforeMutation();
 		await this.consume(relativePath);
 	}
 
@@ -982,6 +1421,7 @@ export class ManagedSessionDescendantStore {
 		destinationRelativePath: string,
 		snapshot: NativeDirectoryTreeSnapshot,
 	): Promise<void> {
+		this.#beforeMutation();
 		const actual = this.captureTree(sourceRelativePath);
 		if (JSON.stringify(actual) !== JSON.stringify(snapshot)) throw new Error("artifact_source_changed");
 		this.ensureDirectory(destinationRelativePath);
@@ -1028,6 +1468,7 @@ export class ManagedSessionDescendantStore {
 		destinationRelativePath: string,
 		expected: NativeDirectoryTreeSnapshot,
 	): NativeDirectoryTreeSnapshot {
+		this.#beforeMutation();
 		this.#assertBound();
 		const moved = this.#authority
 			? this.#authority.renameManagedTreeNoReplace(
@@ -1055,6 +1496,7 @@ export class ManagedSessionDescendantStore {
 	}
 
 	removeTreeExpected(relativePath: string, expected: NativeDirectoryTreeSnapshot): void {
+		this.#beforeMutation();
 		this.#assertBound();
 		if (!this.#authority) {
 			const removed = exactRemoveDirectoryTree(this.#resolve(relativePath), expected);
@@ -1067,6 +1509,7 @@ export class ManagedSessionDescendantStore {
 		this.#assertBound();
 	}
 	fsyncTree(): NativeDirectoryTreeSnapshot {
+		this.#beforeMutation();
 		this.#assertBound();
 		if (!this.#authority) return fsyncManagedArtifactTree(this.#baseDir);
 		const baseRelative = this.#relative(this.#baseDir);
@@ -1162,6 +1605,7 @@ function identity(stat: fs.BigIntStats, sha256 = ""): ManagedFileSnapshot["ident
 	return {
 		dev: stat.dev,
 		ino: stat.ino,
+		nlink: stat.nlink,
 		size: Number(stat.size),
 		mtimeNs: stat.mtimeNs,
 		ctimeNs: stat.ctimeNs,
@@ -1173,35 +1617,28 @@ function sameIdentity(left: ManagedFileSnapshot["identity"], right: ManagedFileS
 	return (
 		left.dev === right.dev &&
 		left.ino === right.ino &&
+		left.nlink === right.nlink &&
 		left.size === right.size &&
 		left.mtimeNs === right.mtimeNs &&
 		left.ctimeNs === right.ctimeNs
 	);
 }
-
-/** Content/path identity that remains meaningful across a Darwin write-open ctime-only transition. */
-function sameStableIdentityIgnoringCtime(
+function sameReplacementIdentity(
 	left: ManagedFileSnapshot["identity"],
 	right: ManagedFileSnapshot["identity"],
 ): boolean {
 	return (
-		left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.nlink === right.nlink &&
+		left.size === right.size &&
+		left.mtimeNs === right.mtimeNs
 	);
 }
 
-/** True when observed identity matches expected on every field except ctimeNs. */
-function isCtimeOnlyIdentityMismatch(
-	observed: ManagedFileSnapshot["identity"],
-	expected: ManagedFileSnapshot["identity"],
-): boolean {
-	return sameStableIdentityIgnoringCtime(observed, expected) && observed.ctimeNs !== expected.ctimeNs;
-}
-
-function parseLock(pathname: string): LockRecord | undefined {
+function parseLockBytes(bytes: Uint8Array): LockRecord | undefined {
 	try {
-		const stat = fs.lstatSync(pathname);
-		if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
-		const value: unknown = JSON.parse(fs.readFileSync(pathname, "utf8"));
+		const value: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
 		if (!value || typeof value !== "object") return undefined;
 		const record = value as Partial<LockRecord>;
 		return typeof record.attemptId === "string" &&
@@ -1209,9 +1646,30 @@ function parseLock(pathname: string): LockRecord | undefined {
 			typeof record.processStartId === "string" &&
 			typeof record.leaseExpiresAt === "number" &&
 			typeof record.heartbeatAt === "number" &&
-			typeof record.createdAt === "number"
+			typeof record.createdAt === "number" &&
+			(record.released === undefined || typeof record.released === "boolean")
 			? (record as LockRecord)
 			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function parseLock(pathname: string): LockRecord | undefined {
+	try {
+		const stat = fs.lstatSync(pathname);
+		if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
+		return parseLockBytes(fs.readFileSync(pathname));
+	} catch {
+		return undefined;
+	}
+}
+
+function captureLock(pathname: string): { record: LockRecord; snapshot: ManagedFileSnapshot } | undefined {
+	try {
+		const snapshot = captureManagedFileNoFollow(pathname);
+		const record = parseLockBytes(snapshot.bytes);
+		return record ? { record, snapshot } : undefined;
 	} catch {
 		return undefined;
 	}
@@ -1330,6 +1788,7 @@ export async function publishManagedFileNoReplace(
 	let failure: unknown;
 	let outcome: NativePublishOutcome | undefined;
 	let renameAttempted = false;
+	let linkPublished = false;
 
 	try {
 		assertOwned?.();
@@ -1349,6 +1808,16 @@ export async function publishManagedFileNoReplace(
 
 		renameAttempted = true;
 		outcome = classifyNativePublishOutcome(renameNoReplacePath(staging, destination));
+		if (renameFlagsUnsupported(outcome)) {
+			// linkat publishes the destination without consuming the staging name, so the
+			// secured staging descriptor stays authoritative across publication exactly as
+			// it does across a rename. The staging link is removed in the finally block
+			// below, after that descriptor is closed: unlinking a still-open name on NFS
+			// silly-renames it instead of removing it, which would leave a second link on
+			// the published inode.
+			outcome = classifyNativePublishOutcome(linkNoReplacePath(staging, destination));
+			linkPublished = outcome.ok;
+		}
 
 		if (!outcome.ok) throw publishFailure(outcome);
 
@@ -1371,7 +1840,7 @@ export async function publishManagedFileNoReplace(
 	} finally {
 		if (fd !== undefined) fs.closeSync(fd);
 
-		if (stagingIdentity && (!renameAttempted || (outcome && mayCleanCurrentStaging(outcome)))) {
+		if (stagingIdentity && (linkPublished || !renameAttempted || (outcome && mayCleanCurrentStaging(outcome)))) {
 			await fsp
 				.lstat(staging, { bigint: true })
 				.then(stat => {
@@ -1391,14 +1860,16 @@ export function publishManagedFileNoReplaceSync(
 	bytes: Uint8Array,
 	root?: ManagedDirectoryRoot,
 	policy: ManagedSessionSecurityPolicy = "default",
-): void {
+): ManagedFileSnapshot["identity"] {
 	const parent = path.dirname(destination);
 	ensureManagedDirectory(parent, root, policy);
 	const staging = path.join(parent, `.${path.basename(destination)}.${randomUUID()}.staging`);
 	let fd: number | undefined;
 	let stagingIdentity: { dev: bigint; ino: bigint } | undefined;
+	let publishedIdentity: ManagedFileSnapshot["identity"] | undefined;
 	let failure: unknown;
 	let outcome: NativePublishOutcome | undefined;
+	let linkPublished = false;
 
 	try {
 		fd = fs.openSync(
@@ -1413,8 +1884,15 @@ export function publishManagedFileNoReplaceSync(
 		secureFileDescriptor(staging, fd, "verify");
 		const staged = fs.fstatSync(fd, { bigint: true });
 		stagingIdentity = { dev: staged.dev, ino: staged.ino };
+		publishedIdentity = identity(staged, createHash("sha256").update(bytes).digest("hex"));
 
 		outcome = classifyNativePublishOutcome(renameNoReplacePath(staging, destination));
+		if (renameFlagsUnsupported(outcome)) {
+			// See publishManagedFileNoReplace: the staging link outlives this publication
+			// and is removed only after the secured descriptor is closed.
+			outcome = classifyNativePublishOutcome(linkNoReplacePath(staging, destination));
+			linkPublished = outcome.ok;
+		}
 		if (!outcome.ok) throw publishFailure(outcome);
 
 		const named = fs.lstatSync(destination, { bigint: true });
@@ -1430,7 +1908,7 @@ export function publishManagedFileNoReplaceSync(
 	} finally {
 		if (fd !== undefined) fs.closeSync(fd);
 	}
-	if (stagingIdentity && outcome && mayCleanCurrentStaging(outcome)) {
+	if (stagingIdentity && (linkPublished || (outcome && mayCleanCurrentStaging(outcome)))) {
 		try {
 			const named = fs.lstatSync(staging, { bigint: true });
 			if (named.dev !== stagingIdentity.dev || named.ino !== stagingIdentity.ino) {
@@ -1442,6 +1920,8 @@ export function publishManagedFileNoReplaceSync(
 		}
 	}
 	if (failure !== undefined) throw failure;
+	if (!publishedIdentity) throw new Error("managed_publish_identity_unavailable");
+	return publishedIdentity;
 }
 
 /** Replace one managed regular file while retaining the secured staging fd through publication. */
@@ -1450,12 +1930,25 @@ export function replaceManagedFileSync(
 	bytes: Uint8Array,
 	root: ManagedDirectoryRoot,
 	policy: ManagedSessionSecurityPolicy = "default",
+	assertFence?: () => void,
+	expectedDestination?: ManagedFileSnapshot["identity"],
 ): void {
 	const parent = path.dirname(destination);
 	ensureManagedDirectory(parent, root, policy);
 	const staging = path.join(parent, `.${path.basename(destination)}.${randomUUID()}.replacement`);
 	let fd: number | undefined;
 	let stagedIdentity: { dev: bigint; ino: bigint } | undefined;
+	let preserveStaging = false;
+	let receiptCleanup:
+		| {
+				path: string;
+				parentDev: bigint;
+				parentIno: bigint;
+				identity: ManagedFileSnapshot["identity"];
+				predecessor: ManagedFileSnapshot["identity"];
+		  }
+		| undefined;
+	let failure: unknown;
 	try {
 		fd = fs.openSync(
 			staging,
@@ -1469,28 +1962,136 @@ export function replaceManagedFileSync(
 		secureFileDescriptor(staging, fd, "verify");
 		const staged = fs.fstatSync(fd, { bigint: true });
 		stagedIdentity = { dev: staged.dev, ino: staged.ino };
+		if (process.platform === "win32" && expectedDestination) {
+			fs.closeSync(fd);
+			fd = undefined;
+		}
 		assertManagedDirectoryRoot(root);
-		fs.renameSync(staging, destination);
+		assertFence?.();
+		if (expectedDestination) {
+			const parentIdentity = fs.lstatSync(parent, { bigint: true });
+			const successor = identity(staged, createHash("sha256").update(bytes).digest("hex"));
+			const receiptStagingPath = path.join(parent, `.gjc-replace-receipt-pending-${randomUUID()}.json`);
+			preserveStaging = true;
+			const publishedReceiptIdentity = publishManagedFileNoReplaceSync(
+				receiptStagingPath,
+				Buffer.from(
+					JSON.stringify({
+						version: 3,
+						staging,
+						destination,
+						successor: serializeReplacementIdentity(successor),
+						predecessor: serializeReplacementIdentity(expectedDestination),
+					} satisfies ReplacementCleanupReceipt),
+				),
+				root,
+				policy,
+			);
+			const receiptPath = replacementReceiptPath(parent, expectedDestination, publishedReceiptIdentity);
+			const receiptPublish = classifyNativePublishOutcome(renameNoReplacePath(receiptStagingPath, receiptPath));
+			if (!receiptPublish.ok) throw publishFailure(receiptPublish);
+			const namedReceipt = captureManagedFileNoFollow(receiptPath);
+			if (
+				namedReceipt.identity.dev !== publishedReceiptIdentity.dev ||
+				namedReceipt.identity.ino !== publishedReceiptIdentity.ino
+			)
+				throw new Error("managed_replace_cleanup_receipt_identity_changed");
+			fsyncDirectory(parent);
+			receiptCleanup = {
+				path: receiptPath,
+				parentDev: parentIdentity.dev,
+				parentIno: parentIdentity.ino,
+				identity: publishedReceiptIdentity,
+				predecessor: expectedDestination,
+			};
+			const replaced = exactReplacePath(
+				staging,
+				destination,
+				{
+					dev: successor.dev,
+					ino: successor.ino,
+					nlink: successor.nlink,
+					parentDev: parentIdentity.dev,
+					parentIno: parentIdentity.ino,
+					size: BigInt(successor.size),
+					mtimeNs: successor.mtimeNs,
+					sha256: successor.sha256,
+				},
+				{
+					dev: expectedDestination.dev,
+					ino: expectedDestination.ino,
+					nlink: expectedDestination.nlink,
+					parentDev: parentIdentity.dev,
+					parentIno: parentIdentity.ino,
+					size: BigInt(expectedDestination.size),
+					mtimeNs: expectedDestination.mtimeNs,
+					sha256: expectedDestination.sha256,
+				},
+			);
+			if (!replaced.ok) throw new ManagedReplaceError(replaced, receiptCleanup.path);
+			const named = captureManagedFileNoFollow(destination);
+			if (!sameReplacementIdentity(named.identity, successor) || named.identity.sha256 !== successor.sha256)
+				throw new Error("destination_identity_changed");
+			fsyncDirectory(parent);
+		} else fs.renameSync(staging, destination);
 		assertManagedDirectoryRoot(root);
 		const named = fs.lstatSync(destination, { bigint: true });
 		if (!named.isFile() || named.isSymbolicLink() || named.dev !== staged.dev || named.ino !== staged.ino) {
 			throw new Error("destination_identity_changed");
 		}
-		secureFileDescriptor(destination, fd, "verify");
-		fs.closeSync(fd);
-		fd = undefined;
+		if (fd !== undefined) {
+			secureFileDescriptor(destination, fd, "verify");
+			fs.closeSync(fd);
+			fd = undefined;
+		}
 		fsyncDirectory(parent);
+		if (receiptCleanup) {
+			try {
+				const removed = exactUnlink(receiptCleanup.path, {
+					dev: receiptCleanup.identity.dev,
+					ino: receiptCleanup.identity.ino,
+					nlink: receiptCleanup.identity.nlink,
+					parentDev: receiptCleanup.parentDev,
+					parentIno: receiptCleanup.parentIno,
+					size: BigInt(receiptCleanup.identity.size),
+					mtimeNs: receiptCleanup.identity.mtimeNs,
+					sha256: receiptCleanup.identity.sha256,
+					quarantineName: replacementReceiptRetirementName(receiptCleanup.identity, receiptCleanup.predecessor),
+				});
+				if (!exactUnlinkCompleted(removed) && removed.code !== "not_found")
+					throw new ManagedReplaceError(removed, receiptCleanup.path);
+				try {
+					fsyncDirectory(parent);
+				} catch (error) {
+					throw new ManagedReplaceError(
+						{ ...removed, ok: false, code: "durability_failed" },
+						receiptCleanup.path,
+						error,
+					);
+				}
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		}
+	} catch (error) {
+		failure = error;
 	} finally {
 		if (fd !== undefined) fs.closeSync(fd);
-		if (stagedIdentity) {
+		if (stagedIdentity && !preserveStaging) {
 			try {
 				const named = fs.lstatSync(staging, { bigint: true });
 				if (named.dev === stagedIdentity.dev && named.ino === stagedIdentity.ino) fs.unlinkSync(staging);
-			} catch {
-				// Never delete an object whose staging identity is no longer proven.
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+					failure =
+						failure === undefined
+							? error
+							: new AggregateError([failure, error], "Managed replacement and staging cleanup both failed.");
+				}
 			}
 		}
 	}
+	if (failure !== undefined) throw failure;
 }
 
 export async function replaceManagedFile(
@@ -1528,7 +2129,6 @@ export async function acquireManagedLock(
 	ensureManagedDirectory(locksDirectory, root, policy);
 	const lockPath = path.join(locksDirectory, `${name}.lock`);
 	const deadline = Date.now() + LOCK_WAIT_MS;
-	let staleObservedAt: number | undefined;
 	while (true) {
 		const attemptId = randomUUID();
 		const now = Date.now();
@@ -1561,12 +2161,8 @@ export async function acquireManagedLock(
 			let descriptorClosed = false;
 			const closeDescriptor = (): void => {
 				if (descriptorClosed) return;
-				try {
-					secureFileDescriptor(lockPath, fd, "verify");
-				} finally {
-					fs.closeSync(fd);
-					descriptorClosed = true;
-				}
+				fs.closeSync(fd);
+				descriptorClosed = true;
 			};
 			const assertOwned = (): void => {
 				const current = parseLock(lockPath);
@@ -1580,17 +2176,23 @@ export async function acquireManagedLock(
 					released ||
 					descriptorClosed ||
 					!current ||
+					current.released === true ||
 					!sameFileIdentity(lockIdentity, named) ||
-					current.attemptId !== attemptId ||
-					current.leaseExpiresAt < Date.now()
+					current.attemptId !== attemptId
 				)
 					throw new Error("migration_busy");
+				const now = Date.now();
+				if (current.leaseExpiresAt < now + LOCK_HEARTBEAT_MS) {
+					writeLockDescriptor(fd, {
+						...record,
+						heartbeatAt: now,
+						leaseExpiresAt: now + LOCK_LEASE_MS,
+					});
+				}
 			};
 			const heartbeat = setInterval(() => {
 				try {
 					assertOwned();
-					const now = Date.now();
-					writeLockDescriptor(fd, { ...record, heartbeatAt: now, leaseExpiresAt: now + LOCK_LEASE_MS });
 				} catch {
 					/* fencing rejects later publication */
 				}
@@ -1603,10 +2205,16 @@ export async function acquireManagedLock(
 					clearInterval(heartbeat);
 					try {
 						assertOwned();
+						secureFileDescriptor(lockPath, fd, "verify");
 						const now = Date.now();
-						// Do not unlink by pathname: a stale owner could otherwise remove a successor.
-						// The lease is retired through the verified inode-bound descriptor instead.
-						writeLockDescriptor(fd, { ...record, heartbeatAt: now, leaseExpiresAt: now });
+						// A released record is the only live-process reclaim authority. Expiry alone
+						// never authorizes stealing from a holder whose process is still present.
+						writeLockDescriptor(fd, {
+							...record,
+							released: true,
+							heartbeatAt: now,
+							leaseExpiresAt: now,
+						});
 						fsyncDirectory(locksDirectory);
 					} finally {
 						released = true;
@@ -1616,24 +2224,27 @@ export async function acquireManagedLock(
 			};
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			const owner = parseLock(lockPath);
-			if (owner && owner.leaseExpiresAt < Date.now()) {
-				const ownerGone = ownerDefinitelyGone(owner);
-				if (staleObservedAt === undefined) staleObservedAt = Date.now();
-				if (ownerGone || Date.now() - staleObservedAt >= LOCK_STALE_RECHECK_MS) {
-					const quarantine = `${lockPath}.${randomUUID()}.stale`;
-					try {
-						fs.renameSync(lockPath, quarantine);
-						const quarantined = parseLock(quarantine);
-						if (!quarantined || quarantined.attemptId !== owner.attemptId) throw new Error("migration_busy");
-						fs.unlinkSync(quarantine);
-						fsyncDirectory(locksDirectory);
-					} catch {
-						/* retry owner observation */
-					}
-					staleObservedAt = undefined;
+			const observed = captureLock(lockPath);
+			const owner = observed?.record;
+			const reclaimable =
+				owner?.released === true ||
+				(owner !== undefined && owner.leaseExpiresAt < Date.now() && ownerDefinitelyGone(owner));
+			if (observed && owner && reclaimable) {
+				try {
+					ManagedLockTestHooks.beforeObservedRetirement?.({ path: lockPath, attemptId: owner.attemptId });
+					const removed = exactUnlink(lockPath, {
+						dev: observed.snapshot.identity.dev,
+						ino: observed.snapshot.identity.ino,
+						size: BigInt(observed.snapshot.identity.size),
+						mtimeNs: observed.snapshot.identity.mtimeNs,
+						sha256: observed.snapshot.identity.sha256,
+						quarantineName: `.gjc-lock-${randomUUID()}.stale`,
+					});
+					if (removed.ok || removed.code === "cleanup_pending") fsyncDirectory(locksDirectory);
+				} catch {
+					/* retry owner observation */
 				}
-			} else staleObservedAt = undefined;
+			}
 			if (Date.now() >= deadline) throw new Error("migration_busy");
 			await new Promise<void>(resolve => setTimeout(resolve, 50));
 		}

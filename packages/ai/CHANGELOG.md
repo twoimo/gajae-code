@@ -1,6 +1,127 @@
 # Changelog
 
 ## [Unreleased]
+
+## [0.12.12] - 2026-08-05
+
+### Fixed
+
+- OpenAI Responses and Azure OpenAI Responses now map the first-event timeout into the SDK request/setup timeout the same way Completions does, so a never-resolving pre-headers fetch on a provider-owned lazy stream cannot wait the SDK's 10-minute default before any transport watchdog exists. Alibaba Responses honors an explicit shorter first-event override before headers; Azure/env-pinned setup timeouts normalize to the typed `stream_first_event_timeout` failure.
+- OpenAI Codex cost estimates now treat an explicit response `service_tier` as authoritative, so a request for priority processing that the provider serves at the default tier is no longer charged the priority multiplier; the requested tier remains the fallback when the terminal response omits the field.
+- Added shared `isReasoningContentReplayError` classifier and `stripUnusableReasoningItems` repair for the DeepSeek-family reasoning-content replay rejection ("The `reasoning_content` in the thinking mode must be passed back to the API"). The classifier detects the error across message carrier shapes; the repair removes only `reasoning` items whose `encrypted_content` a proxy stripped to empty, preserving all non-reasoning history (text, tool calls, tool outputs). The agent loop consumes both for a bounded repair-and-resend circuit breaker.
+
+## [0.12.11] - 2026-08-03
+
+## [0.12.10] - 2026-08-03
+### Added
+
+- Anthropic OAuth can now pair by pasting the authorization code Anthropic displays (`https://platform.claude.com/oauth/code/callback`) instead of waiting on `http://localhost:54545/callback`, so a browser with no network route back to the machine running gjc can complete the login. Opt in per login with `OAuthLoginOptions.manualCode`; the loopback flow stays the default and is unchanged. Callback flows can now opt out of binding a local listener entirely (`OAuthCallbackFlowOptions.skipCallbackServer`), which fails fast when no manual code handler is supplied instead of idling until the five-minute timeout. The hosted redirect is a hard-coded constant with no env or config override, so it cannot be repointed at an attacker-controlled collector.
+
+### Fixed
+
+- Composer shell-policy failures now expose a stable structured marker plus provider-specific recovery guidance, while retaining recognition of prefix-only errors from older sessions. Cursor Composer requests use a native `read`/`grep`/`write`/`delete` discipline prompt rather than the generic hashline-tool vocabulary.
+- Alibaba Token Plan streams now allow 600 seconds for the first semantic event, matching observed long-context TTFT above the previous 300-second cutoff. The outer lazy watchdog and both OpenAI transports share one provider fallback; OpenAI Completions also applies it before response headers, and Alibaba SDK connection timeouts from that pre-stream phase are normalized to the typed first-event failure so session retry policy does not replay the request as an unknown timeout.
+- A plain `forbidden` failure no longer mutates credential state. `classifyFallbackTrigger` still returns the same `auth` class for HTTP 401 and 403, but now carries an `authDisposition` refinement of `"credential"` or `"forbidden"`. The refinement reads every code field (`openaiErrorCode`, `anthropicErrorType`, `providerCode`) and orders by specificity: a concrete credential fault wins, a `forbidden` in any field is otherwise terminal (so `{status: 401, providerCode: "forbidden"}` does not rotate), and the status decides only when no auth code is present. `transportFailureFacts` also reads `anthropicErrorType` back from its own key so re-normalizing already-built facts no longer drops it. `streamSimple` consults the disposition at both auth-capture exits — the error-event path and the thrown-error path, the latter unwrapping a nested `error.transportFailure` carrier that the shared `transportFailureFacts` extractor does not dereference — so a forbidden failure never reaches `onAuthError`, and `createAssistantAuthError` now preserves the structured transport facts on the callback error instead of reducing it to a status. The auth gateway's managed-failure bookkeeping likewise stops invalidating a credential on a forbidden response. Previously a single 403 could block an otherwise-healthy credential, and in a multi-credential pool could cycle through and block every row.
+- `AuthStorage` gains `hasRuntimeCredentialSelector()` and `getSessionCredentialRowId()`. The first reports the `--credential` runtime pin, which lives in a different map from the `--api-key` override and previously had no accessor, so callers that must not rotate away from a pinned credential could not see it. The second returns the opaque stored row id for a session's current credential — never an email, account, project, or key material.
+
+## [0.12.8] - 2026-08-02
+### Added
+
+- Added read-only OpenCodex provider discovery with runtime-port resolution, identity-checked health probing, cached `/api/models` catalogs, raw wire model ids, and `/login opencodex` status reprobes without credential persistence.
+- Added the Alibaba Token Plan `deepseek-v4-flash-0731` model with its 1M context, 384K output limit, OpenAI Completions routing, and documented low/high/max reasoning efforts.
+
+### Changed
+
+- OpenAI-compatible discovery and OpenAI Completions/Responses transports now preserve query-bearing endpoint routing, including repeated query parameters. Model resolution records whether a provider discovery result was fetched so consumers can distinguish current discovery evidence from cached data.
+
+### Fixed
+
+- Closed the two remaining ingress holes behind bare `Request Blocked` failures on OpenAI codex models. (1) The chatgpt.com/backend-api pre-model gate rejects with an HTTP 400 bare-`detail` body (`{"detail": "Request blocked."}`) carrying no `error.*` envelope and no `code=invalid_prompt`, so `parseCodexError` surfaced an unexplained message, `isInvalidPromptError` and the codex non-retryable classification missed it, and the session-level `invalid_prompt` circuit breaker never attempted a repaired resend. `parseCodexError` now reads top-level `detail` (string or `{message}`) bodies and classifies a leading `Request blocked` message without an explicit provider code as `invalid_prompt`, surfacing `Request blocked (code=invalid_prompt)` so every existing invalid_prompt contract engages. (2) Outgoing tool definitions (descriptions and JSON-schema strings) bypassed every request-boundary sanitizer on both the OpenAI Responses and OpenAI-codex-responses transports, so a `<|channel|>`-quoting MCP/skill tool description poisoned every request on the session in a way no history repair could fix. Both `convertTools` paths now neutralize reserved control tokens across the whole tool payload via the shared idempotent zero-width-space insertion (ref openai/codex#35838).
+- Lazy built-in streams no longer place a normalized-event watchdog in front of providers that already monitor raw transport progress. This prevents active Anthropic, Azure OpenAI, and OpenAI-family streams from being replaced by a blank `Provider stream stalled while waiting for the next event` error when transport-only events refresh the provider watchdog; providers without their own watchdog keep the shared lazy-stream protection.
+
+### Fixed
+
+- Updated GPT-5.6 Sol, Terra, and Luna to current OpenAI Standard pricing, including Responses API cache-write attribution and full-request long-context pricing above 272K input tokens.
+
+## [0.12.7] - 2026-07-31
+
+## [0.12.6] - 2026-07-31
+
+## [0.12.5] - 2026-07-30
+### Fixed
+
+- Alibaba Token Plan requests now carry Qwen Code's canonical DashScope request fingerprint on both transports. The built-in `alibaba-token-plan` provider (openai-responses `qwen3.8-max-preview` and openai-completions `glm-5.2`/`deepseek-v4-pro`) now emits the four upstream identity/cache/auth headers (`User-Agent`, `X-DashScope-CacheControl: enable`, `X-DashScope-UserAgent`, `X-DashScope-AuthType: openai`) matching `QwenLM/qwen-code` v0.21.1 (commit `f4cd6e1`) exactly, via a shared helper. DashScope is compatibility-sensitive to this client fingerprint, so a non-identical set can cause request instability and affect first-event latency. Caller headers still win per key (upstream `{...default, ...customHeaders}` precedence); non-Alibaba providers are byte-unchanged (#3557).
+
+### Added
+
+- Reproducible Alibaba Token Plan header-parity A/B latency benchmark (`packages/ai/scripts/alibaba-token-plan-latency-ab.ts`): a fixed-seed interleaved A/B comparison of legacy vs Qwen-identical headers against a deterministic local HTTP server, reporting n/success/error/timeout and TTFT/total latency median/p90/p95/mean/stddev. No live credentials are required; a public-safe blocked-live-data receipt is included (`packages/ai/test/fixtures/alibaba-token-plan-latency-blocked-receipt.md`) (#3557).
+
+
+## [0.12.4] - 2026-07-30
+
+### Fixed
+
+- Mara Cloud login now validates pasted credentials against the authenticated chat-completions endpoint instead of the public `/v1/models` catalog. The catalog returns `200` even for random invalid bearer tokens, so the previous check could persist unusable keys.
+
+## [0.12.3] - 2026-07-30
+
+### Added
+
+- Added first-class support for **Mara Cloud**, an OpenAI-compatible enterprise AI inference platform. Registers the `mara` provider descriptor, `/login` entry (API-key paste validated against `https://api.cloud.mara.com/v1/models`), `MARA_API_KEY` environment resolution, and bundled `models.json` seed models. Models are discovered dynamically from `GET /v1/models` (base URL `https://api.cloud.mara.com/v1`).
+
+## [0.12.2] - 2026-07-30
+
+## [0.12.1] - 2026-07-29
+
+### Fixed
+
+- Lazy-stream first-event timeouts now abort with `FirstEventTimeoutError` so `transportFailure.providerCode` is `stream_first_event_timeout` on the outer watchdog path shared by all bundled providers via `createLazyStream`. Idle stalls remain bare `Error`s (distinct class intentionally) (#3496).
+
+- Provider streams now surface first-event watchdog expiry as a typed timeout so callers can apply bounded retry policy without parsing error prose.
+- Codex websocket first-event timeouts now discard the timed-out connection before the outer retry/fallback layer handles the typed failure, preventing late frames from the abandoned request from being consumed by the replayed turn.
+- Codex named-tool requests now recognize provider `Tool choice '<name>' not found in 'tools' parameter` errors as runtime capability failures and retry once without forcing the choice.
+- The Kimi OAuth host (`KIMI_CODE_OAUTH_HOST` / `KIMI_OAUTH_HOST`) is now resolved from trusted environment sources only. That host receives the device-authorization request, the authorization-code exchange, and the refresh call that carries the existing refresh token, so reading it through the merged view that includes the caller's `cwd/.env` let a repository redirect the login flow and collect the user's Kimi credentials. Resolution now uses the non-project resolver; shell and user-level configuration is unchanged.
+- The documented `GJC_NO_STRICT` environment variable now takes effect. `adaptSchemaForStrict` read only the legacy `PI_NO_STRICT`, so an operator hitting a provider that rejects strict function schemas set the documented name and strict mode stayed on. Both names are honoured, canonical name first, and `GJC_NO_STRICT` is now listed in the environment-variable reference rather than only in the schema-normalisation note.
+- The documented `GJC_AUTH_NO_BORROW` environment variable now takes effect. Only the legacy `PI_AUTH_NO_BORROW` was read, so an operator who followed the documentation to disable macOS native-app token borrowing still had a JWT read out of the Perplexity desktop application during login. Both names are now honoured, and the contract stays presence-based as documented so that setting it to `0` cannot silently re-enable borrowing.
+- The Azure client's `AZURE_OPENAI_API_KEY` fallback is now resolved from trusted environment sources only. It read the merged view that includes the caller's `cwd/.env`, so a repository could supply the credential the client authenticates with; provider credential resolution is documented as excluding the project `.env`, and this fallback now matches. An explicit caller-supplied key still takes precedence, and shell / user-level configuration is unchanged.
+- Anthropic and Ollama tool calls cut off by an output-token limit are now marked incomplete before dispatch, so repaired partial JSON is rejected instead of executing with truncated arguments.
+- The Anthropic "thinking blocks in the latest assistant message cannot be modified" 400 now escalates its one-shot replay repair. The error names the latest assistant message but its cited `messages.N.content.M` path can point at an earlier replayed turn, so the latest-only repair was rejected identically and killed the turn; recovery now retries once more with thinking dropped from every replayed assistant message.
+- Anthropic adaptive-thinking `display` support is now decided by the canonical model-version parser instead of a provider-local `claude-opus-(\d+)-(\d+)` regex. The regex only matched two-component ids, so a single-component alias such as `claude-opus-5` was classified as pre-4.7 while its dated snapshot `claude-opus-5-20260101` was not: the alias sent `thinking: { type: "adaptive" }` without `display: "summarized"`, additionally requested the `interleaved-thinking-2025-05-14` beta, and had its returned thinking blocks recorded as raw rather than summarized. Both Anthropic and Bedrock providers now share `supportsAnthropicAdaptiveThinkingDisplay`, so alias and dated ids of the same model send an identical request shape.
+- Anthropic requests that force a tool choice no longer replay signed thinking blocks. Forcing `tool_choice` strips `thinking` from the request (the API rejects the combination), but the converted history still carried native `thinking`/`redacted_thinking` blocks from thinking-enabled turns, so eager tool-forcing turns (e.g. the todo bootstrap) sent a request whose history contradicted its own thinking setting and drew a 400. The replay now degrades in the same rebuild; the forced request trades its prompt-cache prefix for a shape the API accepts.
+- A definitively failed OAuth refresh can no longer loop forever instead of disabling the credential. The refresh-failure path disables the row with a CAS conditioned on its serialized `data`, and treated a lost CAS as proof that a peer had rotated the token: it reloaded the store and re-resolved, without bound. That predicate also misses when nothing was rotated — an account switcher that replaces the provider's rows leaves the attempted id gone, and an unrelated identity-metadata write leaves the row byte-different — so a revoked credential was never disabled and every subsequent request re-issued the same `invalid_grant` refresh (observed in the wild as ~3k `OAuth token refresh failed` / `disable lost CAS` log pairs in 3.5 hours, one wasted refresh round-trip per request). When the row still holds the refresh token that just failed, it is now disabled by id (no peer rotation exists to clobber); otherwise the reload-and-retry recovery is capped, so resolution terminates instead of recursing until the runtime dies.
+
+## [0.12.0] - 2026-07-28
+
+### Added
+
+- Added first-class support for **BizRouter**, an OpenAI-compatible Korean enterprise LLM gateway. Registers the `bizrouter` provider descriptor, `/login` entry (API-key paste validated against `https://api.bizrouter.ai/v1/models`), `BIZROUTER_API_KEY` environment resolution, and bundled `models.json` seed models. Models are discovered dynamically from `GET /v1/models` (base URL `https://api.bizrouter.ai/v1`).
+### Fixed
+
+- Anthropic subscription OAuth requests now use the current Claude Code compatibility attribution (`2.1.219`, `sdk-cli`) instead of the stale `2.1.63` CLI fingerprint that Anthropic can misclassify as extra usage.
+- Connection failures now name the transport code and the target URL. Bun reports DNS and socket failures as a bare `Error` whose message is a standalone hint ("Was there a typo in the url or port?", "Unable to connect. Is the computer able to access the url?") and keeps the actionable facts on `code` and `path`, but only `message` reached the assistant message. A provider outage, a local DNS failure, and a mistyped custom base URL therefore all rendered as the same context-free sentence with no host in it. Such failures now read `... (transport=FailedToOpenSocket url=https://chatgpt.com/backend-api/codex/responses)`; the URL is reduced to origin and path so a key carried in the query string is not surfaced.
+
+### Documentation
+
+- `docs/environment-variables.md` now names the Anthropic Foundry gateway variables that are actually read: `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_CLIENT_CERT`, and `CLAUDE_CODE_CLIENT_KEY`. The page advertised `ANTHROPIC_MODEL_CODE_*` spellings that no code path reads, so an operator following it could not enable Foundry mode at all, and the mTLS client material was silently ignored.
+
+## [0.11.11] - 2026-07-26
+
+### Fixed
+
+- The Kimi usage endpoint base (`KIMI_CODE_BASE_URL`) is now resolved from trusted environment sources only. That base becomes the URL the usage request sends `Authorization: Bearer <accessToken>` to, so reading it through the merged view that includes the caller's `cwd/.env` let a repository collect the user's Kimi access token. An explicit caller-supplied base URL still takes precedence, and shell / user-level configuration is unchanged.
+- The Gemini CLI compatibility version used in the outbound `User-Agent` is refreshed from `0.50.0` to `0.52.0`, matching the current upstream release. The repository ships `check-spoofed-versions` for exactly this, but that check is not wired into CI, so the value had drifted two minor releases behind.
+- The OpenAI and Azure endpoint decisions are now resolved from trusted environment sources only: `OPENAI_BASE_URL` (streaming responses, completions, and the model manager) and `AZURE_OPENAI_BASE_URL`. `Bun.env` is `process.env` and the env module merges the caller's `cwd/.env` into it, so a repository could previously plant a `.env` that redirected authenticated requests; the two provider paths already reached for `$inheritedEnv` but re-admitted the project `.env` through a fallback. Resolution now goes through the non-project resolver (launching shell plus GJC/user-owned `.env` files); shell and user-level configuration is unchanged.
+- The OpenAI and Azure endpoint decisions are now resolved from trusted environment sources only: `OPENAI_BASE_URL` (streaming responses, completions, and the model manager), `AZURE_OPENAI_BASE_URL`, and `AZURE_OPENAI_RESOURCE_NAME` (the alternate constructor for the same Azure host). `Bun.env` is `process.env` and the env module merges the caller's `cwd/.env` into it, so a repository could previously plant a `.env` that redirected authenticated requests; the two provider paths already reached for `$inheritedEnv` but re-admitted the project `.env` through a fallback. Resolution now goes through the non-project resolver (launching shell plus GJC/user-owned `.env` files); shell and user-level configuration is unchanged.
+- Google credential material is now resolved from trusted environment sources only: the `GOOGLE_APPLICATION_CREDENTIALS` service-account / authorized-user file path used by the ADC loader, and `GOOGLE_CLOUD_API_KEY` used as the Vertex API key. Both were read through the merged view that includes the caller's `cwd/.env`, so a repository could ship a key file and point the agent at it, making it authenticate to Google as an identity the repository chose. `stream.ts` already resolved the same ADC variable through the non-project resolver; the two now agree. An explicit caller-supplied API key still takes precedence.
+- The Grok usage token fallback (`GROK_CLI_OAUTH_TOKEN`) is now resolved from trusted environment sources only. It authenticates the billing/usage call, and reading it through the merged view that includes the caller's `cwd/.env` let a repository decide which account that call ran against. Stored credentials keep precedence, and shell / user-level configuration is unchanged.
+- The Vertex AI location (`GOOGLE_CLOUD_LOCATION`) can no longer redirect authenticated requests off Google. It is interpolated into the request host (`${location}-aiplatform.googleapis.com`), so a value containing `/` terminated the authority component and sent the Google access token to an arbitrary origin — and it was read through the merged view that includes the caller's `cwd/.env`. It now resolves from trusted sources only and must be a region label; `GOOGLE_CLOUD_PROJECT` / `GCLOUD_PROJECT` moved to the same trusted resolver.
+- HTTP 400 request dumps are now bounded. Every 400 wrote a file containing the full sanitized request body and nothing ever removed one, so the directory grew without limit — a developer machine reached 27,249 files totalling 7.0 GB, which was 96% of everything under `~/.gjc`. The newest 50 are retained, matching the bounded retention the rotating application log already uses, and pruning stays best-effort so diagnostics never turn a request failure into a second failure.
+- Anthropic `ping` keepalives no longer reset stream progress, so responses that stop producing content now reach the idle timeout instead of hanging indefinitely.
+- The Anthropic endpoint decision is now resolved from trusted environment sources only: `ANTHROPIC_BASE_URL`, `FOUNDRY_BASE_URL`, `ZCODE_PLAN_ANTHROPIC_BASE_URL`, and the `CLAUDE_CODE_USE_FOUNDRY` mode switch. `Bun.env` is `process.env` and the env module merges the caller's `cwd/.env` into it, so a repository could previously plant a `.env` that redirected authenticated Anthropic requests — the resolved base URL becomes `${baseUrl}/v1/messages` while the headers carry the API key or OAuth token. Resolution now goes through the non-project resolver (launching shell plus GJC/user-owned `.env` files); shell and user-level configuration is unchanged.
+- The documented `GJC_OPENAI_STREAM_IDLE_TIMEOUT_MS` environment variable now takes effect: the stream-watchdog idle-timeout helpers resolve it GJC-first before the legacy `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS` / `PI_STREAM_IDLE_TIMEOUT_MS` aliases (previously only the `PI_`-prefixed names were read, so setting the documented GJC name was a silent no-op).
+- The documented OpenAI-code provider knobs now take effect: `GJC_OPENAI_CODE_DEBUG`, `GJC_OPENAI_CODE_WEBSOCKET`, `GJC_OPENAI_CODE_WEBSOCKET_IDLE_TIMEOUT_MS`, `GJC_OPENAI_CODE_WEBSOCKET_RETRY_BUDGET`, and `GJC_OPENAI_CODE_WEBSOCKET_RETRY_DELAY_MS` are resolved GJC-first ahead of the legacy `PI_CODEX_*` names. The Codex → OpenAI-code rename had updated the documentation but not the reads, so every documented name was a silent no-op.
+
+## [0.11.9] - 2026-07-24
 ### Fixed
 
 - Credential selection and aggregate usage callers now stop awaiting immediately when their own signal aborts without cancelling shared usage fetches, and ranking deadlines no longer re-await the same stalled usage request during credential resolution.

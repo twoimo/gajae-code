@@ -17,6 +17,7 @@ import {
 	isStableReleaseVersion,
 	parseReleaseCli,
 	releaseAtomicPushArgs,
+	releasedChangelogContent,
 	STABLE_GITHUB_RELEASE_FINALIZATION_JOB_NAME,
 } from "./release";
 
@@ -507,5 +508,66 @@ describe("native release binary coverage", () => {
 		);
 		expect(installer).toContain("@gajae-code/natives-linux-x64");
 		expect(installer).toContain("gajae-code-natives-[0-9]*.tgz");
+	});
+});
+
+describe("changelog release cut", () => {
+	const bullet = "- A shipped fix.\n";
+
+	test("reinstates [Unreleased] when the header has no blank line after it", () => {
+		const content = `# Changelog\n## [Unreleased]\n\n### Fixed\n\n${bullet}\n## [0.1.0] - 2026-01-01\n`;
+
+		const next = releasedChangelogContent(content, "0.2.0", "2026-02-02", "packages/x/CHANGELOG.md");
+
+		expect(next.startsWith("# Changelog\n\n## [Unreleased]\n\n")).toBe(true);
+		expect(next).toContain("## [0.2.0] - 2026-02-02");
+		expect(next.match(/## \[Unreleased\]/g)).toHaveLength(1);
+		expect(next.indexOf("## [Unreleased]")).toBeLessThan(next.indexOf("## [0.2.0] - 2026-02-02"));
+	});
+
+	test("reinstates [Unreleased] when the header is followed by a blank line", () => {
+		const content = `# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n${bullet}\n## [0.1.0] - 2026-01-01\n`;
+
+		const next = releasedChangelogContent(content, "0.2.0", "2026-02-02", "packages/x/CHANGELOG.md");
+
+		expect(next.startsWith("# Changelog\n\n## [Unreleased]\n\n")).toBe(true);
+		expect(next.match(/## \[Unreleased\]/g)).toHaveLength(1);
+	});
+
+	test("an empty [Unreleased] keeps its heading and gains the shipped version", () => {
+		const content = "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n";
+
+		const next = releasedChangelogContent(content, "0.2.0", "2026-02-02", "packages/x/CHANGELOG.md");
+
+		expect(next).toContain("## [Unreleased]\n\n## [0.2.0] - 2026-02-02");
+	});
+
+	test("preserves a prior empty released heading instead of replacing it", () => {
+		const content = "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n## [0.0.9] - 2025-12-31\n\n### Fixed\n\n- An older fix.\n";
+
+		const next = releasedChangelogContent(content, "0.2.0", "2026-02-02", "packages/x/CHANGELOG.md");
+
+		expect(next).toContain("## [0.2.0] - 2026-02-02");
+		expect(next).toContain("## [0.1.0] - 2026-01-01");
+		expect(next.indexOf("## [0.2.0] - 2026-02-02")).toBeLessThan(next.indexOf("## [0.1.0] - 2026-01-01"));
+		expect(next.slice(next.indexOf("## [0.0.9] - 2025-12-31"))).toBe(content.slice(content.indexOf("## [0.0.9] - 2025-12-31")));
+	});
+
+	test("preserves a prior empty released heading when [Unreleased] has content", () => {
+		const content = `# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n${bullet}\n## [0.1.0] - 2026-01-01\n\n## [0.0.9] - 2025-12-31\n`;
+
+		const next = releasedChangelogContent(content, "0.2.0", "2026-02-02", "packages/x/CHANGELOG.md");
+
+		expect(next).toContain("## [0.1.0] - 2026-01-01");
+		expect(next).toContain("## [0.0.9] - 2025-12-31");
+		expect(next.indexOf("## [0.2.0] - 2026-02-02")).toBeLessThan(next.indexOf("## [0.1.0] - 2026-01-01"));
+	});
+
+	test("a malformed header fails closed instead of dropping [Unreleased]", () => {
+		const content = `## [Unreleased]\n\n### Fixed\n\n${bullet}`;
+
+		expect(() => releasedChangelogContent(content, "0.2.0", "2026-02-02", "packages/x/CHANGELOG.md")).toThrow(
+			"lost its [Unreleased] heading",
+		);
 	});
 });

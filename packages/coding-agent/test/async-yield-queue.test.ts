@@ -8,6 +8,7 @@ import { JobTool } from "@gajae-code/coding-agent/tools/job";
 
 type AsyncEntry = {
 	jobId: string;
+	generation?: string;
 	result: string;
 	job: AsyncJob | undefined;
 	durationMs: number | undefined;
@@ -79,7 +80,7 @@ function createHarness(initialStreaming: boolean) {
 	});
 	let manager!: AsyncJobManager;
 	queue.register<AsyncEntry>("async-result", {
-		isStale: entry => manager.isDeliverySuppressed(entry.jobId),
+		isStale: entry => manager.isDeliverySuppressed(entry.jobId, entry.generation),
 		build: buildAsyncMessage,
 	});
 	manager = new AsyncJobManager({
@@ -87,6 +88,7 @@ function createHarness(initialStreaming: boolean) {
 			if (manager.isDeliverySuppressed(jobId)) return;
 			queue.enqueue<AsyncEntry>("async-result", {
 				jobId,
+				generation: job?.generation,
 				result,
 				job,
 				durationMs: job ? Math.max(0, Date.now() - job.startTime) : undefined,

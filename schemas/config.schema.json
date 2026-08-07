@@ -36,6 +36,29 @@
 						"disabled"
 					],
 					"default": "copy-retain"
+				},
+				"resumeModelBehavior": {
+					"type": "string",
+					"enum": [
+						"keepSessionModel",
+						"useCurrentDefault",
+						"ask"
+					],
+					"description": "When resuming a session: keep the model that session last used, switch to the currently configured default model, or ask (TUI only; falls back to keeping the session's model in headless/CLI resume).",
+					"default": "keepSessionModel"
+				}
+			},
+			"additionalProperties": false
+		},
+		"sdk": {
+			"type": "object",
+			"properties": {
+				"promptDeadlineMs": {
+					"type": "integer",
+					"description": "SDK-owned prompt deadline; ACP has no separate timeout.",
+					"default": 1800000,
+					"minimum": 60000,
+					"maximum": 86400000
 				}
 			},
 			"additionalProperties": false
@@ -50,6 +73,9 @@
 				"telegram": {
 					"type": "object",
 					"properties": {
+						"enabled": {
+							"type": "boolean"
+						},
 						"botToken": {
 							"type": "string"
 						},
@@ -81,6 +107,16 @@
 							},
 							"additionalProperties": false
 						},
+						"sound": {
+							"type": "string",
+							"enum": [
+								"all",
+								"important",
+								"none"
+							],
+							"description": "Choose which Telegram notifications play a sound.",
+							"default": "all"
+						},
 						"rich": {
 							"type": "object",
 							"properties": {
@@ -109,7 +145,7 @@
 								"enabled": {
 									"type": "boolean",
 									"description": "Send Telegram updates for tool starts and completions.",
-									"default": true
+									"default": false
 								}
 							},
 							"additionalProperties": false
@@ -129,6 +165,9 @@
 				"discord": {
 					"type": "object",
 					"properties": {
+						"enabled": {
+							"type": "boolean"
+						},
 						"botToken": {
 							"type": "string"
 						},
@@ -147,6 +186,9 @@
 				"slack": {
 					"type": "object",
 					"properties": {
+						"enabled": {
+							"type": "boolean"
+						},
 						"botToken": {
 							"type": "string"
 						},
@@ -347,6 +389,29 @@
 						}
 					},
 					"additionalProperties": false
+				},
+				"ralplan": {
+					"type": "object",
+					"properties": {
+						"autoHandoff": {
+							"type": "string",
+							"enum": [
+								"off",
+								"ultragoal",
+								"team"
+							],
+							"default": "off"
+						},
+						"maxIterations": {
+							"type": "number",
+							"default": 5
+						},
+						"maxReviewPassesPerLane": {
+							"type": "number",
+							"default": 1
+						}
+					},
+					"additionalProperties": false
 				}
 			},
 			"additionalProperties": false
@@ -434,7 +499,7 @@
 				},
 				"showActionHints": {
 					"type": "boolean",
-					"description": "Show contextual keyboard shortcuts in the status line",
+					"description": "Show contextual keyboard shortcuts in the composer placeholder",
 					"default": true
 				},
 				"leftSegments": {
@@ -891,6 +956,11 @@
 					"description": "Maximum provider stream replay retries for replay-safe transient stream failures. Counts retries, not the first attempt. Set to 0 to disable provider stream retries.",
 					"default": 5
 				},
+				"streamFirstEventTimeoutMs": {
+					"type": "number",
+					"description": "Maximum wait for the first provider stream event, in ms. Set to 0 to disable the watchdog.",
+					"default": 100000
+				},
 				"fallbackChains": {
 					"type": "object",
 					"additionalProperties": true,
@@ -913,7 +983,7 @@
 			"properties": {
 				"enabled": {
 					"type": "boolean",
-					"description": "Enable SGR mouse wheel scrolling and overlay row selection. Disabled in tmux and screen.",
+					"description": "Enable GJC session scrolling, drag-to-copy text selection, and overlay row selection with the mouse. Disabled by default to preserve native terminal or tmux scrollback and selection.",
 					"default": false
 				}
 			},
@@ -1526,7 +1596,7 @@
 			"properties": {
 				"defaultLimit": {
 					"type": "number",
-					"description": "Default number of lines returned when agent calls read without a limit",
+					"description": "Default collection/selection limit for read operations; bare local receipts use the separate 50-line / 10 KiB receipt budgets",
 					"default": 300
 				},
 				"receiptBudgetLines": {
@@ -1538,6 +1608,16 @@
 					"type": "number",
 					"description": "Maximum UTF-8 body size for a bare read receipt before a selector footer is shown",
 					"default": 10
+				},
+				"truncation": {
+					"type": "string",
+					"enum": [
+						"head",
+						"last",
+						"both"
+					],
+					"description": "Configured default direction for routes that support directional truncation; bare local and archive reads use this value (factory default: last), while explicit truncation always wins",
+					"default": "last"
 				},
 				"summaryMaxBytes": {
 					"type": "number",
@@ -2098,6 +2178,44 @@
 					"type": "number",
 					"description": "How often the resource GC sweeps browser tabs and stale screenshot directories.",
 					"default": 30000
+				}
+			},
+			"additionalProperties": false
+		},
+		"memoryGuard": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean",
+					"default": false
+				},
+				"checkIntervalMs": {
+					"type": "number",
+					"default": 30000
+				},
+				"gcThresholdPercent": {
+					"type": "number",
+					"default": 70
+				},
+				"restartThresholdPercent": {
+					"type": "number",
+					"default": 85
+				},
+				"restartThresholdWindowMs": {
+					"type": "number",
+					"default": 90000
+				},
+				"cooldownMs": {
+					"type": "number",
+					"default": 600000
+				},
+				"parentReserveMb": {
+					"type": "number",
+					"default": 1024
+				},
+				"policyLimitMb": {
+					"type": "number",
+					"default": 0
 				}
 			},
 			"additionalProperties": false

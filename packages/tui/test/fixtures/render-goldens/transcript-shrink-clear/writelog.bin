@@ -1,4 +1,4 @@
-[?2004h[?25l[16t[?2026h[2J[H[3Jtranscript-00 :: stable append[0m
+[?2004h[?25l[16t[?2026htranscript-00 :: stable append[0m
 transcript-01 :: stable append[0m
 transcript-02 :: stable append[0m
 transcript-03 :: stable append[0m
@@ -48,6 +48,4 @@ transcript-21 :: stable append[0m
 transcript-22 :: stable append[0m
 transcript-23 :: stable append[0m
 transcript-24 :: stable append[0m
-transcript-25 :: stable append[0m[?25l[?2026l[?2026h[2J[H[3Jshort-0[0m
-short-1[0m
-short-2[0m[?25l[?2026l
+transcript-25 :: stable append[0m[?25l[?2026l[?2026h[Hshort-0[0m                                             [1Bshort-1[0m                                             [1Bshort-2[0m                                             [1B                                                    [1B                                                    [1B                                                    [1B                                                    [1B                                                    [?25l[?2026l

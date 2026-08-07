@@ -5,8 +5,10 @@
  * lightweight CLI runner from pi-utils.
  */
 import "@gajae-code/utils/postmortem";
+import { THINKING_EFFORTS } from "@gajae-code/ai";
 import { Args, type CliConfig, Command, type CommandEntry, Flags, run } from "@gajae-code/utils/cli";
 import { APP_NAME, formatBunRuntimeError, MIN_BUN_VERSION, VERSION } from "@gajae-code/utils/dirs";
+import { loadNative as loadNativeBindings } from "../../natives/native/loader-state.js";
 import { runFixtureReport } from "./cli/fixture-report";
 import { admitManagedOwnerBeforeCli, completeManagedOwnerRecovery } from "./gjc-runtime/managed-owner-admission";
 import {
@@ -63,6 +65,7 @@ export const commands: CommandEntry[] = [
 	{ name: "migrate", load: () => import("./commands/migrate").then(m => m.default) },
 	{ name: "rlm", load: () => import("./commands/rlm").then(m => m.default) },
 	{ name: "update", load: () => import("./commands/update").then(m => m.default) },
+	{ name: "read", load: () => import("./commands/read").then(m => m.default) },
 	{ name: "plugin", load: () => import("./commands/plugin").then(m => m.default) },
 	{ name: "completion", load: () => import("./commands/completion").then(m => m.default) },
 	{ name: "launch", load: () => import("./commands/launch").then(m => m.default) },
@@ -174,6 +177,46 @@ async function runChatDaemonInternalFastPath(argv: string[]): Promise<void> {
 	await runChatDaemonInternal(action === "discord-internal" ? "discord" : "slack", argv.slice(2));
 }
 
+type MemoryGuardNativeSmokeLoad = () => Record<string, unknown>;
+type WindowsJobMemoryProbeResult = Record<string, unknown> & { kind: string };
+type MemoryGuardNativeSmokeReceipt = {
+	api: "memory_guard_windows_job_probe_v1";
+	source: "pi_natives";
+	result: WindowsJobMemoryProbeResult;
+};
+
+export function isMemoryGuardNativeSmokeFastPath(argv: readonly string[]): boolean {
+	return (
+		argv.length === 3 && argv[0] === "internal" && argv[1] === "memory-guard-native-smoke" && argv[2] === "--json"
+	);
+}
+
+function parseWindowsJobMemoryProbeResult(value: unknown): WindowsJobMemoryProbeResult {
+	if (!value || typeof value !== "object") {
+		throw new Error("memory-guard-native-smoke: native probe returned a non-object result");
+	}
+	const result = value as Record<string, unknown>;
+	if (typeof result.kind !== "string") {
+		throw new Error("memory-guard-native-smoke: native probe result is missing a string kind tag");
+	}
+	return result as WindowsJobMemoryProbeResult;
+}
+
+export function runMemoryGuardNativeSmokeFastPath(
+	options: { loadNative?: MemoryGuardNativeSmokeLoad; writeStdout?: (text: string) => void } = {},
+): void {
+	const probe = (options.loadNative ?? loadNativeBindings)().probeWindowsJobMemory;
+	if (typeof probe !== "function") {
+		throw new Error("memory-guard-native-smoke: probeWindowsJobMemory export missing from native addon");
+	}
+	const receipt: MemoryGuardNativeSmokeReceipt = {
+		api: "memory_guard_windows_job_probe_v1",
+		source: "pi_natives",
+		result: parseWindowsJobMemoryProbeResult((probe as () => unknown)()),
+	};
+	(options.writeStdout ?? (text => process.stdout.write(text)))(`${JSON.stringify(receipt)}\n`);
+}
+
 function rootFixtureArg(argv: string[]): { present: boolean; id: string | undefined } {
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -244,8 +287,8 @@ export class RootHelpCommand extends Command {
 		tmux: Flags.boolean({ description: "Launch interactive startup inside tmux" }),
 		tools: Flags.string({ description: "Comma-separated list of tools to enable (default: all)" }),
 		thinking: Flags.string({
-			description: "Set thinking level: ultra, high, medium, low",
-			options: ["ultra", "high", "medium", "low"],
+			description: `Set thinking level: ${THINKING_EFFORTS.join(", ")}`,
+			options: [...THINKING_EFFORTS],
 		}),
 		hook: Flags.string({ description: "Load a hook/extension file (can be used multiple times)", multiple: true }),
 		extension: Flags.string({
@@ -381,6 +424,10 @@ export async function runCli(argv: string[]): Promise<void> {
 			return;
 		}
 		// Re-exec could not be spawned; fall through and run in this process.
+	}
+	if (isMemoryGuardNativeSmokeFastPath(argv)) {
+		runMemoryGuardNativeSmokeFastPath();
+		return;
 	}
 	if (isTmuxOwnerIsolationCliArgv(argv)) {
 		await runTmuxOwnerIsolationCliFromStdin();

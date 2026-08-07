@@ -1,9 +1,10 @@
 import {
+	type GenericNotificationSessionSource,
 	getCurrentTelegramActivationMarker,
-	isNotificationStreamingEnabled,
-	isSessionNotificationsEnabled,
-	isTelegramConfigured,
+	isProviderEffectivelyEnabled,
 	type NotificationConfig,
+	resolveGenericNotificationSessionEligibility,
+	resolveGenericNotificationStreamPolicy,
 } from "./config";
 
 /** Minimal session-manager surface shared by extension, TUI, and headless hosts. */
@@ -39,6 +40,8 @@ export interface NotificationSessionRuntime<Context extends NotificationSessionC
 	 * emit a frame. `blocked_identity` is fail-closed and starts nothing.
 	 */
 	ensureTelegramDaemon?(binding: BoundNotificationSession<Context>): Promise<TelegramDaemonPreflightResult>;
+	/** Rotates a running/default endpoint into Telegram-isolated chat scope. */
+	isolateTelegram?(binding: BoundNotificationSession<Context>): Promise<NotificationEndpointStartResult>;
 	/** Refresh mutable delivery policy from the same configuration snapshot used for reconciliation. */
 	refreshPolicy?(binding: BoundNotificationSession<Context>, policy: NotificationRuntimePolicy): void;
 	/** Enables delivery only after the controller has committed a stable policy. */
@@ -48,9 +51,9 @@ export interface NotificationSessionRuntime<Context extends NotificationSessionC
 export interface NotificationSessionStatus {
 	eligible: boolean;
 	locallyEnabled: boolean;
-	effectiveEnabled: boolean;
+	genericSessionEnabled: boolean;
+	genericEligibilitySource: GenericNotificationSessionSource;
 	running: boolean;
-	environment: "off" | "explicit" | "token" | "default";
 }
 
 export interface NotificationSessionReconcileResult {
@@ -61,6 +64,7 @@ export interface NotificationSessionReconcileResult {
 export interface NotificationRuntimePolicy {
 	redact: boolean;
 	verbosity: NotificationConfig["verbosity"];
+	/** Generic live-frame delivery policy; never proof of provider effectiveness. */
 	stream: boolean;
 	mode: "provisional" | "committed";
 }
@@ -72,14 +76,16 @@ export interface NotificationSessionControllerOptions {
 	getConfig(): NotificationConfig;
 	/** Kept as a reference so test and embedding hosts can supply their own environment. */
 	env?: NodeJS.ProcessEnv;
+	/** This process was launched by a marked GJC child spawn site. */
+	spawnedByGjc?: boolean;
 }
 
 /**
  * Shared owner of notification session policy.
  *
- * Gate A is captured at creation. Gate B is evaluated for each session
- * operation with `isSessionNotificationsEnabled`. Gate C verifies complete
- * Telegram ownership before a generic endpoint is allowed to start.
+ * Gate A is captured at creation. Gate B is evaluated through the typed generic
+ * session policy. Provider effectiveness remains separate; Telegram owner proof
+ * runs only when Telegram is effective and has no inactive marker.
  */
 const MAX_RECONCILE_ATTEMPTS = 3;
 
@@ -87,7 +93,10 @@ export class NotificationSessionController {
 	readonly #eligible: boolean;
 	readonly #getConfig: () => NotificationConfig;
 	readonly #env: NodeJS.ProcessEnv;
+	readonly #spawnedByGjc: boolean;
 	readonly #disabledSessions = new Set<string>();
+	/** Explicit per-session opt-in overrides only the generic GJC_NOTIFICATIONS=0 auto-admission suppression. */
+	readonly #manualOptInSessions = new Set<string>();
 	/** Sessions held inactive after a post-commit foreign daemon identity race. */
 	readonly #blockedRuntimeSessions = new Set<string>();
 	/** Sessions closed during host shutdown; no queued operation may restart them. */
@@ -100,6 +109,7 @@ export class NotificationSessionController {
 		this.#eligible = options.eligible;
 		this.#getConfig = options.getConfig;
 		this.#env = options.env ?? process.env;
+		this.#spawnedByGjc = options.spawnedByGjc ?? false;
 	}
 
 	/** Attach the concrete generic endpoint implementation used by this host. */
@@ -140,6 +150,7 @@ export class NotificationSessionController {
 	rekeySession(previousSessionId: string, nextSessionId: string): void {
 		if (previousSessionId === nextSessionId) return;
 		if (this.#disabledSessions.delete(previousSessionId)) this.#disabledSessions.add(nextSessionId);
+		if (this.#manualOptInSessions.delete(previousSessionId)) this.#manualOptInSessions.add(nextSessionId);
 		if (this.#blockedRuntimeSessions.delete(previousSessionId)) this.#blockedRuntimeSessions.add(nextSessionId);
 		if (this.#shuttingDownSessions.delete(previousSessionId)) this.#shuttingDownSessions.add(nextSessionId);
 
@@ -186,6 +197,38 @@ export class NotificationSessionController {
 			return await this.#enqueue(binding, async () => {
 				const runtime = this.#runtime as NotificationSessionRuntime<Context> | undefined;
 				this.#refreshPolicy(runtime, binding, { redact: true, verbosity: "lean", stream: false }, "provisional");
+				let preserveSafeSibling = false;
+				try {
+					const cfg = this.#getConfig();
+					preserveSafeSibling =
+						isProviderEffectivelyEnabled(cfg, "discord") || isProviderEffectivelyEnabled(cfg, "slack");
+				} catch {
+					preserveSafeSibling = false;
+				}
+				if (preserveSafeSibling && runtime?.isolateTelegram) {
+					this.#blockedRuntimeSessions.add(binding.sessionId);
+					const outcome = await runtime.isolateTelegram(binding);
+					if (outcome === "started" || outcome === "already") {
+						this.#blockedRuntimeSessions.delete(binding.sessionId);
+						const cfg = this.#getConfig();
+						this.#refreshPolicy(
+							runtime,
+							binding,
+							{
+								redact: cfg.redact,
+								verbosity: cfg.verbosity,
+								stream: resolveGenericNotificationStreamPolicy({
+									cfg,
+									env: this.#env,
+									genericSessionEnabled: true,
+								}).enabled,
+							},
+							"committed",
+						);
+						runtime.activate?.(binding);
+						return true;
+					}
+				}
 				if (runtime?.isRunning(binding)) {
 					const stopped = await runtime.stop(binding);
 					if (!stopped || runtime.isRunning(binding)) {
@@ -222,8 +265,10 @@ export class NotificationSessionController {
 				if (enabled) {
 					this.#disabledSessions.delete(binding.sessionId);
 					this.#shuttingDownSessions.delete(binding.sessionId);
+					this.#manualOptInSessions.add(binding.sessionId);
 				} else {
 					this.#disabledSessions.add(binding.sessionId);
+					this.#manualOptInSessions.delete(binding.sessionId);
 				}
 				return await this.#reconcile(binding);
 			});
@@ -256,49 +301,65 @@ export class NotificationSessionController {
 				if (runtime?.isRunning(binding)) await runtime.stop(binding);
 				return { outcome: "failed", status: this.#failClosedStatus(binding, runtime) };
 			}
+			const nonTelegramEffective =
+				isProviderEffectivelyEnabled(cfg, "discord") || isProviderEffectivelyEnabled(cfg, "slack");
+			if (nonTelegramEffective) this.#blockedRuntimeSessions.delete(binding.sessionId);
 			const status = this.#status(binding, cfg, runtime);
-			if (!status.effectiveEnabled) {
+			if (!status.genericSessionEnabled) {
 				if (runtime && status.running) await runtime.stop(binding);
 				if (!this.#isCurrentConfig(cfg)) continue;
 				return { outcome: status.running ? "stopped" : "disabled", status: this.#status(binding, cfg, runtime) };
 			}
 
 			if (!runtime) return { outcome: "disabled", status };
-			if (getCurrentTelegramActivationMarker(cfg)) {
+			const telegramMarker = getCurrentTelegramActivationMarker(cfg);
+			const telegramEffective = isProviderEffectivelyEnabled(cfg, "telegram");
+			const nonTelegramEffectiveForTelegram =
+				isProviderEffectivelyEnabled(cfg, "discord") || isProviderEffectivelyEnabled(cfg, "slack");
+			if (telegramEffective && telegramMarker && !nonTelegramEffectiveForTelegram) {
 				if (runtime.isRunning(binding)) await runtime.stop(binding);
-				this.#blockedRuntimeSessions.add(binding.sessionId);
 				if (!this.#isCurrentConfig(cfg)) continue;
 				return { outcome: "disabled", status: this.#status(binding, cfg, runtime) };
 			}
-			if (isTelegramConfigured(cfg)) {
+			if (telegramEffective && !telegramMarker) {
+				let ensured: TelegramDaemonPreflightResult | undefined;
 				try {
-					const ensured = await runtime.ensureTelegramDaemon?.(binding);
-					if (!this.#isCurrentConfig(cfg)) continue;
-					if (ensured !== "ready") {
-						if (runtime.isRunning(binding)) await runtime.stop(binding);
-						this.#blockedRuntimeSessions.add(binding.sessionId);
-						return {
-							outcome: ensured === "failed" ? "failed" : "disabled",
-							status: this.#status(binding, cfg, runtime),
-						};
-					}
+					ensured = await runtime.ensureTelegramDaemon?.(binding);
 				} catch {
-					if (!this.#isCurrentConfig(cfg)) continue;
+					ensured = "failed";
+				}
+				if (!this.#isCurrentConfig(cfg)) continue;
+				if (ensured !== "ready" && !nonTelegramEffectiveForTelegram) {
 					if (runtime.isRunning(binding)) await runtime.stop(binding);
 					this.#blockedRuntimeSessions.add(binding.sessionId);
-					return { outcome: "failed", status: this.#status(binding, cfg, runtime) };
+					return {
+						outcome: ensured === "failed" ? "failed" : "disabled",
+						status: this.#status(binding, cfg, runtime),
+					};
+				}
+				if (ensured !== "ready" && nonTelegramEffectiveForTelegram) {
+					const isolated = await runtime.isolateTelegram?.(binding);
+					if (isolated !== "started" && isolated !== "already") {
+						if (runtime.isRunning(binding)) await runtime.stop(binding);
+						this.#blockedRuntimeSessions.add(binding.sessionId);
+						return { outcome: "failed", status: this.#status(binding, cfg, runtime) };
+					}
 				}
 			}
 
 			const current = this.#status(binding, cfg, runtime);
-			if (!current.effectiveEnabled || !this.#isCurrentConfig(cfg)) continue;
+			if (!current.genericSessionEnabled || !this.#isCurrentConfig(cfg)) continue;
 			this.#refreshPolicy(
 				runtime,
 				binding,
 				{
 					redact: cfg.redact,
 					verbosity: cfg.verbosity,
-					stream: isNotificationStreamingEnabled({ cfg, env: this.#env }),
+					stream: resolveGenericNotificationStreamPolicy({
+						cfg,
+						env: this.#env,
+						genericSessionEnabled: current.genericSessionEnabled,
+					}).enabled,
 				},
 				"committed",
 			);
@@ -311,7 +372,11 @@ export class NotificationSessionController {
 				{
 					redact: cfg.redact,
 					verbosity: cfg.verbosity,
-					stream: isNotificationStreamingEnabled({ cfg, env: this.#env }),
+					stream: resolveGenericNotificationStreamPolicy({
+						cfg,
+						env: this.#env,
+						genericSessionEnabled: current.genericSessionEnabled,
+					}).enabled,
 				},
 				"committed",
 			);
@@ -325,7 +390,7 @@ export class NotificationSessionController {
 			}
 			runtime.activate?.(binding);
 			const afterStart = this.#status(binding, cfg, runtime);
-			if (!afterStart.effectiveEnabled) {
+			if (!afterStart.genericSessionEnabled) {
 				if (afterStart.running) await runtime.stop(binding);
 				return {
 					outcome: afterStart.running ? "stopped" : "disabled",
@@ -357,9 +422,9 @@ export class NotificationSessionController {
 		return {
 			eligible: this.#eligible,
 			locallyEnabled: false,
-			effectiveEnabled: false,
+			genericSessionEnabled: false,
+			genericEligibilitySource: "none",
 			running: runtime?.isRunning(binding) ?? false,
-			environment: "off",
 		};
 	}
 
@@ -414,26 +479,36 @@ export class NotificationSessionController {
 		const locallyEnabled = !this.#disabledSessions.has(binding.sessionId);
 		const blockedRuntime = this.#blockedRuntimeSessions.has(binding.sessionId);
 		const shuttingDown = this.#shuttingDownSessions.has(binding.sessionId);
-		const effectiveEnabled =
-			!blockedRuntime &&
+		const manualOptIn = this.#manualOptInSessions.has(binding.sessionId);
+		const eligibilityEnv =
+			manualOptIn && this.#env.GJC_NOTIFICATIONS === "0"
+				? { ...this.#env, GJC_NOTIFICATIONS: undefined }
+				: this.#env;
+		const eligibility = resolveGenericNotificationSessionEligibility({
+			cfg,
+			env: eligibilityEnv,
+			sessionDisabled: !locallyEnabled,
+			spawnedByGjc: this.#spawnedByGjc,
+		});
+		const telegramMarkerBlocksOnlyProvider =
+			Boolean(getCurrentTelegramActivationMarker(cfg)) &&
+			isProviderEffectivelyEnabled(cfg, "telegram") &&
+			!isProviderEffectivelyEnabled(cfg, "discord") &&
+			!isProviderEffectivelyEnabled(cfg, "slack");
+		const telegramBlockedWithoutSibling =
+			blockedRuntime && !isProviderEffectivelyEnabled(cfg, "discord") && !isProviderEffectivelyEnabled(cfg, "slack");
+		const genericSessionEnabled =
+			!telegramBlockedWithoutSibling &&
 			!shuttingDown &&
-			!getCurrentTelegramActivationMarker(cfg) &&
+			!telegramMarkerBlocksOnlyProvider &&
 			this.#eligible &&
-			isSessionNotificationsEnabled({ cfg, env: this.#env, sessionDisabled: !locallyEnabled });
-		const environment =
-			this.#env.GJC_NOTIFICATIONS === "0"
-				? "off"
-				: this.#env.GJC_NOTIFICATIONS === "1"
-					? "explicit"
-					: this.#env.GJC_NOTIFICATIONS_TOKEN
-						? "token"
-						: "default";
+			eligibility.enabled;
 		return {
 			eligible: this.#eligible,
 			locallyEnabled,
-			effectiveEnabled,
+			genericSessionEnabled,
+			genericEligibilitySource: eligibility.source,
 			running: runtime?.isRunning(binding) ?? false,
-			environment,
 		};
 	}
 }

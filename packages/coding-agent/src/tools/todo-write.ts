@@ -1,4 +1,5 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@gajae-code/agent-core";
+import type { RawArgumentValidationResult } from "@gajae-code/ai/types";
 import type { Component } from "@gajae-code/tui";
 import { Text } from "@gajae-code/tui";
 import { prompt } from "@gajae-code/utils";
@@ -38,6 +39,7 @@ export interface TodoPhase {
 export interface TodoWriteToolDetails {
 	phases: TodoPhase[];
 	storage: "session" | "memory";
+	failureKind?: "payload_rejected" | "persistence";
 }
 
 // =============================================================================
@@ -61,6 +63,39 @@ const TodoOpEntry = z.object({
 	items: z.array(z.string().describe("task content")).min(1).optional().describe("tasks to append"),
 	text: z.string().optional().describe("note text"),
 });
+
+const TODO_WRITE_KEYS = new Set(["ops"]);
+const TODO_OP_KEYS = new Set(["op", "list", "task", "phase", "items", "text"]);
+const TODO_INIT_ENTRY_KEYS = new Set(["phase", "items"]);
+
+function hasUnknownKeys(value: object, allowed: Set<string>): boolean {
+	return Object.keys(value).some(key => !allowed.has(key));
+}
+
+function validateRawTodoArguments(arguments_: Record<string, unknown>): RawArgumentValidationResult {
+	if (hasUnknownKeys(arguments_, TODO_WRITE_KEYS)) return { outcome: "reject" };
+	if (!Array.isArray(arguments_.ops)) return { outcome: "passthrough" };
+	for (const entry of arguments_.ops) {
+		if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+		if (hasUnknownKeys(entry, TODO_OP_KEYS)) return { outcome: "reject" };
+		const record = entry as Record<string, unknown>;
+		if ((record.op === "done" || record.op === "drop") && !record.task && !record.phase) {
+			return { outcome: "reject" };
+		}
+		const list = record.list;
+		if (!Array.isArray(list)) continue;
+		for (const item of list) {
+			if (
+				typeof item === "object" &&
+				item !== null &&
+				!Array.isArray(item) &&
+				hasUnknownKeys(item, TODO_INIT_ENTRY_KEYS)
+			)
+				return { outcome: "reject" };
+		}
+	}
+	return { outcome: "passthrough" };
+}
 
 const todoWriteSchema = z
 	.object({
@@ -486,6 +521,9 @@ function formatSummary(phases: TodoPhase[], errors: string[]): string {
 	}
 	return lines.join("\n");
 }
+function formatPayloadRejectedSummary(phases: TodoPhase[], errors: string[]): string {
+	return `${formatSummary(phases, errors)}\nTodo update was not applied.`;
+}
 
 // =============================================================================
 // Tool Class
@@ -497,6 +535,7 @@ export class TodoWriteTool implements AgentTool<typeof todoWriteSchema, TodoWrit
 	readonly summary = "Write a structured todo list to track progress within a session";
 	readonly description: string;
 	readonly parameters = todoWriteSchema;
+	readonly rawArgumentValidation = validateRawTodoArguments;
 	readonly concurrency = "exclusive";
 	readonly strict = true;
 	readonly loadMode = "discoverable";
@@ -512,14 +551,32 @@ export class TodoWriteTool implements AgentTool<typeof todoWriteSchema, TodoWrit
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoWriteToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
-		const { phases: updated, errors } = applyParams(previousPhases, params);
-		this.session.setTodoPhases?.(updated);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
+		const missingTarget = params.ops.find(
+			entry => (entry.op === "done" || entry.op === "drop") && !entry.task && !entry.phase,
+		);
+		if (missingTarget) {
+			const errors = [`Missing task or phase for ${missingTarget.op} operation`];
+			return {
+				content: [{ type: "text", text: formatPayloadRejectedSummary(previousPhases, errors) }],
+				details: { phases: previousPhases, storage, failureKind: "payload_rejected" },
+				isError: true,
+			};
+		}
+		const { phases: updated, errors } = applyParams(clonePhases(previousPhases), params);
+		const rejected = errors.length > 0;
+		if (!rejected) this.session.setTodoPhases?.(updated);
+		const phases = rejected ? previousPhases : updated;
 
 		return {
-			content: [{ type: "text", text: formatSummary(updated, errors) }],
-			details: { phases: updated, storage },
-			isError: errors.length > 0 ? true : undefined,
+			content: [
+				{
+					type: "text",
+					text: rejected ? formatPayloadRejectedSummary(phases, errors) : formatSummary(phases, errors),
+				},
+			],
+			details: rejected ? { phases, storage, failureKind: "payload_rejected" } : { phases, storage },
+			isError: rejected || undefined,
 		};
 	}
 }
@@ -651,19 +708,27 @@ export const todoWriteToolRenderer = {
 	},
 
 	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: TodoWriteToolDetails },
+		result: {
+			content: Array<{ type: string; text?: string }>;
+			details?: TodoWriteToolDetails;
+			isError?: boolean;
+		},
 		options: RenderResultOptions,
 		uiTheme: Theme,
 		_args?: TodoWriteRenderArgs,
 	): Component {
 		const phases = (result.details?.phases ?? []).filter(phase => phase.tasks.length > 0);
 		const allTasks = phases.flatMap(phase => phase.tasks);
+		const fallback = result.content?.find(content => content.type === "text")?.text ?? "No todos";
+		if (result.isError) {
+			const header = renderStatusLine({ icon: "error", title: "Todo Write" }, uiTheme);
+			return new Text(`${header}\n${uiTheme.fg("error", fallback)}`, 0, 0);
+		}
 		const header = renderStatusLine(
 			{ icon: "success", title: "Todo Write", meta: [`${allTasks.length} tasks`] },
 			uiTheme,
 		);
 		if (allTasks.length === 0) {
-			const fallback = result.content?.find(content => content.type === "text")?.text ?? "No todos";
 			return new Text(`${header}\n${uiTheme.fg("dim", fallback)}`, 0, 0);
 		}
 

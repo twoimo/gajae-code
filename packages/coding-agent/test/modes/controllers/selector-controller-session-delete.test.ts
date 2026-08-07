@@ -205,6 +205,24 @@ describe("SelectorController session deletion", () => {
 		);
 		expect(calls.indexOf("chatContainer.clear")).toBeLessThan(calls.indexOf("renderInitialMessages"));
 	});
+	it("completes resume without throwing when ctx has no settings surface (#3418 resume-model-choice regression)", async () => {
+		const { ctx, calls } = createContext("/tmp/project/sessions/a.jsonl");
+		expect((ctx as { settings?: unknown }).settings).toBeUndefined();
+		const controller = new SelectorController(ctx);
+
+		await controller.handleResumeSession("/tmp/project/sessions/b.jsonl");
+
+		expect(calls).toContain("rebuildInitialMessages:replace-identity");
+	});
+	it("completes resume when a minimal context has no activity status surface", async () => {
+		const { ctx, calls } = createContext("/tmp/project/sessions/a.jsonl");
+		delete (ctx as { statusContainer?: unknown }).statusContainer;
+		const controller = new SelectorController(ctx);
+
+		await controller.handleResumeSession("/tmp/project/sessions/b.jsonl");
+
+		expect(calls).toContain("rebuildInitialMessages:replace-identity");
+	});
 
 	it("reconciles manual viewport intent before reloading the same session path", async () => {
 		const sessionPath = "/tmp/project/sessions/a.jsonl";
@@ -256,7 +274,7 @@ describe("SelectorController session deletion", () => {
 		await controller.handleResumeSession(legacyPath);
 
 		expect(prepareManagedCandidateForStrictAdoption).toHaveBeenCalledWith(legacyPath, "copy-retain", identity);
-		expect(switchSession).toHaveBeenCalledWith(migratedPath);
+		expect(switchSession).toHaveBeenCalledWith(migratedPath, expect.any(Object));
 	});
 
 	it("keeps explicit selections out of the managed migration fence", async () => {
@@ -271,7 +289,7 @@ describe("SelectorController session deletion", () => {
 
 		expect(inspection).not.toHaveBeenCalled();
 		expect(prepareManagedCandidateForStrictAdoption).not.toHaveBeenCalled();
-		expect(switchSession).toHaveBeenCalledWith(explicitPath);
+		expect(switchSession).toHaveBeenCalledWith(explicitPath, expect.any(Object));
 	});
 
 	it("does not switch after a managed replacement race rejects the inspected identity", async () => {
@@ -300,6 +318,64 @@ describe("SelectorController session deletion", () => {
 
 		expect(prepareManagedCandidateForStrictAdoption).toHaveBeenCalledWith(selectedPath, "copy-retain", identity);
 		expect(switchSession).not.toHaveBeenCalled();
+	});
+
+	it("surfaces managed-candidate race from the picker without unhandled rejection (#3804)", async () => {
+		const selected = makeSessionInfo("/tmp/project/legacy/race.jsonl");
+		const identity = {
+			canonicalPath: selected.path,
+			sessionId: "race",
+			dev: 1n,
+			ino: 1n,
+			size: 1,
+			mtimeMs: 1,
+			mtimeNs: 1n,
+			sha256: "before-replacement",
+		};
+		const {
+			ctx,
+			switchSession,
+			prepareManagedCandidateForStrictAdoption,
+			setManagedDestination,
+			listForResumePickerReadOnly,
+		} = createContext("/tmp/project/sessions/a.jsonl");
+		setManagedDestination(true);
+		listForResumePickerReadOnly.mockResolvedValue([selected]);
+		vi.spyOn(SessionManager, "inspectSessionTailReadOnly").mockResolvedValue({ kind: "resumable", identity });
+		prepareManagedCandidateForStrictAdoption.mockRejectedValue(
+			new Error("Managed session changed before migration authority was adopted."),
+		);
+		const errorShown = Promise.withResolvers<void>();
+		const showError = vi.fn(() => errorShown.resolve());
+		ctx.showError = showError;
+		const controller = new SelectorController(ctx);
+		const unhandled = vi.fn();
+		process.on("unhandledRejection", unhandled);
+
+		try {
+			await controller.showSessionSelector();
+			const selector = ctx.editorContainer.children[0];
+			if (!(selector instanceof SessionSelectorComponent)) {
+				throw new Error("Expected session selector component");
+			}
+
+			// Legacy five-argument path: Enter selects immediately via void onSelect.
+			selector.handleInput("\n");
+			await errorShown.promise;
+			// Give the event loop a tick so an unobserved rejection would fire.
+			await new Promise<void>(resolve => setImmediate(resolve));
+
+			expect(showError).toHaveBeenCalledWith("Managed session changed before migration authority was adopted.");
+			expect(unhandled).not.toHaveBeenCalled();
+			// Strict fence: one preparation attempt, no switch, no auto-retry.
+			expect(prepareManagedCandidateForStrictAdoption).toHaveBeenCalledTimes(1);
+			expect(prepareManagedCandidateForStrictAdoption).toHaveBeenCalledWith(selected.path, "copy-retain", identity);
+			expect(switchSession).not.toHaveBeenCalled();
+			// Current session remains the active one after recovery.
+			expect(ctx.sessionManager.getSessionFile()).toBe("/tmp/project/sessions/a.jsonl");
+		} finally {
+			process.off("unhandledRejection", unhandled);
+		}
 	});
 
 	it("lists sessions through the active manager's captured destination authority", async () => {

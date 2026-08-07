@@ -26,6 +26,11 @@ const builtInOAuthProviders: OAuthProviderInfo[] = [
 		available: true,
 	},
 	{
+		id: "opencodex",
+		name: "OpenCodex (local proxy status)",
+		available: true,
+	},
+	{
 		id: "openai-codex-device",
 		name: "ChatGPT Plus/Pro (Codex, headless/device)",
 		available: true,
@@ -241,6 +246,16 @@ const builtInOAuthProviders: OAuthProviderInfo[] = [
 		available: true,
 	},
 	{
+		id: "bizrouter",
+		name: "BizRouter",
+		available: true,
+	},
+	{
+		id: "mara",
+		name: "Mara Cloud",
+		available: true,
+	},
+	{
 		id: "opengateway",
 		name: "OpenGateway by Sionic AI",
 		available: true,
@@ -388,9 +403,11 @@ export async function refreshOAuthToken(
 		case "moonshot":
 		case "kagi":
 		case "cloudflare-ai-gateway":
+		case "mara":
 		case "vercel-ai-gateway":
 		case "qwen-portal":
 		case "zenmux":
+		case "bizrouter":
 		case "opengateway":
 		case "vllm":
 			// API keys / static bearer tokens don't expire, return as-is

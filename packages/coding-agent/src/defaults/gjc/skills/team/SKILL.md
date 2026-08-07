@@ -201,6 +201,8 @@ sleep 30 && gjc team monitor <team-name>
 ```
 The mutating monitor path also performs bounded liveness recovery: expired task claims, stale heartbeat claims, and missing recorded worker panes are requeued instead of leaving work permanently `in_progress`.
 
+A GJC worker session publishes its own heartbeat while an agent turn or owned background job is active, at a third of the stale window, so a long build or test run is no longer reported stale. A worker that publishes nothing — for example one wedged before it could report — is still recovered on the normal window.
+
 ### Opt-in stalled-worker continuation
 
 `GJC_TEAM_AUTO_CONTINUE_STALLED_WORKERS=1` enables a separate, default-off monitor-only nudge for a stalled live worker. It is considered only when the team is running (not dry-run), the worker heartbeat is stale (using `GJC_TEAM_HEARTBEAT_STALE_MS`, default `120000` ms), and all of these checks pass:
@@ -307,7 +309,7 @@ GJC ports team-mode concepts from `../../oh-my-codex`, not code or OMX/Codex-spe
 | Startup ACK | `gjc team api worker-startup-ack`, persisted as `workers/<worker>/startup-ack.json`. |
 | Claim-safe lifecycle APIs | `claim-task`, `transition-task-status`, and `release-task-claim` with worker ownership and claim-token guards. |
 | Delivery states and deferred pane attempts | Native notification records under `.gjc/_session-{sessionid}/state/team/<team>/notifications/` with `pending`, `sent`, `queued`, `deferred`, `failed`, `delivered`, and `acknowledged` states. |
-| Non-destructive leader nudges | Lifecycle nudge records under `workers/<worker>/nudges/`; GJC suggests inspection/relaunch but never auto-kills or auto-relaunches workers. |
+| Opt-in memory-guard relaunch | Lifecycle nudges remain non-destructive by default. On Linux only, a worker whose durable `memory-guard.json` explicitly enables automatic action may be checkpointed and relaunched after sustained pressure, bounded retries, current claim validation, and a continuation-safe handoff; unsupported platforms and missing authority remain advisory-only. |
 
 Forbidden assumptions: do not copy OMX paths, Codex notify payload formats, OMX process names, or source code directly. Keep tmux as the current runtime; native split-worker TUI remains roadmap-only.
 

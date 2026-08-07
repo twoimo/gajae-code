@@ -63,6 +63,88 @@ export function canApplyComposerSubmission(
 ): boolean {
 	return options === undefined || (options.ownsComposer && editor === options.editor);
 }
+
+type PartialActivityStatusContainer = Partial<Pick<Container, "children" | "clear" | "detachChild" | "addChild">>;
+
+export function stopInteractiveActivityIndicator(
+	ctx: {
+		loadingAnimation?: Loader;
+		statusContainer?: PartialActivityStatusContainer;
+		stopLoadingAnimation?: (options?: { restoreBackground?: boolean }) => void;
+	},
+	options?: { restoreBackground?: boolean },
+): void {
+	if (ctx.stopLoadingAnimation) {
+		ctx.stopLoadingAnimation(options);
+		return;
+	}
+	ctx.loadingAnimation?.stop();
+	ctx.loadingAnimation = undefined;
+	ctx.statusContainer?.clear?.();
+}
+
+export function clearInteractiveActivityLoaders(
+	ctx: Pick<
+		InteractiveModeContext,
+		| "autoCompactionLoader"
+		| "autoCompactionEscapeHandler"
+		| "retryLoader"
+		| "retryCountdownTimer"
+		| "retryEscapeHandler"
+		| "retryEscapePrimed"
+		| "editor"
+	>,
+): void {
+	ctx.autoCompactionLoader?.stop();
+	ctx.autoCompactionLoader = undefined;
+	if (ctx.autoCompactionEscapeHandler) ctx.editor.onEscape = ctx.autoCompactionEscapeHandler;
+	ctx.autoCompactionEscapeHandler = undefined;
+	ctx.retryLoader?.stop();
+	ctx.retryLoader = undefined;
+	if (ctx.retryCountdownTimer) clearInterval(ctx.retryCountdownTimer);
+	ctx.retryCountdownTimer = undefined;
+	if (ctx.retryEscapeHandler) ctx.editor.onEscape = ctx.retryEscapeHandler;
+	ctx.retryEscapeHandler = undefined;
+	ctx.retryEscapePrimed = false;
+}
+
+export function suspendInteractiveActivityIndicator(ctx: {
+	loadingAnimation?: Loader;
+	statusContainer?: PartialActivityStatusContainer;
+	stopLoadingAnimation?: (options?: { restoreBackground?: boolean }) => void;
+	syncActivityIndicator?: () => void;
+	suspendActivityIndicator?: () => () => void;
+}): () => void {
+	if (ctx.suspendActivityIndicator) return ctx.suspendActivityIndicator();
+	const suspendedLoader = ctx.loadingAnimation;
+	const statusContainer = ctx.statusContainer;
+	const canTransferMountedLoader =
+		Array.isArray(statusContainer?.children) &&
+		typeof statusContainer.detachChild === "function" &&
+		typeof statusContainer.addChild === "function";
+	const wasMounted =
+		canTransferMountedLoader && suspendedLoader !== undefined && statusContainer.children?.includes(suspendedLoader);
+	if (suspendedLoader && wasMounted) statusContainer.detachChild?.(suspendedLoader);
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		if (
+			wasMounted &&
+			suspendedLoader &&
+			ctx.loadingAnimation === suspendedLoader &&
+			Array.isArray(statusContainer?.children) &&
+			!statusContainer.children.includes(suspendedLoader)
+		) {
+			statusContainer.addChild?.(suspendedLoader);
+		}
+		syncInteractiveActivityIndicator(ctx);
+	};
+}
+
+export function syncInteractiveActivityIndicator(ctx: { syncActivityIndicator?: () => void }): void {
+	ctx.syncActivityIndicator?.();
+}
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
 
 export type TodoItem = {
@@ -164,6 +246,8 @@ export interface InteractiveModeContext {
 	init(): Promise<void>;
 	shutdown(): Promise<void>;
 	checkShutdownRequested(): Promise<void>;
+	isStopped?(): boolean;
+	onStop(callback: () => void): () => void;
 
 	// Extension UI integration
 	setToolUIContext(uiContext: ExtensionUIContext, hasUI: boolean): void;
@@ -190,6 +274,9 @@ export interface InteractiveModeContext {
 	setWorkingMessage(message?: string): void;
 	applyPendingWorkingMessage(): void;
 	ensureLoadingAnimation(): void;
+	syncActivityIndicator(): void;
+	suspendActivityIndicator(): () => void;
+	stopLoadingAnimation(options?: { restoreBackground?: boolean }): void;
 	/**
 	 * Commit a pet mode through the shared result-returning policy: capability
 	 * is rechecked immediately before mutation and the preference persists only
@@ -248,9 +335,12 @@ export interface InteractiveModeContext {
 	getAssistantViewportAnchorId?(message: AssistantMessage): string;
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	extractAssistantText(message: AssistantMessage): string;
+	/** Records one semantic visible-transcript mutation for the sticky viewport. */
+	recordVisibleTranscriptMutation?(): void;
 	updateEditorTopBorder(): void;
 	updateEditorBorderColor(): void;
 	rebuildChatFromMessages(policy: TranscriptRebuildPolicy): void;
+	updateEditorChrome(): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
 	toggleTodoExpansion(): void;
@@ -405,4 +495,10 @@ export interface OAuthSelectorOptions {
 	allowExternalCredentialDiscovery?: boolean;
 	trigger?: "bare-login";
 	externalCredentialDiscover?: CredentialAutoImportOptions["discover"];
+	/**
+	 * Pair by pasting the code the provider displays instead of waiting on the
+	 * loopback callback. Set by `/login <provider> --manual` for browsers that
+	 * cannot reach this machine.
+	 */
+	manualCode?: boolean;
 }

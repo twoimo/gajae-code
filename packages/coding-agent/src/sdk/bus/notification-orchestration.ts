@@ -2,10 +2,13 @@ import type { CasRestoreResult } from "../../config/atomic-yaml-patch";
 import type { RawSettings, SettingsAtomicPatch, SettingsAtomicReceipt } from "../../config/settings";
 import { isProcessIncarnation, processIncarnation } from "../broker/process-incarnation";
 import {
+	getCurrentTelegramActivationMarker,
 	getNotificationConfig,
 	hasNonBlankValue,
+	isProviderEffectivelyEnabled,
+	type NotificationProvider,
 	type NotificationSettingsReader,
-	type NotificationSettingsSnapshot,
+	type ProviderSecretDisposition,
 	readTelegramActivationMarkers,
 	type TelegramActivationMarker,
 	type TelegramActivationMarkers,
@@ -136,7 +139,7 @@ export async function proposedTelegramIdentity(
 
 export interface NotificationConfigurationWriter extends NotificationSettingsReader {
 	commitAtomicBatch(patches: readonly SettingsAtomicPatch[]): Promise<SettingsAtomicReceipt>;
-	commitAtomicBatchWithCurrent?(
+	commitAtomicBatchWithCurrent(
 		buildPatches: (
 			current: Readonly<RawSettings>,
 		) => Promise<readonly SettingsAtomicPatch[]> | readonly SettingsAtomicPatch[],
@@ -181,16 +184,7 @@ async function commitNotificationBatchWithCurrent(
 		current: Readonly<RawSettings>,
 	) => Promise<readonly SettingsAtomicPatch[]> | readonly SettingsAtomicPatch[],
 ): Promise<SettingsAtomicReceipt> {
-	if (settings.commitAtomicBatchWithCurrent) return settings.commitAtomicBatchWithCurrent(buildPatches);
-	const snapshot = settings.getNotificationSettingsSnapshot();
-	const current: RawSettings = {
-		notifications: {
-			telegram: {
-				activation: snapshot.telegram.activation,
-			},
-		},
-	};
-	return settings.commitAtomicBatch(await buildPatches(current));
+	return settings.commitAtomicBatchWithCurrent(buildPatches);
 }
 
 function sameActivationMarker(left: TelegramActivationMarker, right: TelegramActivationMarker): boolean {
@@ -231,36 +225,9 @@ export async function clearTelegramActivationMarker(
 	receipt.discard();
 }
 
-export type CompleteNonTelegramAdapter = "discord" | "slack";
-
-function completeNonTelegramAdapters(snapshot: NotificationSettingsSnapshot): CompleteNonTelegramAdapter[] {
-	if (!snapshot.enabled) return [];
-	const adapters: CompleteNonTelegramAdapter[] = [];
-	if (
-		hasNonBlankValue(snapshot.discord.botToken) &&
-		hasNonBlankValue(snapshot.discord.applicationId) &&
-		hasNonBlankValue(snapshot.discord.guildId) &&
-		hasNonBlankValue(snapshot.discord.parentChannelId)
-	) {
-		adapters.push("discord");
-	}
-	if (
-		hasNonBlankValue(snapshot.slack.botToken) &&
-		hasNonBlankValue(snapshot.slack.appToken) &&
-		hasNonBlankValue(snapshot.slack.workspaceId) &&
-		hasNonBlankValue(snapshot.slack.channelId)
-	) {
-		adapters.push("slack");
-	}
-	return adapters;
-}
-
 export type SaveTelegramInactiveAvailability = { available: true };
 
-/**
- * Telegram-specific activation markers let Save inactive preserve globally
- * enabled Discord and Slack adapters, so the action is always available.
- */
+/** Telegram activation markers make Save inactive independent of sibling providers. */
 export function getSaveTelegramInactiveAvailability(
 	_settings: NotificationSettingsReader,
 ): SaveTelegramInactiveAvailability {
@@ -269,10 +236,7 @@ export function getSaveTelegramInactiveAvailability(
 
 export type SaveTelegramInactiveResult = { status: "saved_inactive"; receipt: SettingsAtomicReceipt };
 
-/**
- * Atomically persist Telegram credentials with a non-secret inactive marker.
- * Global notifications are disabled only when Telegram is the sole complete adapter.
- */
+/** Atomically persist Telegram credentials, desired-off intent, and its inactive marker. */
 export async function saveTelegramInactive(input: {
 	settings: NotificationConfigurationWriter;
 	botToken: string;
@@ -281,7 +245,6 @@ export async function saveTelegramInactive(input: {
 	if (!hasNonBlankValue(input.botToken) || !hasNonBlankValue(input.chatId)) {
 		throw new TypeError("Saving inactive Telegram configuration requires a non-blank token and chat ID.");
 	}
-	const snapshot = input.settings.getNotificationSettingsSnapshot();
 	const marker = createTelegramActivationMarker({
 		botToken: input.botToken,
 		chatId: input.chatId,
@@ -291,15 +254,12 @@ export async function saveTelegramInactive(input: {
 	const receipt = await commitNotificationBatchWithCurrent(input.settings, current => {
 		const markers = activationMarkersFromCurrent(current);
 		markers[marker.identity] = marker;
-		const patches: SettingsAtomicPatch[] = [
+		return [
 			{ path: "notifications.telegram.botToken", op: "set", value: input.botToken },
 			{ path: "notifications.telegram.chatId", op: "set", value: input.chatId },
+			{ path: "notifications.telegram.enabled", op: "set", value: false },
 			{ path: "notifications.telegram.activation", op: "set", value: markers },
 		];
-		if (completeNonTelegramAdapters(snapshot).length === 0) {
-			patches.push({ path: "notifications.enabled", op: "set", value: false });
-		}
-		return patches;
 	});
 	return { status: "saved_inactive", receipt };
 }
@@ -318,25 +278,14 @@ export async function removeTelegramConfiguration(input: {
 	settings: NotificationConfigurationWriter;
 	removal: TelegramRemovalRuntime;
 }): Promise<{ receipt: SettingsAtomicReceipt; globallyDisabled: boolean }> {
-	const cfg = getNotificationConfig(input.settings);
-	const otherAdapterRemains =
-		(hasNonBlankValue(cfg.discord.botToken) &&
-			hasNonBlankValue(cfg.discord.applicationId) &&
-			hasNonBlankValue(cfg.discord.guildId) &&
-			hasNonBlankValue(cfg.discord.parentChannelId)) ||
-		(hasNonBlankValue(cfg.slack.botToken) &&
-			hasNonBlankValue(cfg.slack.appToken) &&
-			hasNonBlankValue(cfg.slack.workspaceId) &&
-			hasNonBlankValue(cfg.slack.channelId));
 	await input.removal.stopAndUnregister();
-	const patches: SettingsAtomicPatch[] = [
+	const receipt = await input.settings.commitAtomicBatch([
 		{ path: "notifications.telegram.botToken", op: "unset" },
 		{ path: "notifications.telegram.chatId", op: "unset" },
 		{ path: "notifications.telegram.activation", op: "unset" },
-	];
-	if (!otherAdapterRemains) patches.push({ path: "notifications.enabled", op: "set", value: false });
-	const receipt = await input.settings.commitAtomicBatch(patches);
-	return { receipt, globallyDisabled: !otherAdapterRemains };
+		{ path: "notifications.telegram.enabled", op: "set", value: false },
+	]);
+	return { receipt, globallyDisabled: false };
 }
 
 /** Detailed outcome of checking or reconnecting the Telegram daemon after a durable commit. */
@@ -365,9 +314,20 @@ export interface TelegramPostCommitActivation {
 }
 
 export type PostCommitTelegramActivationResult =
-	| { status: "activated"; reconnect: Exclude<TelegramDaemonReconnectOutcome, "blocked_identity"> }
+	| {
+			status: "activated";
+			receipt: SettingsAtomicReceipt;
+			reconnect: Exclude<TelegramDaemonReconnectOutcome, "blocked_identity" | "disabled">;
+	  }
+	| {
+			status: "activation_failed";
+			receipt: SettingsAtomicReceipt;
+			reconnect?: TelegramDaemonReconnectOutcome;
+			message: string;
+	  }
 	| {
 			status: "blocked_identity";
+			receipt: SettingsAtomicReceipt;
 			message: string;
 			restore(): Promise<BlockedTelegramRestoreResult>;
 			retainCommitted(): void;
@@ -433,7 +393,7 @@ async function restoreBlockedConfiguration(input: {
  * owner race stops the endpoint, durably marks only that Telegram identity
  * inactive, then exposes an ordered CAS restore/retain choice.
  */
-export async function reconcileCommittedTelegramConfiguration(input: {
+async function reconcileCommittedTelegramConfigurationUnsafe(input: {
 	receipt: SettingsAtomicReceipt;
 	activation: TelegramPostCommitActivation;
 	inactiveMarkerToClear?: TelegramActivationMarker;
@@ -443,6 +403,7 @@ export async function reconcileCommittedTelegramConfiguration(input: {
 		await input.activation.controller.enterBlockedRuntime();
 		const inactiveReceipt = await input.activation.persistInactive(input.activation.marker);
 		return {
+			receipt: input.receipt,
 			status: "blocked_identity",
 			message:
 				"Configuration saved inactive; activation blocked; foreign daemon untouched. Current session stopped because Telegram activation was blocked by a foreign daemon.",
@@ -451,6 +412,15 @@ export async function reconcileCommittedTelegramConfiguration(input: {
 				inactiveReceipt.discard();
 				input.receipt.discard();
 			},
+		};
+	}
+	if (reconnect === "disabled") {
+		await input.activation.controller.enterBlockedRuntime();
+		return {
+			receipt: input.receipt,
+			status: "activation_failed",
+			reconnect,
+			message: "Configuration and desired intent were saved, but Telegram runtime activation did not become ready.",
 		};
 	}
 
@@ -464,7 +434,32 @@ export async function reconcileCommittedTelegramConfiguration(input: {
 	}
 	await input.activation.controller.clearBlockedRuntime();
 	await input.activation.controller.reconcileCurrentSession();
-	return { status: "activated", reconnect };
+	return { status: "activated", receipt: input.receipt, reconnect };
+}
+
+export async function reconcileCommittedTelegramConfiguration(input: {
+	receipt: SettingsAtomicReceipt;
+	activation: TelegramPostCommitActivation;
+	inactiveMarkerToClear?: TelegramActivationMarker;
+}): Promise<PostCommitTelegramActivationResult> {
+	try {
+		return await reconcileCommittedTelegramConfigurationUnsafe(input);
+	} catch {
+		let fenced = false;
+		try {
+			await input.activation.controller.enterBlockedRuntime();
+			fenced = true;
+		} catch {
+			fenced = false;
+		}
+		return {
+			status: "activation_failed",
+			receipt: input.receipt,
+			message: fenced
+				? "Configuration and desired intent were saved, but post-commit activation or reconciliation failed; the current runtime was fenced."
+				: "Configuration and desired intent were saved, but post-commit activation or reconciliation failed and the current runtime could not be fenced.",
+		};
+	}
 }
 
 export type SaveTelegramConfigurationResult =
@@ -520,6 +515,7 @@ export async function saveTelegramConfiguration(input: {
 			{ path: "notifications.telegram.botToken", op: "set", value: input.botToken },
 			{ path: "notifications.telegram.chatId", op: "set", value: input.chatId },
 			{ path: "notifications.enabled", op: "set", value: true },
+			{ path: "notifications.telegram.enabled", op: "set", value: true },
 		];
 		// With post-commit activation, the marker has its own receipt so a blocked
 		// rollback can restore configuration without self-conflicting on the marker
@@ -544,4 +540,311 @@ export async function saveTelegramConfiguration(input: {
 		activation: input.activation,
 		inactiveMarkerToClear,
 	});
+}
+
+export type ProviderSecretMutation = { action: "keep" } | { action: "replace"; value: string } | { action: "remove" };
+
+export interface TelegramProviderConfigurationMutation {
+	provider: "telegram";
+	botToken: ProviderSecretMutation;
+	chatId?: string;
+	richEnabled?: boolean;
+	richDraftEnabled?: boolean;
+	streamingEnabled?: boolean;
+}
+
+export interface DiscordProviderConfigurationMutation {
+	provider: "discord";
+	botToken: ProviderSecretMutation;
+	applicationId?: string;
+	guildId?: string;
+	parentChannelId?: string;
+}
+
+export interface SlackProviderConfigurationMutation {
+	provider: "slack";
+	botToken: ProviderSecretMutation;
+	appToken: ProviderSecretMutation;
+	workspaceId?: string;
+	channelId?: string;
+	authorizedUserId?: string | null;
+}
+
+export type NotificationProviderConfigurationMutation =
+	| TelegramProviderConfigurationMutation
+	| DiscordProviderConfigurationMutation
+	| SlackProviderConfigurationMutation;
+
+export interface NotificationProviderRuntimeAuthority {
+	activate(provider: NotificationProvider): Promise<void>;
+	deactivate(provider: NotificationProvider): Promise<void>;
+}
+
+export type NotificationProviderMutationResult =
+	| { status: "saved"; receipt: SettingsAtomicReceipt; observerFailed: boolean }
+	| { status: "activated"; receipt: SettingsAtomicReceipt; observerFailed: boolean }
+	| { status: "activation_failed"; receipt: SettingsAtomicReceipt; observerFailed: boolean }
+	| { status: "deactivation_failed"; receipt: SettingsAtomicReceipt; observerFailed: boolean }
+	| { status: "commit_failed" };
+
+function secretMutationPatches(
+	pathName:
+		| "notifications.telegram.botToken"
+		| "notifications.discord.botToken"
+		| "notifications.slack.botToken"
+		| "notifications.slack.appToken",
+	mutation: ProviderSecretMutation,
+): SettingsAtomicPatch[] {
+	if (mutation.action === "keep") return [];
+	if (mutation.action === "remove") return [{ path: pathName, op: "unset" }];
+	if (!hasNonBlankValue(mutation.value)) throw new TypeError(`A non-blank replacement is required for ${pathName}.`);
+	return [{ path: pathName, op: "set", value: mutation.value }];
+}
+
+function optionalSet(pathName: SettingsAtomicPatch["path"], value: unknown): SettingsAtomicPatch[] {
+	return value === undefined ? [] : [{ path: pathName, op: "set", value }];
+}
+
+function selectedProviderPatches(mutation: NotificationProviderConfigurationMutation): SettingsAtomicPatch[] {
+	if (mutation.provider === "telegram") {
+		return [
+			...secretMutationPatches("notifications.telegram.botToken", mutation.botToken),
+			...optionalSet("notifications.telegram.chatId", mutation.chatId),
+			...optionalSet("notifications.telegram.rich.enabled", mutation.richEnabled),
+			...optionalSet("notifications.telegram.richDraft.enabled", mutation.richDraftEnabled),
+			...optionalSet("notifications.telegram.streaming.enabled", mutation.streamingEnabled),
+		];
+	}
+	if (mutation.provider === "discord") {
+		return [
+			...secretMutationPatches("notifications.discord.botToken", mutation.botToken),
+			...optionalSet("notifications.discord.applicationId", mutation.applicationId),
+			...optionalSet("notifications.discord.guildId", mutation.guildId),
+			...optionalSet("notifications.discord.parentChannelId", mutation.parentChannelId),
+		];
+	}
+	return [
+		...secretMutationPatches("notifications.slack.botToken", mutation.botToken),
+		...secretMutationPatches("notifications.slack.appToken", mutation.appToken),
+		...optionalSet("notifications.slack.workspaceId", mutation.workspaceId),
+		...optionalSet("notifications.slack.channelId", mutation.channelId),
+		...(mutation.authorizedUserId === undefined
+			? []
+			: mutation.authorizedUserId === null
+				? [{ path: "notifications.slack.authorizedUserId", op: "unset" } as const]
+				: optionalSet("notifications.slack.authorizedUserId", mutation.authorizedUserId)),
+	];
+}
+
+function providerDesiredPath(provider: NotificationProvider): SettingsAtomicPatch["path"] {
+	if (provider === "telegram") return "notifications.telegram.enabled";
+	if (provider === "discord") return "notifications.discord.enabled";
+	return "notifications.slack.enabled";
+}
+
+function mutationRemovesRequiredSecret(mutation: NotificationProviderConfigurationMutation): boolean {
+	if (mutation.provider === "telegram" || mutation.provider === "discord")
+		return mutation.botToken.action === "remove";
+	return mutation.botToken.action === "remove" || mutation.appToken.action === "remove";
+}
+
+/**
+ * Sole CAS-backed provider configuration authority. It commits one selected-provider
+ * batch before observer/runtime effects and never reports rollback after a durable save.
+ */
+export async function mutateNotificationProvider(input: {
+	settings: NotificationConfigurationWriter;
+	mutation: NotificationProviderConfigurationMutation;
+	desiredEnabled?: boolean;
+	configureAndActivate?: boolean;
+	notifyConfigChanged?: () => Promise<void> | void;
+	redact?: boolean;
+	runtime?: NotificationProviderRuntimeAuthority;
+	signal?: AbortSignal;
+}): Promise<NotificationProviderMutationResult> {
+	if (input.signal?.aborted) return { status: "commit_failed" };
+	const provider = input.mutation.provider;
+	const removesRequiredSecret = mutationRemovesRequiredSecret(input.mutation);
+	const desiredEnabled = removesRequiredSecret ? false : input.desiredEnabled;
+	const activate = input.configureAndActivate === true && !removesRequiredSecret;
+	const patches = selectedProviderPatches(input.mutation);
+	if (activate) {
+		patches.push(
+			{ path: "notifications.enabled", op: "set", value: true },
+			{ path: providerDesiredPath(provider), op: "set", value: true },
+		);
+	} else if (desiredEnabled !== undefined) {
+		patches.push({ path: providerDesiredPath(provider), op: "set", value: desiredEnabled });
+	}
+	if (input.redact !== undefined) patches.push({ path: "notifications.redact", op: "set", value: input.redact });
+	let receipt: SettingsAtomicReceipt;
+	try {
+		receipt = await input.settings.commitAtomicBatch(patches);
+	} catch {
+		return { status: "commit_failed" };
+	}
+	let observerFailed = false;
+	try {
+		await input.notifyConfigChanged?.();
+	} catch {
+		observerFailed = true;
+	}
+	if (!input.runtime) return { status: "saved", receipt, observerFailed };
+	try {
+		if (activate || desiredEnabled === true) {
+			await input.runtime.activate(provider);
+			return { status: "activated", receipt, observerFailed };
+		}
+		if (desiredEnabled === false) {
+			await input.runtime.deactivate(provider);
+		}
+		return { status: "saved", receipt, observerFailed };
+	} catch {
+		return {
+			status: activate || desiredEnabled === true ? "activation_failed" : "deactivation_failed",
+			receipt,
+			observerFailed,
+		};
+	}
+}
+
+export type NotificationProviderRemovalResult =
+	| { status: "removed"; receipt: SettingsAtomicReceipt; observerFailed: boolean }
+	| { status: "deactivation_failed"; receipt?: SettingsAtomicReceipt; observerFailed?: boolean }
+	| { status: "commit_failed_after_teardown" }
+	| { status: "commit_failed" };
+
+function providerRemovalPatches(provider: NotificationProvider): SettingsAtomicPatch[] {
+	if (provider === "telegram") {
+		return [
+			{ path: "notifications.telegram.botToken", op: "unset" },
+			{ path: "notifications.telegram.chatId", op: "unset" },
+			{ path: "notifications.telegram.activation", op: "unset" },
+			{ path: "notifications.telegram.enabled", op: "set", value: false },
+		];
+	}
+	if (provider === "discord") {
+		return [
+			{ path: "notifications.discord.botToken", op: "unset" },
+			{ path: "notifications.discord.applicationId", op: "unset" },
+			{ path: "notifications.discord.guildId", op: "unset" },
+			{ path: "notifications.discord.parentChannelId", op: "unset" },
+			{ path: "notifications.discord.enabled", op: "set", value: false },
+		];
+	}
+	return [
+		{ path: "notifications.slack.botToken", op: "unset" },
+		{ path: "notifications.slack.appToken", op: "unset" },
+		{ path: "notifications.slack.workspaceId", op: "unset" },
+		{ path: "notifications.slack.channelId", op: "unset" },
+		{ path: "notifications.slack.authorizedUserId", op: "unset" },
+		{ path: "notifications.slack.enabled", op: "set", value: false },
+	];
+}
+
+/** Remove only one provider. Telegram keeps teardown-before-delete; chat providers deactivate after commit. */
+export async function removeNotificationProvider(input: {
+	settings: NotificationConfigurationWriter;
+	provider: NotificationProvider;
+	runtime: NotificationProviderRuntimeAuthority;
+	notifyConfigChanged?: () => Promise<void> | void;
+}): Promise<NotificationProviderRemovalResult> {
+	if (input.provider === "telegram") {
+		try {
+			await input.runtime.deactivate("telegram");
+		} catch {
+			return { status: "deactivation_failed" };
+		}
+	}
+	let receipt: SettingsAtomicReceipt;
+	try {
+		receipt = await input.settings.commitAtomicBatch(providerRemovalPatches(input.provider));
+	} catch {
+		return { status: input.provider === "telegram" ? "commit_failed_after_teardown" : "commit_failed" };
+	}
+	let observerFailed = false;
+	try {
+		await input.notifyConfigChanged?.();
+	} catch {
+		observerFailed = true;
+	}
+	if (input.provider !== "telegram") {
+		try {
+			await input.runtime.deactivate(input.provider);
+		} catch {
+			return { status: "deactivation_failed", receipt, observerFailed };
+		}
+	}
+	return { status: "removed", receipt, observerFailed };
+}
+
+export type GlobalNotificationMutationResult =
+	| { status: "saved"; receipt: SettingsAtomicReceipt; observerFailed: boolean }
+	| {
+			status: "global_deactivation_partial";
+			receipt: SettingsAtomicReceipt;
+			failed: readonly NotificationProvider[];
+			observerFailed: boolean;
+	  }
+	| {
+			status: "global_activation_partial";
+			receipt: SettingsAtomicReceipt;
+			failed: readonly NotificationProvider[];
+			observerFailed: boolean;
+	  }
+	| { status: "commit_failed" };
+
+/** Toggle only the global master. Provider configuration and desired intent are preserved. */
+export async function setGlobalNotificationsEnabled(input: {
+	settings: NotificationConfigurationWriter;
+	enabled: boolean;
+	runtime?: NotificationProviderRuntimeAuthority;
+	notifyConfigChanged?: () => Promise<void> | void;
+}): Promise<GlobalNotificationMutationResult> {
+	let receipt: SettingsAtomicReceipt;
+	try {
+		receipt = await input.settings.commitAtomicBatch([
+			{ path: "notifications.enabled", op: "set", value: input.enabled },
+		]);
+	} catch {
+		return { status: "commit_failed" };
+	}
+	let observerFailed = false;
+	try {
+		await input.notifyConfigChanged?.();
+	} catch {
+		observerFailed = true;
+	}
+	if (!input.runtime) return { status: "saved", receipt, observerFailed };
+	const failed: NotificationProvider[] = [];
+	if (input.enabled) {
+		const cfg = getNotificationConfig(input.settings);
+		for (const provider of ["telegram", "discord", "slack"] as const) {
+			if (!isProviderEffectivelyEnabled(cfg, provider)) continue;
+			if (provider === "telegram" && getCurrentTelegramActivationMarker(cfg)) continue;
+			try {
+				await input.runtime.activate(provider);
+			} catch {
+				failed.push(provider);
+			}
+		}
+		return failed.length === 0
+			? { status: "saved", receipt, observerFailed }
+			: { status: "global_activation_partial", receipt, failed, observerFailed };
+	}
+	for (const provider of ["telegram", "discord", "slack"] as const) {
+		try {
+			await input.runtime.deactivate(provider);
+		} catch {
+			failed.push(provider);
+		}
+	}
+	return failed.length === 0
+		? { status: "saved", receipt, observerFailed }
+		: { status: "global_deactivation_partial", receipt, failed, observerFailed };
+}
+
+/** Safe helper for UI contracts that must retain only the disposition, never replacement material. */
+export function providerSecretDisposition(mutation: ProviderSecretMutation): ProviderSecretDisposition {
+	return mutation.action;
 }

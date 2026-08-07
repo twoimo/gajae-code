@@ -1,5 +1,5 @@
-import { $credentialEnv, $env, $inheritedEnv, extractHttpStatusFromError, logger } from "@gajae-code/utils";
-import OpenAI from "openai";
+import { $credentialEnv, $env, extractHttpStatusFromError, logger } from "@gajae-code/utils";
+import OpenAI, { APIConnectionTimeoutError } from "openai";
 import type {
 	ChatCompletionAssistantMessageParam,
 	ChatCompletionChunk,
@@ -47,11 +47,12 @@ import {
 	rewriteCopilotError,
 } from "../utils/http-inspector";
 import {
-	createWatchdog,
+	FirstEventTimeoutError,
 	getOpenAIStreamIdleTimeoutMs,
 	getProviderFirstEventTimeoutFallbackMs,
 	getStreamFirstEventTimeoutMs,
 	iterateWithIdleTimeout,
+	resolveOpenAISdkRequestTimeoutMs,
 } from "../utils/idle-iterator";
 import { isCompleteJson, parseStreamingJson } from "../utils/json-parse";
 import { parseGitHubCopilotApiKey } from "../utils/oauth/github-copilot";
@@ -69,6 +70,7 @@ import {
 	resolveToolChoice,
 } from "../utils/tool-choice-capability";
 import { COMPOSER_EDIT_DISCIPLINE_PROMPT, isComposerHarnessModel } from "./composer-discipline";
+import { mergeDashScopeTokenPlanHeaders } from "./dashscope-token-plan-headers";
 import {
 	buildCopilotDynamicHeaders,
 	hasCopilotVisionInput,
@@ -102,12 +104,85 @@ function resolveOpenAIProviderBaseUrl(
 	authCredentialType: "api_key" | "oauth" | undefined,
 ): string {
 	if (authCredentialType === "oauth") return OPENAI_DEFAULT_BASE_URL;
-	const envBaseUrl = $inheritedEnv("OPENAI_BASE_URL") ?? $env.OPENAI_BASE_URL?.trim();
+	// Trusted sources only: this base URL becomes the request endpoint that carries
+	// the OpenAI credential, and `$env` merges the caller's `cwd/.env`.
+	const envBaseUrl = $credentialEnv("OPENAI_BASE_URL");
 	const configuredBaseUrl = baseUrl?.trim();
 	if (envBaseUrl && (!configuredBaseUrl || isDefaultOpenAIBaseUrl(configuredBaseUrl))) {
 		return envBaseUrl;
 	}
 	return configuredBaseUrl || envBaseUrl || OPENAI_DEFAULT_BASE_URL;
+}
+
+/** Test seam: the provider base URL as resolved from trusted env. */
+export function resolveOpenAICompletionsBaseUrlForTest(
+	baseUrl: string | undefined,
+	authCredentialType: "api_key" | "oauth" | undefined,
+): string {
+	return resolveOpenAIProviderBaseUrl(baseUrl, authCredentialType);
+}
+function appendUrlPath(baseUrl: string | undefined, path: string): string | undefined {
+	if (!baseUrl) return undefined;
+	const normalizedPath = path.replace(/^\/+/g, "");
+	try {
+		const parsed = new URL(baseUrl);
+		parsed.pathname = `${parsed.pathname.replace(/\/+$/g, "")}/${normalizedPath}`;
+		return parsed.toString();
+	} catch {
+		return `${baseUrl.replace(/\/+$/g, "")}/${normalizedPath}`;
+	}
+}
+
+type OpenAICompletionsQuery = string;
+
+function splitBaseUrlQuery(baseUrl: string | undefined): {
+	baseUrl: string | undefined;
+	query?: OpenAICompletionsQuery;
+} {
+	if (!baseUrl) return { baseUrl };
+	try {
+		const parsed = new URL(baseUrl);
+		if (!parsed.search) return { baseUrl };
+		const queryStart = baseUrl.indexOf("?");
+		const fragmentStart = baseUrl.indexOf("#", queryStart);
+		const query = baseUrl.slice(queryStart + 1, fragmentStart === -1 ? undefined : fragmentStart);
+		if (!query) return { baseUrl };
+		parsed.search = "";
+		return {
+			baseUrl: parsed.toString(),
+			query,
+		};
+	} catch {
+		return { baseUrl };
+	}
+}
+
+function hasQueryParameter(query: OpenAICompletionsQuery | undefined, name: string): boolean {
+	return query ? new URLSearchParams(query).has(name) : false;
+}
+
+function appendRawQuery(url: string, query: OpenAICompletionsQuery | undefined): string {
+	if (!query) return url;
+	const fragmentStart = url.indexOf("#");
+	const beforeFragment = fragmentStart === -1 ? url : url.slice(0, fragmentStart);
+	const fragment = fragmentStart === -1 ? "" : url.slice(fragmentStart);
+	return `${beforeFragment}${beforeFragment.includes("?") ? "&" : "?"}${query}${fragment}`;
+}
+
+function buildRequestUrl(
+	baseUrl: string | undefined,
+	path: string,
+	query?: OpenAICompletionsQuery,
+): string | undefined {
+	const url = appendUrlPath(baseUrl, path);
+	return url ? appendRawQuery(url, query) : undefined;
+}
+
+function appendQueryToRequest(input: string | URL | Request, query?: OpenAICompletionsQuery): string | URL | Request {
+	if (!query) return input;
+	const url = appendRawQuery(input instanceof Request ? input.url : String(input), query);
+	if (input instanceof Request) return new Request(url, input as unknown as RequestInit);
+	return url;
 }
 
 /**
@@ -427,8 +502,6 @@ function getTrailingPartialDeepseekToken(text: string): string {
 	return tail;
 }
 
-const ALIBABA_TOKEN_PLAN_FIRST_EVENT_TIMEOUT_MS = 300_000;
-
 const OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE =
 	"OpenAI completions stream timed out while waiting for the first event";
 
@@ -442,21 +515,23 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 	(async () => {
 		const startTime = Date.now();
 		let firstTokenTime: number | undefined;
+		let streamConnected = false;
 		let getCapturedErrorResponse: (() => CapturedHttpErrorResponse | undefined) | undefined;
 
 		const output: AssistantMessage = createInitialResponsesAssistantMessage(model.api, model.provider, model.id);
 		let rawRequestDump: RawHttpRequestDump | undefined;
 		const abortTracker = createAbortSourceTracker(options?.signal);
-		const firstEventTimeoutAbortError = new Error(OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE);
 		const { requestAbortController, requestSignal } = abortTracker;
 
 		try {
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-			const idleTimeoutMs = getOpenAIStreamIdleTimeoutMs();
+			const idleTimeoutMs = options?.streamIdleTimeoutMs ?? getOpenAIStreamIdleTimeoutMs();
 			const {
 				client,
 				copilotPremiumRequests,
 				baseUrl,
+				requestBaseUrl,
+				requestQuery,
 				requestHeaders,
 				getCapturedErrorResponse: captureErrorResponse,
 				clearCapturedErrorResponse,
@@ -473,6 +548,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				options?.requestMaxRetries,
 				options?.sessionId,
 				options?.maxRetryDelayMs,
+				options?.attemptScope,
 			);
 			const premiumRequestsTotal = copilotPremiumRequests;
 			getCapturedErrorResponse = captureErrorResponse;
@@ -495,13 +571,13 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 					effectiveToolStrictModeOverride,
 				);
 				appliedToolStrictMode = toolStrictMode;
-				options?.onPayload?.(params);
+				options?.onPayload?.(params, undefined, options?.attemptScope);
 				rawRequestDump = {
 					provider: model.provider,
 					api: output.api,
 					model: model.id,
 					method: "POST",
-					url: `${baseUrl}/chat/completions`,
+					url: buildRequestUrl(requestBaseUrl, "chat/completions", requestQuery),
 					headers: requestHeaders,
 					body: params,
 				};
@@ -565,14 +641,10 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 					openaiStream = await createCompletionsStream("none");
 				}
 			}
-			const firstEventFallbackMs =
-				model.provider === "alibaba-token-plan"
-					? ALIBABA_TOKEN_PLAN_FIRST_EVENT_TIMEOUT_MS
-					: getProviderFirstEventTimeoutFallbackMs(model.provider);
-			const firstEventWatchdog = createWatchdog(
-				options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs, firstEventFallbackMs),
-				() => abortTracker.abortLocally(firstEventTimeoutAbortError),
-			);
+			streamConnected = true;
+			const firstEventFallbackMs = getProviderFirstEventTimeoutFallbackMs(model.provider);
+			const firstEventTimeoutMs =
+				options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs, firstEventFallbackMs);
 			if (premiumRequestsTotal !== undefined) {
 				output.usage.premiumRequests = premiumRequestsTotal;
 			}
@@ -759,10 +831,12 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			};
 
 			for await (const chunk of iterateWithIdleTimeout(openaiStream, {
-				watchdog: firstEventWatchdog,
+				firstItemTimeoutMs: firstEventTimeoutMs,
+				firstItemErrorMessage: OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE,
 				idleTimeoutMs,
 				errorMessage: "OpenAI completions stream stalled while waiting for the next event",
 				onIdle: () => requestAbortController.abort(),
+				onFirstItemTimeout: () => requestAbortController.abort(),
 				abortSignal: options?.signal,
 				isProgressItem: isOpenAICompletionsProgressChunk,
 			})) {
@@ -973,18 +1047,26 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			stream.end();
 		} catch (error) {
 			for (const block of output.content) delete (block as any).index;
-			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
+			const localAbortReason = abortTracker.getLocalAbortReason();
+			const normalizedError =
+				!streamConnected && model.provider === "alibaba-token-plan" && error instanceof APIConnectionTimeoutError
+					? new FirstEventTimeoutError(OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE)
+					: error;
 			const capturedErrorResponse = getCapturedErrorResponse?.();
 			output.stopReason = abortTracker.wasCallerAbort() ? "aborted" : "error";
-			output.errorStatus = extractHttpStatusFromError(error) ?? capturedErrorResponse?.status;
-			output.transportFailure = transportFailureFacts(error, capturedErrorResponse);
+			output.errorStatus =
+				extractHttpStatusFromError(localAbortReason ?? normalizedError) ??
+				(localAbortReason ? undefined : capturedErrorResponse?.status);
+			output.transportFailure = localAbortReason
+				? transportFailureFacts(localAbortReason)
+				: transportFailureFacts(normalizedError, capturedErrorResponse);
 			output.errorMessage =
-				firstEventTimeoutError?.message ??
-				(await finalizeErrorMessage(error, rawRequestDump, capturedErrorResponse));
+				localAbortReason?.message ??
+				(await finalizeErrorMessage(normalizedError, rawRequestDump, capturedErrorResponse));
 			// Some providers via OpenRouter include extra details here.
-			const rawMetadata = (error as { error?: { metadata?: { raw?: string } } })?.error?.metadata?.raw;
+			const rawMetadata = (normalizedError as { error?: { metadata?: { raw?: string } } })?.error?.metadata?.raw;
 			if (rawMetadata) output.errorMessage += `\n${rawMetadata}`;
-			output.errorMessage = rewriteCopilotError(output.errorMessage, error, model.provider);
+			output.errorMessage = rewriteCopilotError(output.errorMessage, normalizedError, model.provider);
 			if (hasContentFilterSafetyCode(capturedErrorResponse)) {
 				output.errorKind = "provider_safety_stop";
 			}
@@ -1011,10 +1093,13 @@ async function createClient(
 	requestMaxRetries?: number,
 	sessionId?: string,
 	maxRetryDelayMs?: number,
+	attemptScope?: import("../types.js").AttemptScopeRef,
 ): Promise<{
 	client: OpenAI;
 	copilotPremiumRequests: number | undefined;
 	baseUrl: string | undefined;
+	requestBaseUrl: string | undefined;
+	requestQuery: OpenAICompletionsQuery | undefined;
 	requestHeaders: Record<string, string>;
 	getCapturedErrorResponse: () => CapturedHttpErrorResponse | undefined;
 	clearCapturedErrorResponse: () => void;
@@ -1060,6 +1145,14 @@ async function createClient(
 	if (model.provider === "kimi-code") {
 		headers = { ...getKimiCommonHeaders(), ...headers };
 	}
+	if (model.provider === "alibaba-token-plan") {
+		// Emit Qwen Code's canonical DashScope request fingerprint (User-Agent /
+		// X-DashScope-CacheControl / X-DashScope-UserAgent / X-DashScope-AuthType)
+		// so DashScope treats the caller identically to upstream QwenLM/qwen-code.
+		// Canonical identity is the base; caller headers win per key (upstream
+		// `{...default, ...customHeaders}`). #3557.
+		headers = mergeDashScopeTokenPlanHeaders(headers);
+	}
 	headers = applyOpenAIRequestTransformHeaders(headers, model.requestTransform, `Gajae-Code/${packageJson.version}`);
 	let copilotPremiumRequests: number | undefined;
 
@@ -1081,19 +1174,29 @@ async function createClient(
 	}
 	// Azure OpenAI requires /deployments/{id}/chat/completions?api-version=YYYY-MM-DD.
 	// The generic openai-completions path adds neither, producing silent 404s.
-	let azureDefaultQuery: Record<string, string> | undefined;
+	let azureQuery: OpenAICompletionsQuery | undefined;
 	if (baseUrl?.includes(".openai.azure.com")) {
-		const apiVersion = $env.AZURE_OPENAI_API_VERSION || "2024-10-21";
 		if (!baseUrl.includes("/deployments/")) {
-			baseUrl = `${baseUrl}/deployments/${model.id}`;
+			baseUrl = appendUrlPath(baseUrl, `deployments/${model.id}`) ?? baseUrl;
 		}
-		azureDefaultQuery = { "api-version": apiVersion };
 	}
+	const { baseUrl: clientBaseUrl, query: endpointQuery } = splitBaseUrlQuery(baseUrl);
+	if (baseUrl?.includes(".openai.azure.com") && !hasQueryParameter(endpointQuery, "api-version")) {
+		azureQuery = new URLSearchParams({
+			"api-version": $env.AZURE_OPENAI_API_VERSION || "2024-10-21",
+		}).toString();
+	}
+	const endpointRequestQuery = endpointQuery;
+	const requestQuery =
+		[endpointRequestQuery, azureQuery].filter((query): query is string => query !== undefined).join("&") || undefined;
 	let capturedErrorResponse: CapturedHttpErrorResponse | undefined;
 	const baseFetch = fetchOverride ?? fetch;
 	const wrappedFetch = Object.assign(
 		async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-			const response = await baseFetch(input, init);
+			const response = await baseFetch(
+				appendQueryToRequest(appendQueryToRequest(input, endpointRequestQuery), azureQuery),
+				init,
+			);
 			if (response.ok) {
 				capturedErrorResponse = undefined;
 				return response;
@@ -1125,40 +1228,27 @@ async function createClient(
 		`Gajae-Code/${packageJson.version}`,
 	);
 	const debugFetch = onSseEvent
-		? wrapFetchForSseDebug(transformedFetch, event => onSseEvent(event, model))
+		? wrapFetchForSseDebug(transformedFetch, event => onSseEvent(event, model, attemptScope))
 		: transformedFetch;
 	// Bound HTTP request timeout to roughly the first-event watchdog window.
 	// The OpenAI SDK's default is 10 minutes per attempt × `maxRetries`, which
 	// turns a stalled-before-headers fetch into a multi-minute hang invisible
 	// to the agent loop (the iterator watchdog only arms AFTER `create()` returns).
-	// Using the first-event timeout keeps both layers aligned: the SDK gives up
-	// before the agent watchdog would have, surfacing a real error to the catch
-	// in the IIFE.
-	// A caller may raise `StreamOptions.streamFirstEventTimeoutMs` for a slow-
-	// before-headers provider; respect it so the SDK doesn't give up before the
-	// wrapping watchdog arms. An explicit `0` disables the first-event watchdog,
-	// and the SDK treats `timeout: 0` as an immediate timeout, so do not pass a
-	// request timeout in that case.
-	const envSdkTimeoutMs = getStreamFirstEventTimeoutMs(getOpenAIStreamIdleTimeoutMs());
-	const sdkTimeoutMs =
-		streamFirstEventTimeoutOverride === 0
-			? undefined
-			: streamFirstEventTimeoutOverride !== undefined
-				? Math.max(envSdkTimeoutMs ?? 0, streamFirstEventTimeoutOverride)
-				: envSdkTimeoutMs;
+	const sdkTimeoutMs = resolveOpenAISdkRequestTimeoutMs(model.provider, streamFirstEventTimeoutOverride);
 	return {
 		client: new OpenAI({
 			apiKey,
-			baseURL: baseUrl,
+			baseURL: clientBaseUrl,
 			dangerouslyAllowBrowser: true,
 			maxRetries: resolveRetryBudget(requestMaxRetries, 5),
 			defaultHeaders: headers,
-			defaultQuery: azureDefaultQuery,
 			fetch: debugFetch,
 			...(sdkTimeoutMs !== undefined ? { timeout: sdkTimeoutMs } : {}),
 		}),
 		copilotPremiumRequests,
 		baseUrl,
+		requestBaseUrl: clientBaseUrl,
+		requestQuery,
 		requestHeaders: headers,
 		getCapturedErrorResponse: () => capturedErrorResponse,
 		clearCapturedErrorResponse: () => {

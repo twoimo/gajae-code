@@ -16,6 +16,8 @@ export type NativePublishOperation = "direct_rename" | "retained_file" | "retain
 
 export type NativePublishPrimitive =
 	| "renameat2_noreplace"
+	| "linkat_noreplace"
+	| "mkdirat_renameat_noreplace"
 	| "renameatx_np_excl"
 	| "windows_rename_noreplace"
 	| "unsupported"
@@ -24,6 +26,7 @@ export type NativePublishPhase =
 	| "preflight"
 	| "file_sync"
 	| "rename"
+	| "source_unlink"
 	| "source_parent_sync"
 	| "destination_parent_sync"
 	| "terminal_identity"
@@ -48,6 +51,7 @@ export type NativePublishIdentity = {
 	readonly dev: string;
 	readonly ino: string;
 	readonly size: string;
+	readonly nlink?: string;
 	readonly mtimeNs: string;
 	readonly ctimeNs: string;
 	readonly sha256?: string;
@@ -82,6 +86,8 @@ const reasons = new Set<NativePublishReason>([
 ]);
 const primitives = new Set<NativePublishPrimitive>([
 	"renameat2_noreplace",
+	"linkat_noreplace",
+	"mkdirat_renameat_noreplace",
 	"renameatx_np_excl",
 	"windows_rename_noreplace",
 	"unsupported",
@@ -91,6 +97,7 @@ const phases = new Set<NativePublishPhase>([
 	"preflight",
 	"file_sync",
 	"rename",
+	"source_unlink",
 	"source_parent_sync",
 	"destination_parent_sync",
 	"terminal_identity",
@@ -126,12 +133,13 @@ const malformed: NativePublishOutcome = Object.freeze({
 
 function validIdentity(value: unknown): boolean {
 	if (value === undefined) return true;
-	if (!ownPlainRecord(value) || !exactKeys(value, ["dev", "ino", "size", "mtimeNs", "ctimeNs", "sha256"]))
+	if (!ownPlainRecord(value) || !exactKeys(value, ["dev", "ino", "nlink", "size", "mtimeNs", "ctimeNs", "sha256"]))
 		return false;
 	const decimal = (field: unknown) => typeof field === "string" && /^-?[0-9]{1,32}$/.test(field);
 	return (
 		decimal(value.dev) &&
 		decimal(value.ino) &&
+		(value.nlink === undefined || decimal(value.nlink)) &&
 		decimal(value.size) &&
 		decimal(value.mtimeNs) &&
 		decimal(value.ctimeNs) &&
@@ -171,9 +179,14 @@ function legalOutcome(outcome: NativePublishOutcome): boolean {
 			outcome.durabilityState === "not_attempted" &&
 			preMutationReasons.has(outcome.reason) &&
 			((outcome.phase === "rename" &&
-				["destination_exists", "atomic_unavailable", "cross_device", "permission_denied", "io_failure"].includes(
-					outcome.reason,
-				)) ||
+				[
+					"destination_exists",
+					"atomic_unavailable",
+					"cross_device",
+					"permission_denied",
+					"io_failure",
+					"interrupted",
+				].includes(outcome.reason)) ||
 				(outcome.phase === "preflight" &&
 					!["atomic_unavailable", "cross_device", "interrupted"].includes(outcome.reason)) ||
 				(outcome.phase === "file_sync" && outcome.reason === "io_failure"))
@@ -197,7 +210,7 @@ function legalOutcome(outcome: NativePublishOutcome): boolean {
 		((outcome.reason === "durability_not_provable" &&
 			["file_sync", "source_parent_sync", "destination_parent_sync"].includes(outcome.phase)) ||
 			(outcome.reason === "identity_violation" && outcome.phase === "terminal_identity") ||
-			(outcome.reason === "io_failure" && outcome.phase === "terminal_identity"))
+			(outcome.reason === "io_failure" && ["source_unlink", "terminal_identity"].includes(outcome.phase)))
 	);
 }
 
@@ -240,8 +253,12 @@ export function classifyNativePublishOutcome(
 	const outcome = value as unknown as NativePublishOutcome;
 	if (!legalOutcome(outcome)) return malformed;
 	if (operation === "direct_rename") return outcome;
+	const retainedPrimitiveValid =
+		operation === "retained_file"
+			? outcome.primitive === "renameat2_noreplace" || outcome.primitive === "linkat_noreplace"
+			: outcome.primitive === "renameat2_noreplace" || outcome.primitive === "mkdirat_renameat_noreplace";
 	if (
-		outcome.primitive !== "renameat2_noreplace" ||
+		!retainedPrimitiveValid ||
 		(outcome.ok && (!outcome.identity || outcome.durabilityState !== "proven" || outcome.phase !== "complete"))
 	)
 		return malformed;

@@ -9,6 +9,7 @@ import {
 	buildAnthropicClientOptions,
 	buildAnthropicHeaders,
 	buildAnthropicSystemBlocks,
+	claudeCodeEntrypoint,
 	claudeCodeVersion,
 	generateClaudeCloakingUserId,
 	isClaudeCloakingUserId,
@@ -115,6 +116,13 @@ describe("Anthropic request fingerprint alignment", () => {
 			extraInstructions: ["Use citations when possible"],
 			cacheControl: { type: "ephemeral" },
 		});
+
+		const billingHeader = blocks?.[0]?.text;
+		expect(billingHeader).toMatch(
+			new RegExp(
+				`^x-anthropic-billing-header: cc_version=${claudeCodeVersion}\\.[0-9a-f]{3}; cc_entrypoint=${claudeCodeEntrypoint}; cch=[0-9a-f]{5};$`,
+			),
+		);
 
 		expect(blocks).toBeDefined();
 		// Earlier blocks must NOT carry cache_control; a single trailing breakpoint covers them all.
@@ -1135,6 +1143,35 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.top_k).toBeUndefined();
 		expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
 		expect(payload.output_config).toEqual({ effort: "high" });
+	});
+
+	// A single-component alias (`claude-opus-5`) and its dated snapshot describe the
+	// same API generation. The provider-local `claude-opus-(\d+)-(\d+)` regex matched
+	// only the dated form, so the alias silently sent adaptive thinking WITHOUT
+	// `display` (and picked up the interleaved-thinking beta), producing a thinking
+	// shape the model was never asked for.
+	it("requests summarized adaptive thinking for single-component Opus aliases", async () => {
+		for (const id of ["claude-opus-5", "claude-opus-5-20260101"]) {
+			const payload = (await captureAnthropicPayload(
+				{
+					...ANTHROPIC_MODEL,
+					id,
+					name: id,
+					thinking: {
+						mode: "anthropic-adaptive",
+						minLevel: Effort.Minimal,
+						maxLevel: Effort.Max,
+					},
+				},
+				{
+					systemPrompt: ["Stay concise."],
+					messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+				},
+				{ thinkingEnabled: true, reasoning: Effort.High },
+			)) as { thinking?: { type?: string; display?: string } };
+
+			expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		}
 	});
 
 	it("requests summarized adaptive thinking for Fable 5 (issue #2791)", async () => {

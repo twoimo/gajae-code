@@ -16,7 +16,7 @@ import type {
 } from "../../daemon/control-types";
 import { resolveGjcRuntimeSpawnInfo } from "../../daemon/runtime";
 import { isProcessIncarnation, processIncarnation } from "../broker/process-incarnation";
-import { getNotificationConfig, isDiscordConfigured, isSlackConfigured } from "./config";
+import { getNotificationConfig, isDiscordComplete, isProviderEffectivelyEnabled, isSlackComplete } from "./config";
 
 export type ChatDaemonKind = "discord" | "slack";
 export type ChatDaemonAction = "stop" | "reload";
@@ -34,11 +34,32 @@ export type ChatDaemonAction = "stop" | "reload";
  * concrete detached quarantine plus a proven-absent canonical lock pathname —
  * when deleting an observed owner-lock lease. Generation 12 refreshes retained
  * native path and process authority semantics. Generation 13 rejects special
- * files before retained native authority opens.
+ * files before retained native authority opens. Generation 14 reloads shared
+ * chat daemons after notification configuration parsing changes. Generation 15
+ * applies the current notification configuration directly when starting chat
+ * daemon transports. Generation 16 applies Telegram sound-policy configuration
+ * through shared notification parsing. Generation 17 bound managed-session
+ * replacement to exact native filesystem authority; generation 18 retired that
+ * binding, and generation 19 binds exact cleanup to parent/link-count authority
+ * while also adding durable provider-intent admission without changing lifecycle
+ * behavior. Generation 20 discovers isolated chat-only session endpoints when
+ * Telegram identity ownership is blocked. Discord generation 21 applies rustfmt
+ * and clippy-equivalent cleanup to the pi-shell process-tree authority (#3682).
+ * Discord generation 22 / slack generation 21 refreshes retained cleanup
+ * semantics; discord generation 23 / slack generation 22 hardens exact Bash
+ * process-tree ownership shared by chat daemon cleanup.
+ * Discord generation 24 / slack generation 23 apply provider-completeness and
+ * effective-enable admission to chat daemon lifecycle controls. Discord
+ * generation 25 / slack generation 24 apply identity-bound exact replacement
+ * cleanup shared by managed-session and daemon filesystem authority. Discord
+ * generation 26 / slack generation 25 add the in-place operator command channel:
+ * an owner serves per-request commands inside its own serving loop and answers
+ * them against an exact owner tuple, so an owner at an earlier generation may
+ * not serve or answer a request captured against this contract.
  */
 export const CHAT_DAEMON_GENERATIONS: Readonly<Record<ChatDaemonKind, number>> = {
-	discord: 13,
-	slack: 13,
+	discord: 26,
+	slack: 25,
 };
 
 export function chatDaemonGeneration(kind: ChatDaemonKind): number {
@@ -238,6 +259,9 @@ interface ChatDaemonOwnerLockLease {
 	ino: bigint;
 	size: bigint;
 	mtimeNs: bigint;
+	nlink: bigint;
+	parentDev: bigint;
+	parentIno: bigint;
 	sha256: string;
 }
 
@@ -259,10 +283,19 @@ export function chatDaemonPaths(
 	};
 }
 
+/**
+ * Configuration fingerprint that identifies which settings a daemon owner was
+ * started for. `undefined` means the current settings cannot configure that
+ * transport at all, so no owner can be authorized against them.
+ */
+export function chatDaemonIdentity(settings: Settings, kind: ChatDaemonKind): string | undefined {
+	return identityFor(settings, kind);
+}
+
 function identityFor(settings: Settings, kind: ChatDaemonKind): string | undefined {
 	const cfg = getNotificationConfig(settings);
 	if (kind === "discord") {
-		if (!isDiscordConfigured(cfg)) return undefined;
+		if (!isDiscordComplete(cfg)) return undefined;
 		return fingerprint([
 			cfg.discord.botToken,
 			cfg.discord.applicationId,
@@ -272,7 +305,7 @@ function identityFor(settings: Settings, kind: ChatDaemonKind): string | undefin
 			cfg.verbosity,
 		]);
 	}
-	if (!isSlackConfigured(cfg)) return undefined;
+	if (!isSlackComplete(cfg)) return undefined;
 	return fingerprint([
 		cfg.slack.botToken,
 		cfg.slack.appToken,
@@ -417,6 +450,9 @@ export class ChatDaemonController implements BuiltInDaemonController {
 	private identity(): string | undefined {
 		return identityFor(this.settings, this.kind);
 	}
+	private effectivelyEnabled(): boolean {
+		return isProviderEffectivelyEnabled(getNotificationConfig(this.settings), this.kind);
+	}
 	private alive(pid: number): boolean {
 		return (this.deps.pidAlive ?? defaultPidAlive)(pid);
 	}
@@ -444,6 +480,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		return await this.operate("reload", opts);
 	}
 	async ensure(): Promise<EnsureChatDaemonResult> {
+		if (!this.effectivelyEnabled()) return "disabled";
 		const identity = this.identity();
 		if (!identity) return "disabled";
 		const existing = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
@@ -476,6 +513,9 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		const warnings = before.runtime.warning ? [before.runtime.warning] : [];
 		if (!before.configured)
 			return this.result(action, false, `${this.kind} notifications are not configured`, before, before, warnings);
+		if (action === "reload" && !this.effectivelyEnabled()) {
+			return this.result(action, false, `${this.kind} notifications are not enabled`, before, before, warnings);
+		}
 		const state = await readChatDaemonState(this.settings.getAgentDir(), this.kind);
 		const classification = this.classify(state, this.identity());
 		if (classification === "newer")
@@ -511,6 +551,8 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			}
 			if (opts.spawnIfStopped === false)
 				return this.result(action, true, `no running ${this.kind} daemon to reload`, before, before, warnings);
+			if (!this.effectivelyEnabled())
+				return this.result(action, false, `${this.kind} notifications are not enabled`, before, before, warnings);
 			const spawned = await this.spawn();
 			return this.result(
 				action,
@@ -564,6 +606,15 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		await clearChatDaemonControlRequest(this.settings.getAgentDir(), this.kind, requestId);
 		if (action === "stop")
 			return this.result(action, true, `stopped ${this.kind} daemon`, before, await this.status(), warnings);
+		if (!this.effectivelyEnabled())
+			return this.result(
+				action,
+				false,
+				`${this.kind} notifications are not enabled`,
+				before,
+				await this.status(),
+				warnings,
+			);
 		const spawned = await this.spawn();
 		return this.result(
 			action,
@@ -741,6 +792,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 		return this.deps.sleep ? this.deps.sleep(ms) : new Promise(resolve => setTimeout(resolve, ms));
 	}
 	private async spawn(): Promise<boolean> {
+		if (!this.effectivelyEnabled()) return false;
 		const identity = this.identity();
 		if (!identity) return false;
 		const paths = chatDaemonPaths(this.settings.getAgentDir(), this.kind);
@@ -757,6 +809,7 @@ export class ChatDaemonController implements BuiltInDaemonController {
 			agentDir: this.settings.getAgentDir(),
 			execPath: this.deps.execPath,
 		});
+		if (!this.effectivelyEnabled() || this.identity() !== identity) return false;
 		(this.deps.spawn ?? ((command, args, opts) => childProcessSpawn(command, args, opts)))(command, args, {
 			detached: true,
 			stdio: "ignore",
@@ -885,6 +938,7 @@ async function createChatDaemonOwnerLock(
 			if (isAlreadyExists(error)) return undefined;
 			throw error;
 		}
+		await fs.promises.unlink(temporary);
 		return await captureChatDaemonOwnerLockLease(lock);
 	} finally {
 		await fs.promises.unlink(temporary).catch(() => undefined);
@@ -896,14 +950,22 @@ async function captureChatDaemonOwnerLockLease(lock: string): Promise<ChatDaemon
 		const handle = await fs.promises.open(lock, "r");
 		try {
 			const before = await handle.stat({ bigint: true });
+			const parentBefore = await fs.promises.lstat(path.dirname(lock), { bigint: true });
 			if (!before.isFile()) return undefined;
 			const content = await handle.readFile({ encoding: "utf8" });
 			const after = await handle.stat({ bigint: true });
 			const pathname = await fs.promises.lstat(lock, { bigint: true });
+			const parentAfter = await fs.promises.lstat(path.dirname(lock), { bigint: true });
 			if (
 				!after.isFile() ||
 				!pathname.isFile() ||
 				pathname.isSymbolicLink() ||
+				before.nlink !== 1n ||
+				pathname.nlink !== 1n ||
+				!parentBefore.isDirectory() ||
+				parentBefore.isSymbolicLink() ||
+				parentBefore.dev !== parentAfter.dev ||
+				parentBefore.ino !== parentAfter.ino ||
 				before.dev !== after.dev ||
 				before.ino !== after.ino ||
 				before.size !== after.size ||
@@ -920,6 +982,9 @@ async function captureChatDaemonOwnerLockLease(lock: string): Promise<ChatDaemon
 				ino: before.ino,
 				size: before.size,
 				mtimeNs: before.mtimeNs,
+				nlink: before.nlink,
+				parentDev: parentBefore.dev,
+				parentIno: parentBefore.ino,
 				sha256: crypto.createHash("sha256").update(content).digest("hex"),
 			};
 		} finally {
@@ -937,6 +1002,9 @@ async function ownsChatDaemonOwnerLock(lock: string, lease: ChatDaemonOwnerLockL
 		current.ino === lease.ino &&
 		current.size === lease.size &&
 		current.mtimeNs === lease.mtimeNs &&
+		current.nlink === lease.nlink &&
+		current.parentDev === lease.parentDev &&
+		current.parentIno === lease.parentIno &&
 		current.content === lease.content
 	);
 }
@@ -945,7 +1013,14 @@ async function ownsChatDaemonOwnerLock(lock: string, lease: ChatDaemonOwnerLockL
 function unlinkExactChatDaemonOwnerLock(lock: string, lease: ChatDaemonOwnerLockLease): boolean {
 	try {
 		const removed = native.exactUnlink(lock, {
-			...lease,
+			dev: lease.dev,
+			ino: lease.ino,
+			size: lease.size,
+			mtimeNs: lease.mtimeNs,
+			nlink: lease.nlink,
+			parentDev: lease.parentDev,
+			parentIno: lease.parentIno,
+			sha256: lease.sha256,
 			quarantineName: `.gjc-delete-chat-daemon-lock-${crypto.randomUUID()}`,
 		});
 		if (removed.ok) return true;

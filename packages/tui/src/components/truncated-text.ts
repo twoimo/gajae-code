@@ -21,9 +21,10 @@ export class TruncatedText implements Component {
 
 	render(width: number): string[] {
 		const result: string[] = [];
+		const safeWidth = Math.max(0, Math.trunc(width));
 
 		// Empty line padded to width
-		const emptyLine = padding(width);
+		const emptyLine = padding(safeWidth);
 
 		// Add vertical padding above
 		for (let i = 0; i < this.#paddingY; i++) {
@@ -31,7 +32,11 @@ export class TruncatedText implements Component {
 		}
 
 		// Calculate available width after horizontal padding
-		const availableWidth = Math.max(1, width - this.#paddingX * 2);
+		const horizontalPadding = Math.max(
+			0,
+			Math.min(Math.trunc(this.#paddingX), Math.floor(Math.max(0, safeWidth - 1) / 2)),
+		);
+		const availableWidth = safeWidth - horizontalPadding * 2;
 
 		// Take only the first line (stop at newline)
 		let singleLineText = this.#text;
@@ -44,8 +49,8 @@ export class TruncatedText implements Component {
 		const displayText = truncateToWidth(singleLineText, availableWidth);
 
 		// Add horizontal padding
-		const leftPadding = padding(this.#paddingX);
-		const rightPadding = padding(this.#paddingX);
+		const leftPadding = padding(horizontalPadding);
+		const rightPadding = padding(horizontalPadding);
 		const lineWithPadding = leftPadding + displayText + rightPadding;
 
 		// Don't pad to full width - avoids trailing spaces when copying

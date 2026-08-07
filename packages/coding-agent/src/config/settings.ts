@@ -13,6 +13,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as util from "node:util";
 import {
 	getAgentDbPath,
 	getAgentDir,
@@ -42,6 +43,7 @@ import {
 	atomicYamlPathHash,
 	type CasReceipt,
 	deleteByPath,
+	enqueueAtomicYamlOperation,
 	reserveAtomicYamlUpdateSlot,
 	setByPath,
 } from "./atomic-yaml-patch";
@@ -96,7 +98,7 @@ type DurableBatchRevision = {
 };
 type NotificationValidationState = {
 	malformedConfigRoot: boolean;
-	invalidNotificationConfiguration: boolean;
+	invalidNotificationGlobal: boolean;
 	generation: number;
 };
 type NotificationValidationRestoreGuard = {
@@ -363,6 +365,7 @@ export class Settings implements NotificationSettingsReader {
 	/** Pending debounced ordinary save; its queue slot is reserved immediately. */
 	#saveTimer?: NodeJS.Timeout;
 	#savePromise?: Promise<void>;
+	#changeListeners = new Set<(path: SettingPath) => void>();
 	#pendingSaveSlot?: PendingSaveSlot;
 
 	/** Legacy fallback migration warnings emitted once per settings instance. */
@@ -373,7 +376,9 @@ export class Settings implements NotificationSettingsReader {
 	/** A newer config schema must never be rewritten by legacy migrations. */
 	#futureSchemaVersion = false;
 	#hasMalformedConfigRoot = false;
-	#hasInvalidNotificationConfiguration = false;
+	/** YAML syntax was unrecoverable, so the loaded defaults are read-only until config.yml is repaired. */
+	#hasRecoveredConfigSyntax = false;
+	#hasInvalidNotificationGlobal = false;
 	#notificationValidationGeneration = 0;
 	/** Notification subtree fingerprint from the last raw durable config read. */
 	#durableNotificationFingerprint: string | undefined;
@@ -384,7 +389,7 @@ export class Settings implements NotificationSettingsReader {
 	private constructor(options: SettingsOptions = {}) {
 		this.#cwd = path.normalize(options.cwd ?? getProjectDir());
 		this.#agentDir = path.normalize(options.agentDir ?? getAgentDir());
-		this.#configPath = options.inMemory ? null : path.join(this.#agentDir, "config.yml");
+		this.#configPath = options.inMemory ? null : path.resolve(this.#agentDir, "config.yml");
 		this.#persist = !options.inMemory;
 
 		if (options.overrides) {
@@ -508,7 +513,7 @@ export class Settings implements NotificationSettingsReader {
 	 */
 	getNotificationSettingsSnapshot(): NotificationSettingsSnapshot {
 		return parseNotificationSettingsSnapshot(
-			this.#hasMalformedConfigRoot || this.#hasInvalidNotificationConfiguration ? null : this.#global,
+			this.#hasMalformedConfigRoot || this.#hasInvalidNotificationGlobal ? null : this.#rawNotificationConfig,
 		);
 	}
 
@@ -522,6 +527,16 @@ export class Settings implements NotificationSettingsReader {
 		return structuredClone(this.#schemaReport);
 	}
 
+	onChanged(listener: (path: SettingPath) => void): () => void {
+		this.#changeListeners.add(listener);
+		return () => this.#changeListeners.delete(listener);
+	}
+
+	/** Whether durable settings mutations are permitted for the loaded configuration. */
+	canWriteDurableConfig(): boolean {
+		return !this.#persist || !this.#hasRecoveredConfigSyntax;
+	}
+
 	/**
 	 * Set a setting value (sync).
 	 * Updates global settings and reserves its background persistence slot before
@@ -532,6 +547,7 @@ export class Settings implements NotificationSettingsReader {
 			this.unset(path);
 			return;
 		}
+		this.#assertDurableConfigWritable();
 		this.#set(path, value, true);
 	}
 
@@ -555,6 +571,7 @@ export class Settings implements NotificationSettingsReader {
 
 		const hook = SETTING_HOOKS[path];
 		if (hook) hook(value, prev);
+		for (const listener of this.#changeListeners) listener(path);
 	}
 
 	/**
@@ -562,6 +579,7 @@ export class Settings implements NotificationSettingsReader {
 	 * `undefined` value. Defaults/project settings become visible immediately.
 	 */
 	unset<P extends SettingPath>(path: P): void {
+		this.#assertDurableConfigWritable();
 		const prev = this.get(path);
 		const patch: SettingsPatch = {
 			path,
@@ -579,6 +597,7 @@ export class Settings implements NotificationSettingsReader {
 
 		const hook = SETTING_HOOKS[path];
 		if (hook) hook(this.get(path), prev);
+		for (const listener of this.#changeListeners) listener(path);
 	}
 
 	/**
@@ -586,6 +605,7 @@ export class Settings implements NotificationSettingsReader {
 	 * {@link set}, canonical state and hooks change only after the rename succeeds.
 	 */
 	async commitAtomicBatch(patches: readonly SettingsAtomicPatch[]): Promise<CasReceipt> {
+		this.#assertDurableConfigWritable();
 		if (!this.#persist || !this.#configPath) {
 			const notificationValidationGuard = this.#notificationValidationRestoreGuard();
 			const changes = new Map<string, { before: unknown; beforeHash: string; afterHash: string }>();
@@ -686,13 +706,16 @@ export class Settings implements NotificationSettingsReader {
 		}));
 		for (const entry of revisions) this.#pathRevisions.set(entry.patch.path, entry.revision);
 
+		const commit = applyAtomicYamlPatches(this.#configPath, durablePatches, {
+			validateRoot: (root, currentPatches) =>
+				this.#rejectAtomicNotificationRepairForMalformedRoot(currentPatches, root),
+			onRestored: restoredPatches =>
+				this.#applyRestoredDurableBatch(revisions, restoredPatches, notificationValidationGuard),
+		});
+		const failureRefresh = this.#reserveAtomicFailureRefresh(commit);
 		try {
-			const receipt = await applyAtomicYamlPatches(this.#configPath, durablePatches, {
-				validateRoot: (root, currentPatches) =>
-					this.#rejectAtomicNotificationRepairForMalformedRoot(currentPatches, root),
-				onRestored: restoredPatches =>
-					this.#applyRestoredDurableBatch(revisions, restoredPatches, notificationValidationGuard),
-			});
+			const receipt = await commit;
+			await failureRefresh;
 			const appliedNotificationMutation = this.#applyDurableBatch(revisions);
 			this.#recordNotificationValidationBatchApply(notificationValidationGuard, appliedNotificationMutation);
 			return receipt;
@@ -703,6 +726,7 @@ export class Settings implements NotificationSettingsReader {
 					else this.#pathRevisions.set(entry.patch.path, entry.previousRevision);
 				}
 			}
+			await failureRefresh;
 			if (this.#modified.size > 0 && !this.#pendingSaveSlot) this.#queueSave();
 			throw error;
 		}
@@ -714,6 +738,7 @@ export class Settings implements NotificationSettingsReader {
 			current: Readonly<RawSettings>,
 		) => Promise<readonly SettingsAtomicPatch[]> | readonly SettingsAtomicPatch[],
 	): Promise<CasReceipt> {
+		this.#assertDurableConfigWritable();
 		if (!this.#persist || !this.#configPath) {
 			const patches = await buildPatches(structuredClone(this.#global));
 			return this.commitAtomicBatch(patches);
@@ -722,38 +747,41 @@ export class Settings implements NotificationSettingsReader {
 		this.#releasePendingSaveSlot();
 		let revisions: DurableBatchRevision[] = [];
 		const notificationValidationGuard = this.#notificationValidationRestoreGuard();
+		const commit = applyAtomicYamlPatchesWithCurrent(
+			this.#configPath,
+			async current => {
+				const patches = await buildPatches(structuredClone(current));
+				const durablePatches: AtomicYamlPatch[] = patches.map(patch => {
+					if (!isAtomicSettingsPath(patch.path)) {
+						throw new Error(`Unknown setting path for atomic batch: ${patch.path}`);
+					}
+					if (patch.op === "unset") return { path: patch.path, op: "unset" };
+					if (patch.value === undefined) {
+						throw new TypeError(
+							`Settings set patch for ${patch.path} cannot carry undefined; use unset instead.`,
+						);
+					}
+					return { path: patch.path, op: "set", value: structuredClone(patch.value) };
+				});
+				revisions = durablePatches.map(patch => ({
+					patch,
+					revision: ++this.#nextRevision,
+					previousRevision: this.#pathRevisions.get(patch.path),
+				}));
+				for (const entry of revisions) this.#pathRevisions.set(entry.patch.path, entry.revision);
+				return durablePatches;
+			},
+			{
+				validateRoot: (root, currentPatches) =>
+					this.#rejectAtomicNotificationRepairForMalformedRoot(currentPatches, root),
+				onRestored: restoredPatches =>
+					this.#applyRestoredDurableBatch(revisions, restoredPatches, notificationValidationGuard),
+			},
+		);
+		const failureRefresh = this.#reserveAtomicFailureRefresh(commit);
 		try {
-			const receipt = await applyAtomicYamlPatchesWithCurrent(
-				this.#configPath,
-				async current => {
-					const patches = await buildPatches(structuredClone(current));
-					const durablePatches: AtomicYamlPatch[] = patches.map(patch => {
-						if (!isAtomicSettingsPath(patch.path)) {
-							throw new Error(`Unknown setting path for atomic batch: ${patch.path}`);
-						}
-						if (patch.op === "unset") return { path: patch.path, op: "unset" };
-						if (patch.value === undefined) {
-							throw new TypeError(
-								`Settings set patch for ${patch.path} cannot carry undefined; use unset instead.`,
-							);
-						}
-						return { path: patch.path, op: "set", value: structuredClone(patch.value) };
-					});
-					revisions = durablePatches.map(patch => ({
-						patch,
-						revision: ++this.#nextRevision,
-						previousRevision: this.#pathRevisions.get(patch.path),
-					}));
-					for (const entry of revisions) this.#pathRevisions.set(entry.patch.path, entry.revision);
-					return durablePatches;
-				},
-				{
-					validateRoot: (root, currentPatches) =>
-						this.#rejectAtomicNotificationRepairForMalformedRoot(currentPatches, root),
-					onRestored: restoredPatches =>
-						this.#applyRestoredDurableBatch(revisions, restoredPatches, notificationValidationGuard),
-				},
-			);
+			const receipt = await commit;
+			await failureRefresh;
 			const appliedNotificationMutation = this.#applyDurableBatch(revisions);
 			this.#recordNotificationValidationBatchApply(notificationValidationGuard, appliedNotificationMutation);
 			return receipt;
@@ -764,6 +792,7 @@ export class Settings implements NotificationSettingsReader {
 					else this.#pathRevisions.set(entry.patch.path, entry.previousRevision);
 				}
 			}
+			await failureRefresh;
 			if (this.#modified.size > 0 && !this.#pendingSaveSlot) this.#queueSave();
 			throw error;
 		}
@@ -818,6 +847,15 @@ export class Settings implements NotificationSettingsReader {
 			}
 		}
 		await this.#refreshDurableSettings();
+		if (this.#modified.size > 0 && !this.#pendingSaveSlot) {
+			this.#queueSave();
+			this.#releasePendingSaveSlot();
+			try {
+				await this.#savePromise;
+			} catch {
+				// Keep dirty state for a later explicit flush or mutation.
+			}
+		}
 	}
 
 	/** Like {@link flush}, but reports a durable save failure to the caller. */
@@ -825,8 +863,20 @@ export class Settings implements NotificationSettingsReader {
 		this.#releasePendingSaveSlot();
 		if (this.#modified.size > 0 && !this.#pendingSaveSlot) this.#queueSave();
 		this.#releasePendingSaveSlot();
-		await this.#savePromise;
+		let saveError: unknown;
+		try {
+			await this.#savePromise;
+		} catch (error) {
+			saveError = error;
+		}
 		await this.#refreshDurableSettings();
+		if (this.#modified.size > 0 && !this.#pendingSaveSlot) {
+			this.#queueSave();
+			this.#releasePendingSaveSlot();
+			await this.#savePromise;
+			return;
+		}
+		if (saveError !== undefined) throw saveError;
 	}
 
 	async cloneForCwd(cwd: string): Promise<Settings> {
@@ -840,15 +890,23 @@ export class Settings implements NotificationSettingsReader {
 			inMemory: !this.#persist,
 		});
 		cloned.#storage = this.#storage;
+		cloned.#schemaReport = structuredClone(this.#schemaReport);
+		cloned.#schemaMigrationPending = this.#schemaMigrationPending;
 		cloned.#futureSchemaVersion = this.#futureSchemaVersion;
-
+		cloned.#hasMalformedConfigRoot = this.#hasMalformedConfigRoot;
+		cloned.#hasRecoveredConfigSyntax = this.#hasRecoveredConfigSyntax;
+		cloned.#hasInvalidNotificationGlobal = this.#hasInvalidNotificationGlobal;
+		cloned.#notificationValidationGeneration = this.#notificationValidationGeneration;
 		cloned.#global = structuredClone(this.#global);
 		cloned.#rawNotificationConfig = structuredClone(this.#rawNotificationConfig);
 		cloned.#durableRawNotificationConfig = structuredClone(this.#durableRawNotificationConfig);
 		cloned.#durableNotificationFingerprint = this.#durableNotificationFingerprint;
 		cloned.#project = this.#persist ? await cloned.#loadProjectSettings() : structuredClone(this.#project);
 		cloned.#overrides = structuredClone(this.#overrides);
-		await cloned.#normalizeAfterLoad();
+		if (cloned.#hasRecoveredConfigSyntax) {
+			cloned.#sanitizeModelSelectorRecords();
+			cloned.#rebuildMerged();
+		} else await cloned.#normalizeAfterLoad();
 		cloned.#fireAllHooks();
 		return cloned;
 	}
@@ -940,6 +998,7 @@ export class Settings implements NotificationSettingsReader {
 	}
 
 	setGlobalModelRole(role: ModelRole | string, modelId: ModelSelectorValue | undefined): void {
+		this.#assertDurableConfigWritable();
 		const revision = ++this.#nextRevision;
 		const patch: SettingsPatch = {
 			path: "modelRoles",
@@ -973,13 +1032,27 @@ export class Settings implements NotificationSettingsReader {
 	}
 
 	#replaceGlobalWithDurable(current: RawSettings): void {
+		const previous = new Map<SettingPath, unknown>();
+		for (const settingPath of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
+			previous.set(settingPath, structuredClone(this.get(settingPath)));
+		}
 		this.#global = current;
 		for (const patch of this.#pendingPatchesInGenerationOrder()) {
 			applySettingsPatch(this.#global, { ...patch, value: structuredClone(patch.value) });
-			this.#applyNotificationMutationToRaw(patch.path, patch.value);
+			if (this.#rawNotificationConfig !== undefined) {
+				this.#applyNotificationMutationToRaw(patch.path, patch.value);
+			}
 		}
 		this.#rebuildMerged();
 		this.#recomputeNotificationValidationFromRaw();
+		for (const settingPath of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
+			const previousValue = previous.get(settingPath);
+			const nextValue = this.get(settingPath);
+			if (util.isDeepStrictEqual(previousValue, nextValue)) continue;
+			const hook = SETTING_HOOKS[settingPath];
+			if (hook) hook(nextValue, previousValue);
+			for (const listener of this.#changeListeners) listener(settingPath);
+		}
 	}
 	/**
 	 * Set an agent model override while keeping any live runtime override aligned.
@@ -1073,60 +1146,97 @@ export class Settings implements NotificationSettingsReader {
 		}
 	}
 
-	async #loadYaml(filePath: string): Promise<RawSettings> {
+	#resetYamlLoadState(): void {
 		this.#hasMalformedConfigRoot = false;
-		this.#hasInvalidNotificationConfiguration = false;
+		this.#hasRecoveredConfigSyntax = false;
+		this.#hasInvalidNotificationGlobal = false;
+		this.#schemaReport = { issues: [], valid: true };
+		this.#schemaMigrationPending = false;
+		this.#futureSchemaVersion = false;
 		this.#captureRawNotificationConfig({});
-		try {
-			const content = await Bun.file(filePath).text();
-			const parsed = YAML.parse(content);
-			if (parsed === undefined) return {};
-			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-				this.#hasMalformedConfigRoot = true;
-				this.#captureRawNotificationConfig(undefined);
-				return {};
-			}
-			const parsedRaw = parsed as RawSettings;
-			if (filePath === this.#configPath) this.#captureRawNotificationConfig(parsedRaw);
-			if (filePath === this.#configPath) {
-				try {
-					parseNotificationSettingsSnapshot(parsedRaw);
-				} catch (error) {
-					if (!(error instanceof Error) || error.message !== "gjc_notify_daemon_invalid_configuration")
-						throw error;
-					this.#hasInvalidNotificationConfiguration = true;
-				}
-			}
-			this.#futureSchemaVersion =
-				filePath === this.#configPath &&
-				typeof parsedRaw.configSchemaVersion === "number" &&
-				parsedRaw.configSchemaVersion > CONFIG_SCHEMA_VERSION;
+	}
 
-			const configSchemaVersion = parsedRaw.configSchemaVersion;
-			if (
-				filePath === this.#configPath &&
-				(typeof configSchemaVersion !== "number" || configSchemaVersion < CONFIG_SCHEMA_VERSION)
-			) {
-				this.#schemaMigrationPending = true;
-			}
-			const migrated = this.#migrateRawSettings(parsedRaw);
-			const reconciled = reconcileSettingsSchema(migrated);
-			if (typeof configSchemaVersion === "number" && configSchemaVersion > CONFIG_SCHEMA_VERSION) {
-				reconciled.report.issues.push({
-					path: "configSchemaVersion",
-					kind: "pending-migration",
-					detail: `Configuration requires schema version ${configSchemaVersion}.`,
-				});
-			}
-			this.#schemaReport = reconciled.report;
-			return reconciled.settings;
+	async #loadYaml(filePath: string): Promise<RawSettings> {
+		let content: string;
+		try {
+			content = await Bun.file(filePath).text();
 		} catch (error) {
 			if (isEnoent(error)) {
-				this.#captureRawNotificationConfig({});
+				this.#resetYamlLoadState();
 				return {};
 			}
 			throw error;
 		}
+		this.#resetYamlLoadState();
+		if (content.trim() === "") return {};
+		let parsed: unknown;
+		try {
+			parsed = YAML.parse(content);
+		} catch {
+			this.#hasRecoveredConfigSyntax = true;
+			this.#hasMalformedConfigRoot = true;
+			this.#schemaReport = {
+				valid: false,
+				issues: [
+					{
+						path: "config.yml",
+						kind: "invalid",
+						detail: "Configuration YAML syntax is invalid; repair config.yml before changing settings.",
+					},
+				],
+			};
+			this.#captureRawNotificationConfig(undefined);
+			return {};
+		}
+		if (parsed === undefined) return {};
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			this.#hasMalformedConfigRoot = true;
+			this.#schemaReport = {
+				valid: false,
+				issues: [
+					{
+						path: "config.yml",
+						kind: "invalid",
+						detail: "Configuration root must be a YAML mapping.",
+					},
+				],
+			};
+			this.#captureRawNotificationConfig(undefined);
+			return {};
+		}
+		const parsedRaw = parsed as RawSettings;
+		if (filePath === this.#configPath) this.#captureRawNotificationConfig(parsedRaw);
+		if (filePath === this.#configPath) {
+			try {
+				parseNotificationSettingsSnapshot(parsedRaw);
+			} catch (error) {
+				if (!(error instanceof Error) || error.message !== "gjc_notify_daemon_invalid_configuration") throw error;
+				this.#hasInvalidNotificationGlobal = true;
+			}
+		}
+		this.#futureSchemaVersion =
+			filePath === this.#configPath &&
+			typeof parsedRaw.configSchemaVersion === "number" &&
+			parsedRaw.configSchemaVersion > CONFIG_SCHEMA_VERSION;
+
+		const configSchemaVersion = parsedRaw.configSchemaVersion;
+		if (
+			filePath === this.#configPath &&
+			(typeof configSchemaVersion !== "number" || configSchemaVersion < CONFIG_SCHEMA_VERSION)
+		) {
+			this.#schemaMigrationPending = true;
+		}
+		const migrated = this.#migrateRawSettings(parsedRaw);
+		const reconciled = reconcileSettingsSchema(migrated);
+		if (typeof configSchemaVersion === "number" && configSchemaVersion > CONFIG_SCHEMA_VERSION) {
+			reconciled.report.issues.push({
+				path: "configSchemaVersion",
+				kind: "pending-migration",
+				detail: `Configuration requires schema version ${configSchemaVersion}.`,
+			});
+		}
+		this.#schemaReport = reconciled.report;
+		return reconciled.settings;
 	}
 
 	async #loadProjectSettings(): Promise<RawSettings> {
@@ -1519,7 +1629,7 @@ export class Settings implements NotificationSettingsReader {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	#queueSave(): void {
-		if (!this.#persist || !this.#configPath) return;
+		if (!this.#persist || !this.#configPath || this.#hasRecoveredConfigSyntax) return;
 
 		const currentSlot = this.#pendingSaveSlot;
 		if (currentSlot && !currentSlot.captured && !currentSlot.released) {
@@ -1586,25 +1696,33 @@ export class Settings implements NotificationSettingsReader {
 					this.#recomputeNotificationValidationFromRaw();
 				},
 			};
-		}).then(() => undefined);
-		this.#savePromise = save;
-		void save.catch(error => {
-			logger.warn("Settings: background save failed", { error: String(error) });
-			for (const patch of captured) {
-				const key = settingsPatchKey(patch);
-				if (this.#modified.get(key)?.generation === patch.generation) this.#modified.set(key, patch);
-			}
-			if (durableBeforeWrite) {
-				this.#global = durableBeforeWrite;
-				this.#captureRawNotificationConfig(durableBeforeWrite);
-				for (const patch of this.#pendingPatchesInGenerationOrder()) {
-					applySettingsPatch(this.#global, { ...patch, value: structuredClone(patch.value) });
-					this.#applyNotificationMutationToRaw(patch.path, patch.value);
+		})
+			.then(() => undefined)
+			.catch(async error => {
+				logger.warn("Settings: background save failed", { error: String(error) });
+				for (const patch of captured) {
+					const key = settingsPatchKey(patch);
+					if (this.#modified.get(key)?.generation === patch.generation) this.#modified.set(key, patch);
 				}
-				this.#rebuildMerged();
-				this.#recomputeNotificationValidationFromRaw();
-			}
-		});
+				if (durableBeforeWrite) {
+					this.#global = durableBeforeWrite;
+					this.#captureRawNotificationConfig(durableBeforeWrite);
+					for (const patch of this.#pendingPatchesInGenerationOrder()) {
+						applySettingsPatch(this.#global, { ...patch, value: structuredClone(patch.value) });
+						this.#applyNotificationMutationToRaw(patch.path, patch.value);
+					}
+					this.#rebuildMerged();
+					this.#recomputeNotificationValidationFromRaw();
+				}
+				try {
+					await this.#refreshDurableSettings();
+				} catch (refreshError) {
+					logger.warn("Settings: refresh after background save failure failed", { error: String(refreshError) });
+				}
+				throw error;
+			});
+		this.#savePromise = save;
+		void save.catch(() => {});
 		this.#armSaveTimer(slot);
 	}
 
@@ -1708,12 +1826,40 @@ export class Settings implements NotificationSettingsReader {
 		return applicable.some(patch => isNotificationSettingsPath(patch.path));
 	}
 
-	async #refreshDurableSettings(): Promise<void> {
-		if (!this.#persist || !this.#configPath) return;
+	#reserveAtomicFailureRefresh(commit: Promise<unknown>): Promise<void> {
+		if (!this.#persist || !this.#configPath) return Promise.resolve();
+		return enqueueAtomicYamlOperation(this.#configPath, async canonicalPath => {
+			try {
+				await commit;
+				return;
+			} catch {
+				// The original commit error remains authoritative. Recovery failures
+				// are diagnostic only and must not replace it.
+			}
+			try {
+				await this.#refreshDurableSettingsUnderQueue(canonicalPath);
+			} catch (refreshError) {
+				logger.warn("Settings: refresh after atomic batch failure failed", { error: String(refreshError) });
+			}
+		});
+	}
+	async #refreshDurableSettingsUnderQueue(canonicalPath: string): Promise<void> {
 		const previousFingerprint = this.#durableNotificationFingerprint;
-		const current = await this.#loadYaml(this.#configPath);
+		const current = await this.#loadYaml(canonicalPath);
 		if (previousFingerprint !== this.#durableNotificationFingerprint) this.#notificationValidationGeneration++;
 		this.#replaceGlobalWithDurable(current);
+	}
+	async #refreshDurableSettings(): Promise<void> {
+		if (!this.#persist || !this.#configPath) return;
+		await enqueueAtomicYamlOperation(this.#configPath, canonicalPath =>
+			this.#refreshDurableSettingsUnderQueue(canonicalPath),
+		);
+	}
+	#assertDurableConfigWritable(): void {
+		if (this.canWriteDurableConfig()) return;
+		throw new Error(
+			"Cannot change settings while config.yml has invalid YAML syntax. Repair config.yml and reload settings.",
+		);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -1729,7 +1875,7 @@ export class Settings implements NotificationSettingsReader {
 	#notificationValidationState(): NotificationValidationState {
 		return {
 			malformedConfigRoot: this.#hasMalformedConfigRoot,
-			invalidNotificationConfiguration: this.#hasInvalidNotificationConfiguration,
+			invalidNotificationGlobal: this.#hasInvalidNotificationGlobal,
 			generation: this.#notificationValidationGeneration,
 		};
 	}
@@ -1754,7 +1900,7 @@ export class Settings implements NotificationSettingsReader {
 	}
 	#restoreNotificationValidationState(state: NotificationValidationState): void {
 		this.#hasMalformedConfigRoot = state.malformedConfigRoot;
-		this.#hasInvalidNotificationConfiguration = state.invalidNotificationConfiguration;
+		this.#hasInvalidNotificationGlobal = state.invalidNotificationGlobal;
 	}
 	#rejectAtomicNotificationRepairForMalformedRoot(patches: readonly AtomicYamlPatch[], root: unknown): void {
 		if (
@@ -1805,17 +1951,17 @@ export class Settings implements NotificationSettingsReader {
 	#recomputeNotificationValidationFromRaw(): void {
 		if (this.#rawNotificationConfig === undefined) {
 			this.#hasMalformedConfigRoot = true;
-			this.#hasInvalidNotificationConfiguration = false;
+			this.#hasInvalidNotificationGlobal = false;
 			return;
 		}
 		try {
 			parseNotificationSettingsSnapshot(this.#rawNotificationConfig);
 			this.#hasMalformedConfigRoot = false;
-			this.#hasInvalidNotificationConfiguration = false;
+			this.#hasInvalidNotificationGlobal = false;
 		} catch (error) {
 			if (error instanceof Error && error.message === "gjc_notify_daemon_invalid_configuration") {
 				this.#hasMalformedConfigRoot = false;
-				this.#hasInvalidNotificationConfiguration = true;
+				this.#hasInvalidNotificationGlobal = true;
 				return;
 			}
 			throw error;
@@ -1827,10 +1973,10 @@ export class Settings implements NotificationSettingsReader {
 		try {
 			parseNotificationSettingsSnapshot(this.#rawNotificationConfig);
 			this.#hasMalformedConfigRoot = false;
-			this.#hasInvalidNotificationConfiguration = false;
+			this.#hasInvalidNotificationGlobal = false;
 		} catch (error) {
 			if (error instanceof Error && error.message === "gjc_notify_daemon_invalid_configuration") {
-				this.#hasInvalidNotificationConfiguration = true;
+				this.#hasInvalidNotificationGlobal = true;
 				return;
 			}
 			throw error;
@@ -1908,9 +2054,9 @@ export class Settings implements NotificationSettingsReader {
 // Setting Hooks
 // ═══════════════════════════════════════════════════════════════════════════
 
-type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>) => void;
+type SettingHook = (value: unknown, prev: unknown) => void;
 
-const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
+const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook>> = {
 	"theme.dark": value => {
 		if (typeof value === "string") {
 			setAutoThemeMapping("dark", value);

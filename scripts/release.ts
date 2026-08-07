@@ -275,36 +275,41 @@ function hasUnreleasedContent(content: string): boolean {
 	return sectionContent.length > 0;
 }
 
-function removeEmptyVersionEntries(content: string): string {
-	// Remove version entries that have no content (just whitespace until next ## [ or EOF)
-	return content.replace(/## \[\d+\.\d+\.\d+\] - \d{4}-\d{2}-\d{2}\s*\n(?=## \[|\s*$)/g, "");
+export function releasedChangelogContent(content: string, version: string, date: string, changelog: string): string {
+	// A release with no unreleased notes still needs a semver heading: the
+	// embedded changelog must identify the version shipped by the package.
+	// Previously released headings are immutable history and stay in place even
+	// when their body is empty, so the new heading is always inserted above them.
+	const unreleasedHasContent = hasUnreleasedContent(content);
+	let next = content;
+
+	if (unreleasedHasContent) {
+		next = next.replace("## [Unreleased]", `## [${version}] - ${date}`);
+		// Reinstate the empty [Unreleased] heading for the next cycle. The header
+		// may or may not be followed by a blank line, and losing this heading
+		// silently merges the next cycle's notes into the released section.
+		next = next.replace(/^# Changelog\n+/, "# Changelog\n\n## [Unreleased]\n\n");
+		if (!next.includes("## [Unreleased]")) {
+			throw new Error(`${changelog} lost its [Unreleased] heading; its "# Changelog" header is missing or malformed`);
+		}
+	} else {
+		next = next.replace("## [Unreleased]", `## [Unreleased]\n\n## [${version}] - ${date}`);
+	}
+	return next;
 }
 
 async function updateChangelogsForRelease(version: string): Promise<void> {
 	const date = new Date().toISOString().split("T")[0];
 
 	for await (const changelog of changelogGlob.scan(".")) {
-		let content = await Bun.file(changelog).text();
+		const content = await Bun.file(changelog).text();
 
 		if (!content.includes("## [Unreleased]")) {
 			console.log(`  Skipping ${changelog}: no [Unreleased] section`);
 			continue;
 		}
 
-		// Remove stale empty version entries before inserting the new release entry.
-		// A release with no unreleased notes still needs a semver heading: the
-		// embedded changelog must identify the version shipped by the package.
-		const unreleasedHasContent = hasUnreleasedContent(content);
-		content = removeEmptyVersionEntries(content);
-
-		if (unreleasedHasContent) {
-			content = content.replace("## [Unreleased]", `## [${version}] - ${date}`);
-			content = content.replace(/^(# Changelog\n\n)/, `$1## [Unreleased]\n\n`);
-		} else {
-			content = content.replace("## [Unreleased]", `## [Unreleased]\n\n## [${version}] - ${date}`);
-		}
-
-		await Bun.write(changelog, content);
+		await Bun.write(changelog, releasedChangelogContent(content, version, date, changelog));
 		console.log(`  Updated ${changelog}`);
 	}
 }

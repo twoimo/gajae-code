@@ -11,6 +11,8 @@ export type OAuthCredentials = {
 export type OAuthProvider =
 	| "alibaba-token-plan"
 	| "anthropic"
+	| "bizrouter"
+	| "mara"
 	| "cerebras"
 	| "cloudflare-ai-gateway"
 	| "cursor"
@@ -58,6 +60,7 @@ export type OAuthProvider =
 	| "xiaomi-token-plan-ams"
 	| "xiaomi-token-plan-cn"
 	| "zenmux"
+	| "opencodex"
 	| "zai";
 
 export type OAuthProviderId = OAuthProvider | (string & {});
@@ -77,6 +80,18 @@ export interface OAuthProviderInfo {
 	id: OAuthProviderId;
 	name: string;
 	available: boolean;
+}
+
+/** Per-login switches that change how the authorization code is delivered. */
+export interface OAuthLoginOptions {
+	/**
+	 * Pair by pasting the authorization code the provider displays instead of
+	 * waiting on a local loopback callback. Set when the browser completing the
+	 * login has no network route back to the machine running gjc (SSH, remote
+	 * container, headless host). Providers without a paste-a-code redirect
+	 * ignore it.
+	 */
+	manualCode?: boolean;
 }
 
 export interface OAuthController {

@@ -149,7 +149,7 @@ export type AnyUiMetadata = UiBase & {
 
 interface BooleanDef {
 	type: "boolean";
-	default: boolean;
+	default?: boolean;
 	ui?: UiBoolean;
 }
 
@@ -275,9 +275,17 @@ export const SETTINGS_SCHEMA = {
 		values: ["copy-retain", "disabled"] as const,
 		default: "copy-retain",
 	},
+	// SDK-owned prompt deadline. Hidden from the UI; ACP has no separate timeout.
+	"sdk.promptDeadlineMs": {
+		type: "number",
+		default: 1_800_000,
+		description: "SDK-owned prompt deadline; ACP has no separate timeout.",
+		validate: (value: number) => Number.isSafeInteger(value) && value >= 60_000 && value <= 86_400_000,
+	},
 
 	// Notifications (shared daemon with Telegram/Discord/Slack presentation adapters)
 	"notifications.enabled": { type: "boolean", default: false },
+	"notifications.telegram.enabled": { type: "boolean" },
 	"notifications.telegram.botToken": {
 		type: "string",
 		default: undefined,
@@ -287,6 +295,17 @@ export const SETTINGS_SCHEMA = {
 	"notifications.telegram.activation": { type: "record", default: {} as Record<string, unknown> },
 	"notifications.telegram.btw.enabled": { type: "boolean", default: true },
 	"notifications.telegram.streaming.enabled": { type: "boolean", default: true },
+	"notifications.telegram.sound": {
+		type: "enum",
+		values: ["all", "important", "none"] as const,
+		default: "all",
+		ui: {
+			tab: "notifications",
+			label: "Telegram Notification Sounds",
+			description: "Choose which Telegram notifications play a sound.",
+			editing: "notification-atomic",
+		},
+	},
 	"notifications.telegram.rich.enabled": {
 		type: "boolean",
 		default: true,
@@ -309,7 +328,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"notifications.telegram.toolActivity.enabled": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "notifications",
 			label: "Telegram Tool Activity",
@@ -318,10 +337,12 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 	"notifications.telegram.topics.nameTemplate": { type: "string", default: undefined },
+	"notifications.discord.enabled": { type: "boolean" },
 	"notifications.discord.botToken": { type: "string", default: undefined },
 	"notifications.discord.applicationId": { type: "string", default: undefined },
 	"notifications.discord.guildId": { type: "string", default: undefined },
 	"notifications.discord.parentChannelId": { type: "string", default: undefined },
+	"notifications.slack.enabled": { type: "boolean" },
 	"notifications.slack.botToken": { type: "string", default: undefined },
 	"notifications.slack.appToken": { type: "string", default: undefined },
 	"notifications.slack.workspaceId": { type: "string", default: undefined },
@@ -489,6 +510,22 @@ export const SETTINGS_SCHEMA = {
 			options: "runtime",
 		},
 	},
+	"session.resumeModelBehavior": {
+		type: "enum",
+		values: ["keepSessionModel", "useCurrentDefault", "ask"] as const,
+		default: "keepSessionModel",
+		ui: {
+			tab: "model",
+			label: "Resume Model Behavior",
+			description:
+				"When resuming a session: keep the model that session last used, switch to the currently configured default model, or ask (TUI only; falls back to keeping the session's model in headless/CLI resume).",
+			options: [
+				{ value: "keepSessionModel", label: "Keep session's saved model" },
+				{ value: "useCurrentDefault", label: "Use current default model" },
+				{ value: "ask", label: "Ask on resume (TUI only)" },
+			],
+		},
+	},
 
 	modelTags: { type: "record", default: EMPTY_MODEL_TAGS_RECORD },
 
@@ -500,6 +537,21 @@ export const SETTINGS_SCHEMA = {
 		type: "number",
 		default: 0.05,
 		validate: (value: number) => Number.isFinite(value) && value > 0 && value <= 1,
+	},
+	"gjc.ralplan.autoHandoff": {
+		type: "enum",
+		values: ["off", "ultragoal", "team"],
+		default: "off",
+	},
+	"gjc.ralplan.maxIterations": {
+		type: "number",
+		default: 5,
+		validate: (value: number) => Number.isInteger(value) && value >= 1 && value <= 20,
+	},
+	"gjc.ralplan.maxReviewPassesPerLane": {
+		type: "number",
+		default: 1,
+		validate: (value: number) => Number.isInteger(value) && value >= 1 && value <= 10,
 	},
 
 	// ────────────────────────────────────────────────────────────────────────
@@ -824,8 +876,8 @@ export const SETTINGS_SCHEMA = {
 		default: true,
 		ui: {
 			tab: "appearance",
-			label: "Status Line Action Hints",
-			description: "Show contextual keyboard shortcuts in the status line",
+			label: "Composer Shortcut Hints",
+			description: "Show contextual keyboard shortcuts in the composer placeholder",
 		},
 	},
 
@@ -1214,6 +1266,16 @@ export const SETTINGS_SCHEMA = {
 				"Maximum provider stream replay retries for replay-safe transient stream failures. Counts retries, not the first attempt. Set to 0 to disable provider stream retries.",
 		},
 	},
+	"retry.streamFirstEventTimeoutMs": {
+		type: "number",
+		default: 100_000,
+		validate: (value: number) => Number.isFinite(value) && value >= 0,
+		ui: {
+			tab: "model",
+			label: "First Event Timeout",
+			description: "Maximum wait for the first provider stream event, in ms. Set to 0 to disable the watchdog.",
+		},
+	},
 	"retry.fallbackChains": { type: "record", default: {} as Record<string, string[]> },
 	"retry.fallbackRevertPolicy": {
 		type: "enum",
@@ -1244,7 +1306,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "interaction",
 			label: "Mouse Support",
-			description: "Enable SGR mouse wheel scrolling and overlay row selection. Disabled in tmux and screen.",
+			description:
+				"Enable GJC session scrolling, drag-to-copy text selection, and overlay row selection with the mouse. Disabled by default to preserve native terminal or tmux scrollback and selection.",
 		},
 	},
 	// Conversation flow
@@ -2048,7 +2111,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "editing",
 			label: "Default Read Limit",
-			description: "Default number of lines returned when agent calls read without a limit",
+			description:
+				"Default collection/selection limit for read operations; bare local receipts use the separate 50-line / 10 KiB receipt budgets",
 			options: [
 				{ value: "200", label: "200 lines" },
 				{ value: "300", label: "300 lines" },
@@ -2085,6 +2149,22 @@ export const SETTINGS_SCHEMA = {
 				{ value: "10", label: "10 KB", description: "Default; ~2.5K tokens" },
 				{ value: "20", label: "20 KB", description: "~5K tokens" },
 				{ value: "50", label: "50 KB", description: "~12.5K tokens" },
+			],
+		},
+	},
+	"read.truncation": {
+		type: "enum",
+		values: ["head", "last", "both"] as const,
+		default: "last",
+		ui: {
+			tab: "editing",
+			label: "Read Truncation",
+			description:
+				"Configured default direction for routes that support directional truncation; bare local and archive reads use this value (factory default: last), while explicit truncation always wins",
+			options: [
+				{ value: "head", label: "Head", description: "Keep the first N lines" },
+				{ value: "last", label: "Last", description: "Keep the last N lines (default)" },
+				{ value: "both", label: "Both", description: "Keep the start and the end, elide the middle" },
 			],
 		},
 	},
@@ -2652,6 +2732,47 @@ export const SETTINGS_SCHEMA = {
 			label: "Resource GC Sweep Interval (ms)",
 			description: "How often the resource GC sweeps browser tabs and stale screenshot directories.",
 		},
+	},
+	"memoryGuard.enabled": {
+		type: "boolean",
+		default: false,
+	},
+	"memoryGuard.checkIntervalMs": {
+		type: "number",
+		default: 30_000,
+		validate: (value: number) => Number.isFinite(value) && value > 0,
+	},
+	"memoryGuard.gcThresholdPercent": {
+		type: "number",
+		default: 70,
+		validate: (value: number) => Number.isFinite(value) && value >= 0 && value <= 100,
+	},
+	"memoryGuard.restartThresholdPercent": {
+		type: "number",
+		default: 85,
+		validate: (value: number) => Number.isFinite(value) && value >= 0 && value <= 100,
+	},
+	"memoryGuard.restartThresholdWindowMs": {
+		type: "number",
+		default: 90_000,
+		validate: (value: number) => Number.isFinite(value) && value > 0,
+	},
+	"memoryGuard.cooldownMs": {
+		type: "number",
+		default: 600_000,
+		validate: (value: number) => Number.isFinite(value) && value >= 0,
+	},
+	"memoryGuard.parentReserveMb": {
+		type: "number",
+		default: 1024,
+		validate: (value: number) =>
+			Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER / (1024 * 1024),
+	},
+	"memoryGuard.policyLimitMb": {
+		type: "number",
+		default: 0,
+		validate: (value: number) =>
+			Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER / (1024 * 1024),
 	},
 
 	"computer.enabled": {
@@ -3528,25 +3649,28 @@ type Schema = typeof SETTINGS_SCHEMA;
 export type SettingPath = keyof Schema;
 
 /** Infer the value type for a setting path */
-export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean" }
+export type SettingValue<P extends SettingPath> = Schema[P] extends { type: "boolean"; default: boolean }
 	? boolean
-	: Schema[P] extends { type: "string" }
-		? string | undefined
-		: Schema[P] extends { type: "number" }
-			? number
-			: Schema[P] extends { type: "enum"; values: infer V }
-				? V extends readonly string[]
-					? V[number]
-					: never
-				: Schema[P] extends { type: "array"; default: infer D }
-					? D
-					: Schema[P] extends { type: "record"; default: infer D }
+	: Schema[P] extends { type: "boolean" }
+		? boolean | undefined
+		: Schema[P] extends { type: "string" }
+			? string | undefined
+			: Schema[P] extends { type: "number" }
+				? number
+				: Schema[P] extends { type: "enum"; values: infer V }
+					? V extends readonly string[]
+						? V[number]
+						: never
+					: Schema[P] extends { type: "array"; default: infer D }
 						? D
-						: never;
+						: Schema[P] extends { type: "record"; default: infer D }
+							? D
+							: never;
 
 /** Get the default value for a setting path */
 export function getDefault<P extends SettingPath>(path: P): SettingValue<P> {
-	return SETTINGS_SCHEMA[path].default as SettingValue<P>;
+	const definition = SETTINGS_SCHEMA[path];
+	return ("default" in definition ? definition.default : undefined) as SettingValue<P>;
 }
 
 /** Check if a path has UI metadata (should appear in settings panel) */
@@ -3626,6 +3750,11 @@ function schemaPaths(value: Record<string, unknown>, prefix = ""): string[] {
 	return paths;
 }
 
+function validArraySettingValue(value: unknown, allowedValues: readonly string[] | undefined): boolean {
+	if (!Array.isArray(value)) return false;
+	return !allowedValues || value.every(item => typeof item === "string" && allowedValues.includes(item));
+}
+
 function validSettingValue(definition: (typeof SETTINGS_SCHEMA)[SettingPath], value: unknown): boolean {
 	return (
 		(definition.type === "boolean" && typeof value === "boolean") ||
@@ -3637,7 +3766,8 @@ function validSettingValue(definition: (typeof SETTINGS_SCHEMA)[SettingPath], va
 		(definition.type === "enum" &&
 			typeof value === "string" &&
 			(definition.values as readonly string[]).includes(value)) ||
-		(definition.type === "array" && Array.isArray(value)) ||
+		(definition.type === "array" &&
+			validArraySettingValue(value, "items" in definition ? definition.items?.enum : undefined)) ||
 		(definition.type === "record" && !!value && typeof value === "object" && !Array.isArray(value))
 	);
 }
@@ -3674,8 +3804,16 @@ export function reconcileSettingsSchema(raw: Record<string, unknown>): {
 			schemaSetAtPath(settings, path, next);
 			issues.push({ path, kind: "coerced", detail: `Coerced ${typeof value} to ${definition.type}.` });
 		}
-		if (!validSettingValue(definition, next))
-			issues.push({ path, kind: "invalid", detail: `Expected ${definition.type}.` });
+		if (!validSettingValue(definition, next)) {
+			const arrayItemEnum =
+				definition.type === "array" && Array.isArray(next) && "items" in definition
+					? definition.items?.enum
+					: undefined;
+			const detail = arrayItemEnum
+				? `Expected array items to be one of: ${arrayItemEnum.join(", ")}.`
+				: `Expected ${definition.type}.`;
+			issues.push({ path, kind: "invalid", detail });
+		}
 		if (
 			definition.type === "record" &&
 			"valueSchema" in definition &&
@@ -3741,6 +3879,7 @@ export interface RetrySettings {
 	maxDelayMs: number;
 	requestMaxRetries: number;
 	streamMaxRetries: number;
+	streamFirstEventTimeoutMs: number;
 }
 
 export interface MemoriesSettings {
@@ -3844,11 +3983,24 @@ export interface ShellMinimizerSettings {
 	maxCaptureBytes: number;
 }
 
+export interface MemoryGuardSettings {
+	enabled: boolean;
+	checkIntervalMs: number;
+	gcThresholdPercent: number;
+	restartThresholdPercent: number;
+	restartThresholdWindowMs: number;
+	cooldownMs: number;
+	parentReserveMb: number;
+	policyLimitMb: number;
+}
+
 export interface NotificationsSettings {
 	enabled: boolean;
 	telegram: {
+		enabled?: boolean;
 		botToken: string | undefined;
 		chatId: string | undefined;
+		sound: "all" | "important" | "none";
 		btw: {
 			enabled: boolean;
 		};
@@ -3869,16 +4021,19 @@ export interface NotificationsSettings {
 		};
 	};
 	discord: {
+		enabled?: boolean;
 		botToken: string | undefined;
 		applicationId: string | undefined;
 		guildId: string | undefined;
 		parentChannelId: string | undefined;
 	};
 	slack: {
+		enabled?: boolean;
 		botToken: string | undefined;
 		appToken: string | undefined;
 		workspaceId: string | undefined;
 		channelId: string | undefined;
+		authorizedUserId: string | undefined;
 	};
 	redact: boolean;
 	verbosity: "lean" | "verbose";
@@ -3902,6 +4057,7 @@ export interface GroupTypeMap {
 	statusLine: StatusLineSettings;
 	thinkingBudgets: ThinkingBudgetsSettings;
 	stt: SttSettings;
+	memoryGuard: MemoryGuardSettings;
 	modelRoles: Record<string, ModelSelectorValue>;
 	modelTags: ModelTagsSettings;
 	cycleOrder: string[];

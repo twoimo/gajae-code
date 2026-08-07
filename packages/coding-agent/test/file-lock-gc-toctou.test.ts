@@ -27,7 +27,7 @@ async function makeTemp(): Promise<string> {
 
 async function writeInfo(
 	lockDir: string,
-	info: { pid: number; timestamp: number; start_time?: string },
+	info: { pid: number; timestamp: number; start_time?: string; owner_host_id?: string },
 ): Promise<void> {
 	await fs.mkdir(lockDir, { recursive: true });
 	await fs.writeFile(
@@ -109,6 +109,42 @@ describe("withFileLock stale owner liveness (#652)", () => {
 		expect(acquired).toBe(true);
 		expect(await fs.exists(lockDir)).toBe(false);
 	});
+	test("retries when Windows transiently denies reading a contended lock info file", async () => {
+		const base = await makeTemp();
+		const lockedFile = path.join(base, "state.json");
+		const lockInfoPath = path.join(`${lockedFile}.lock`, "info");
+		let contenderEntered = false;
+		let deniedInfoRead = false;
+		let contender: Promise<void> | undefined;
+
+		await withFileLock(
+			lockedFile,
+			async () => {
+				const realReadFile = fs.readFile;
+				vi.spyOn(fs, "readFile").mockImplementation((async (target, options) => {
+					if (!deniedInfoRead && String(target) === lockInfoPath) {
+						deniedInfoRead = true;
+						throw Object.assign(new Error("metadata temporarily locked"), { code: "EPERM" });
+					}
+					return await realReadFile(target, options);
+				}) as typeof fs.readFile);
+				contender = withFileLock(
+					lockedFile,
+					async () => {
+						contenderEntered = true;
+					},
+					{ staleMs: 1, retries: 10, retryDelayMs: 1 },
+				);
+				await Bun.sleep(5);
+				expect(contenderEntered).toBe(false);
+			},
+			{ staleMs: 1, retries: 1, retryDelayMs: 1 },
+		);
+		await contender;
+
+		expect(deniedInfoRead).toBe(true);
+		expect(contenderEntered).toBe(true);
+	});
 
 	test("preserves a live old-format holder without start_time", async () => {
 		const base = await makeTemp();
@@ -151,6 +187,28 @@ describe("withFileLock stale owner liveness (#652)", () => {
 				await fs.rm(lockDir, { recursive: true });
 			}),
 		).rejects.toThrow("Failed to release file lock: missing.");
+	});
+});
+describe("host-qualified file lock publication", () => {
+	test("ignores interrupted pending publication directories", async () => {
+		const base = await makeTemp();
+		const lockedFile = path.join(base, "state.json");
+		await fs.mkdir(`${lockedFile}.lock.pending.interrupted`, { recursive: true });
+		await fs.writeFile(path.join(`${lockedFile}.lock.pending.interrupted`, "info"), "{");
+
+		let acquired = false;
+		await withFileLock(
+			lockedFile,
+			async () => {
+				acquired = true;
+				expect(await fs.exists(`${lockedFile}.lock`)).toBe(true);
+			},
+			{ ownerHostId: "test-host", retries: 1, retryDelayMs: 1 },
+		);
+
+		expect(acquired).toBe(true);
+		expect(await fs.exists(`${lockedFile}.lock.pending.interrupted`)).toBe(true);
+		expect(await fs.exists(`${lockedFile}.lock`)).toBe(false);
 	});
 });
 describe("file lock cleanup failure handling (#2478)", () => {
@@ -278,6 +336,25 @@ describe("fileLocksGcAdapter.prune TOCTOU (#606)", () => {
 		expect(outcome.removed).toBe(true);
 		expect(outcome.skipped).toBeUndefined();
 		expect(await fs.exists(lockDir)).toBe(false);
+	});
+	test("never prunes a foreign host-qualified lock from local PID evidence", async () => {
+		const base = await makeTemp();
+		const spoolDir = path.join(base, "spool");
+		const lockDir = path.join(spoolDir, "state.json.lock");
+		await writeInfo(lockDir, {
+			pid: DEAD_PID,
+			timestamp: Date.now() - 10_000,
+			owner_host_id: "foreign-host",
+		});
+		const probe = vi.fn<GcPidProbe>(() => ({ status: "dead" }));
+		const outcome = await fileLocksGcAdapter.prune(deadLockRecord(lockDir), ctxWith(spoolDir, probe));
+
+		expect(outcome).toEqual({
+			removed: false,
+			skipped: "host_qualified_lock_requires_owner_reclamation",
+		});
+		expect(await fs.exists(lockDir)).toBe(true);
+		expect(probe).not.toHaveBeenCalled();
 	});
 
 	test("fails closed when a live owner reclaims the stale lock between probe and unlink", async () => {

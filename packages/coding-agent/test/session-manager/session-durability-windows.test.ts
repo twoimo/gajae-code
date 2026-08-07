@@ -7,6 +7,8 @@ import type { NativeDirectoryTreeSnapshot } from "@gajae-code/natives";
 import * as native from "@gajae-code/natives";
 import {
 	canonicalBindingOpenFlags,
+	cleanupAuthorityMatches,
+	detachArtifactRootForMigration,
 	fsyncCanonicalBinding,
 	listManagedCandidates,
 	matchesMigrationArtifactRoot,
@@ -204,6 +206,142 @@ describe("managed session Windows durability", () => {
 		expect(matchesMigrationArtifactRoot(artifacts, identity, expectedTree, "win32")).toBe(true);
 		await fs.writeFile(payload, "modified");
 		expect(matchesMigrationArtifactRoot(artifacts, identity, expectedTree, "win32")).toBe(false);
+	});
+
+	it("uses native root metadata for cleanup authority on Windows without changing non-Windows checks", async () => {
+		const root = temporaryDirectory("gjc-cleanup-authority-root-");
+		temporaryDirectories.push(root);
+		const retainedPath = path.join(root, "retained");
+		await fs.mkdir(retainedPath);
+		const originalSnapshotDirectoryTree = native.snapshotDirectoryTree;
+		const observed = originalSnapshotDirectoryTree(retainedPath);
+		if (!observed.ok || !observed.snapshot) throw new Error("Native snapshot unavailable");
+		const nativeRoot = observed.snapshot.entries.find(
+			entry => entry.relativePath === "" && entry.kind === "directory",
+		);
+		if (!nativeRoot) throw new Error("Native root missing");
+		const expectedTree: NativeDirectoryTreeSnapshot = {
+			...observed.snapshot,
+			entries: observed.snapshot.entries.map(entry =>
+				entry.relativePath === "" && entry.kind === "directory" ? { ...entry, size: "4096" } : entry,
+			),
+		};
+		vi.spyOn(native, "snapshotDirectoryTree").mockImplementation(pathname =>
+			pathname === retainedPath ? { ok: true, snapshot: expectedTree } : originalSnapshotDirectoryTree(pathname),
+		);
+		const stat = syncFs.lstatSync(retainedPath, { bigint: true });
+		stat.dev = BigInt(nativeRoot.dev);
+		stat.ino = BigInt(nativeRoot.ino);
+		stat.size = 0n;
+		stat.mtimeNs = BigInt(nativeRoot.mtimeNs);
+		vi.spyOn(syncFs, "lstatSync").mockReturnValue(stat);
+		const parentStat = syncFs.lstatSync(path.dirname(retainedPath), { bigint: true });
+		const cleanup = {
+			state: "cleanup_pending" as const,
+			role: "exchange_placeholder" as const,
+			retainedPath,
+			identity: {
+				dev: BigInt(nativeRoot.dev),
+				ino: BigInt(nativeRoot.ino),
+				size: 4096n,
+				mtimeNs: BigInt(nativeRoot.mtimeNs),
+				parentDev: parentStat.dev,
+				parentIno: parentStat.ino,
+			},
+			tree: expectedTree,
+		};
+		const parent = path.dirname(retainedPath);
+
+		expect(cleanupAuthorityMatches(cleanup, parent, "win32")).toBe(true);
+		expect(
+			cleanupAuthorityMatches({ ...cleanup, identity: { ...cleanup.identity, size: 4097n } }, parent, "win32"),
+		).toBe(false);
+		expect(
+			cleanupAuthorityMatches(
+				{ ...cleanup, identity: { ...cleanup.identity, mtimeNs: cleanup.identity.mtimeNs + 1n } },
+				parent,
+				"win32",
+			),
+		).toBe(false);
+		expect(
+			cleanupAuthorityMatches(
+				{ ...cleanup, identity: { ...cleanup.identity, dev: cleanup.identity.dev + 1n } },
+				parent,
+				"win32",
+			),
+		).toBe(false);
+		expect(cleanupAuthorityMatches(cleanup, path.join(root, "other"), "win32")).toBe(false);
+		expect(
+			cleanupAuthorityMatches({ ...cleanup, identity: { ...cleanup.identity, size: 0n } }, parent, "darwin"),
+		).toBe(true);
+	});
+
+	it("forces the win32 producer branch so cleanup identity comes from the native root", async () => {
+		const root = temporaryDirectory("gjc-cleanup-producer-");
+		temporaryDirectories.push(root);
+		const originalPath = path.join(root, "artifacts");
+		await fs.mkdir(originalPath);
+		await fs.writeFile(path.join(originalPath, "kept.txt"), "kept");
+
+		const tree = native.snapshotDirectoryTree(originalPath);
+		if (!tree.ok || !tree.snapshot) throw new Error("Native snapshot unavailable");
+		const treeRoot = tree.snapshot.entries.find(entry => entry.relativePath === "" && entry.kind === "directory");
+		if (!treeRoot) throw new Error("Native root missing");
+		const stat = syncFs.lstatSync(originalPath, { bigint: true });
+
+		// On this host Bun's directory size and the native root size often agree,
+		// so a plain run cannot tell the two authorities apart. Inject a size that
+		// is guaranteed to differ from the real native root so the assertion below
+		// can only pass if the producer reads the mocked native root. Hardcoding
+		// 4096 is not hermetic: Linux directory sizes can already be 4096.
+		// Reverting the win32 branch makes this test fail.
+		const originalSnapshot = native.snapshotDirectoryTree;
+		const divergentSize = (BigInt(treeRoot.size) + 1n).toString();
+		expect(divergentSize).not.toBe(treeRoot.size);
+		// Scope the divergence to the retained placeholder only; the detached
+		// original is validated by a separate upstream check that must see real
+		// values.
+		const placeholderPrefix = ".gjc-exact-unlink-placeholder-";
+		vi.spyOn(native, "snapshotDirectoryTree").mockImplementation(pathname => {
+			const actual = originalSnapshot(pathname);
+			if (!path.basename(String(pathname)).startsWith(placeholderPrefix)) return actual;
+			if (!actual.ok || !actual.snapshot) return actual;
+			return {
+				...actual,
+				snapshot: {
+					...actual.snapshot,
+					entries: actual.snapshot.entries.map(entry =>
+						entry.relativePath === "" && entry.kind === "directory" ? { ...entry, size: divergentSize } : entry,
+					),
+				},
+			};
+		});
+
+		const detached = detachArtifactRootForMigration(
+			{
+				originalPath,
+				detachedPath: path.join(root, ".gjc-migrate-fork-artifacts"),
+				identity: {
+					dev: stat.dev,
+					ino: stat.ino,
+					size: BigInt(treeRoot.size),
+					mtimeNs: BigInt(treeRoot.mtimeNs),
+					parentDev: syncFs.lstatSync(path.dirname(originalPath), { bigint: true }).dev,
+					parentIno: syncFs.lstatSync(path.dirname(originalPath), { bigint: true }).ino,
+				},
+				tree: tree.snapshot,
+			},
+			"win32",
+		);
+
+		expect(detached.detachOutcome === "clean" || detached.detachOutcome === "cleanup_pending").toBe(true);
+		if (detached.detachOutcome === "cleanup_pending") {
+			// Only a native-root read yields the injected divergent size; a
+			// Bun-sourced capture would carry the real directory size instead.
+			expect(detached.cleanup.identity.size).toBe(BigInt(divergentSize));
+			expect(detached.cleanup.identity.size).not.toBe(stat.size);
+			expect(cleanupAuthorityMatches(detached.cleanup, root, "win32")).toBe(true);
+		}
 	});
 
 	it("tolerates a POSIX root ctime change caused by detaching artifacts", async () => {

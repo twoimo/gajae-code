@@ -110,6 +110,16 @@ export interface TmuxServerProof {
 	startTime?: string;
 	cgroup?: CgroupInfo;
 	sessionNames?: string[];
+	/**
+	 * Whether `pid` is kernel-proved evidence about the live tmux server.
+	 *
+	 * Only Linux can prove a server PID (`/proc` + cgroup classification), so
+	 * probes on other platforms may report a placeholder PID with this flag set
+	 * to `false`. Guards must not build a `#{pid}` predicate from an unproven
+	 * PID: no live tmux server can ever satisfy it. Omitted means proven, which
+	 * keeps every probe that reads a real `#{pid}` unchanged.
+	 */
+	pidProven?: boolean;
 }
 
 export interface PlanRequest {
@@ -957,6 +967,24 @@ export function lifecyclePaths(stateDir: string, sessionId: string, generation: 
 		incidentFile: path.join(root, `incident-${generation}.json`),
 		lockDatabaseFile: path.join(root, "owner-locks.sqlite"),
 		journalFile: path.join(root, `verdict-${generation}.journal`),
+	};
+}
+
+export interface MemoryGuardClaimPaths {
+	root: string;
+	databaseFile: string;
+	walFile: string;
+	shmFile: string;
+}
+
+export function memoryGuardClaimPaths(stateDir: string, sessionId: string): MemoryGuardClaimPaths {
+	const root = path.join(stateDir, "memory-guard-claims", sessionId);
+	const databaseFile = path.join(root, "claims.sqlite");
+	return {
+		root,
+		databaseFile,
+		walFile: `${databaseFile}-wal`,
+		shmFile: `${databaseFile}-shm`,
 	};
 }
 
@@ -2154,6 +2182,8 @@ async function fsyncDirectory(directoryPath: string): Promise<void> {
 	const directory = await fs.open(directoryPath, "r");
 	try {
 		await directory.sync();
+	} catch (error) {
+		if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
 	} finally {
 		await directory.close();
 	}

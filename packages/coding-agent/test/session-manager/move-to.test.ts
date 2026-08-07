@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
@@ -10,9 +10,30 @@ import {
 	syncSessionMoveDirectory,
 } from "@gajae-code/coding-agent/session/session-manager";
 import { stripOuterDoubleQuotes } from "@gajae-code/coding-agent/tools/path-utils";
+import * as native from "@gajae-code/natives";
 import { getConfigRootDir, getSessionsDir, setAgentDir } from "@gajae-code/utils";
 import { resolveManagedScope } from "../../src/session/internal/managed-session-scope";
 import { makeAssistantMessage } from "./helpers";
+
+function forceImmediateNativeCleanup(): () => void {
+	const unlink = vi.spyOn(native, "exactUnlink").mockImplementation((pathname, identity) => {
+		if (identity.directory && identity.quarantineName) {
+			const detachedPath = path.join(path.dirname(pathname), identity.quarantineName);
+			fs.renameSync(pathname, detachedPath);
+			return { ok: true, detachedPath };
+		}
+		fs.rmSync(pathname, { force: true });
+		return { ok: true };
+	});
+	const remove = vi.spyOn(native, "exactRemoveDirectoryTree").mockImplementation(pathname => {
+		fs.rmSync(pathname, { recursive: true, force: true });
+		return { ok: true };
+	});
+	return () => {
+		unlink.mockRestore();
+		remove.mockRestore();
+	};
+}
 
 it("does not open or fsync a source parent directory on Windows after a committed move", async () => {
 	let opens = 0;
@@ -168,7 +189,12 @@ describe("SessionManager.moveTo", () => {
 
 		const activeFile = session.getSessionFile();
 		if (!activeFile) throw new Error("Expected active session file");
-		await session.dropSession(activeFile);
+		const restoreCleanup = forceImmediateNativeCleanup();
+		try {
+			await session.dropSession(activeFile);
+		} finally {
+			restoreCleanup();
+		}
 
 		expect(fs.existsSync(activeFile)).toBe(false);
 		expect(session.getSessionFile()).not.toBe(activeFile);

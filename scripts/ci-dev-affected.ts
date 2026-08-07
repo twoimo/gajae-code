@@ -417,9 +417,13 @@ export function needsDarwinArm64TabWorkerSmoke(paths: readonly string[]): boolea
 // run and require the windows-latest job whenever any of these change.
 export function isWindowsSessionPathRegressionPath(changedPath: string): boolean {
 	return changedPath === "packages/coding-agent/src/session/internal/managed-session-scope.ts" ||
+		changedPath === "packages/coding-agent/src/session/internal/managed-session-storage.ts" ||
 		changedPath === "packages/coding-agent/src/session/blob-store.ts" ||
+		changedPath === "packages/coding-agent/src/sdk/session-directory.ts" ||
 		changedPath === "packages/coding-agent/src/session/session-manager.ts" ||
-		changedPath === "packages/coding-agent/test/session-manager/windows-canonical-path.test.ts";
+		changedPath === "packages/coding-agent/test/session-manager/windows-canonical-path.test.ts" ||
+		changedPath === "packages/coding-agent/test/session/managed-lock-lease.windows.test.ts" ||
+		changedPath === "packages/coding-agent/test/sdk-session-directory.windows.test.ts";
 }
 
 export function needsWindowsSessionPathRegression(paths: readonly string[]): boolean {
@@ -696,6 +700,14 @@ function readStringMap(value: unknown): Record<string, string> | undefined {
 
 export function planTasks(paths: readonly string[], packages: readonly WorkspacePackage[]): Task[] {
 	const tasks = new Map<string, Task>();
+	// Mirror of the docs-index gate in planTargetedTasks: docs/ is the source the
+	// embedded index is generated from, so either side changing must run its gate.
+	// The gate loads the generated corpus through the package barrel, so it is a
+	// native consumer and must bring its own producer.
+	if (paths.some(isEmbeddedDocsSourcePath)) {
+		addTestFileTask(tasks, EMBEDDED_DOCS_GATE_TEST);
+		addNativeBuild(tasks);
+	}
 	const touchedPackages = findTouchedPackages(paths, packages);
 	const rootPackageReleaseHarnessOnly = isRootPackageReleaseHarnessOnly(paths);
 	const fullWorkspace = paths.some(isFullWorkspacePath) && !rootPackageReleaseHarnessOnly;
@@ -772,6 +784,7 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 	if (paths.some(isWorkflowOrScriptPath)) {
 		add(tasks, "affected-dry-run", "Affected CI selector self-check", ["bun", "scripts/ci-dev-affected.ts", "--dry-run"]);
 		add(tasks, "affected-selftest", "Affected CI selector unit tests", ["bun", "test", "scripts/ci-dev-affected.test.ts", "scripts/dev-ci-guard-topology.test.ts"]);
+		add(tasks, "workflow-permissions", "Workflow permission policy regression", ["bun", "test", "scripts/check-workflow-permissions.test.ts", "scripts/release-policy.test.ts"]);
 		if (paths.some(isWorkflowPath)) {
 			add(tasks, "workflow-yaml-parse", "Workflow YAML parse check", ["bun", "scripts/check-workflow-yaml.ts"]);
 		}
@@ -783,7 +796,7 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 // PR-mode targeted planner. For each changed path it emits the smallest safe set
 // of tasks instead of the broad affected suite:
 //   - docs/changelog-only -> nothing expensive
-//   - workflow / CI harness scripts -> yaml-parse + ci-selftest + ci-dry-run
+//   - workflow / CI harness scripts -> yaml-parse + ci-selftest + ci-dry-run + permission check
 //   - a changed test file -> run exactly that test file (test:<path>)
 //   - a source file with a directly-named test -> run that test file only
 //   - a source file with no mapped test -> owning package check + relevant smoke
@@ -795,13 +808,23 @@ export function planTasks(paths: readonly string[], packages: readonly Workspace
 export function planTargetedTasks(paths: readonly string[], packages: readonly WorkspacePackage[], testFiles: readonly string[]): Task[] {
 	const tasks = new Map<string, Task>();
 	const relevant = paths.filter(changedPath => !isDocOrChangelogPath(changedPath));
+	// A docs edit is cheap, but it is not free: docs/ is the source the embedded docs
+	// index is generated from, so shipping the edit without regenerating that index is
+	// the one drift class a docs-only PR can introduce. Select just its gate.
+	if (paths.some(isEmbeddedDocsSourcePath)) {
+		addTestFileTask(tasks, EMBEDDED_DOCS_GATE_TEST);
+	}
 	if (relevant.length === 0) {
-		return [];
+		// The shared ensureNativeBuild escalation is past this return, and the gate is
+		// a native consumer, so apply it here or the shard ships with no producer.
+		ensureNativeBuild(tasks);
+		return [...tasks.values()];
 	}
 
 	const fullWorkspace = relevant.some(isFullWorkspacePath) && !isRootPackageReleaseHarnessOnly(relevant);
 	let needCiSelftest = false;
 	let needYamlParse = false;
+	let needPermissionCheck = false;
 
 	if (fullWorkspace) {
 		add(tasks, "root-check", "Root TypeScript/tooling check", ["bun", "run", "ci:check:full"]);
@@ -814,10 +837,12 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 		if (isWorkflowPath(changedPath)) {
 			needYamlParse = true;
 			needCiSelftest = true;
+			needPermissionCheck = true;
 			continue;
 		}
 		if (isCiHarnessScriptPath(changedPath)) {
 			needCiSelftest = true;
+			needPermissionCheck = true;
 			continue;
 		}
 		if (isRustPath(changedPath)) {
@@ -902,6 +927,9 @@ export function planTargetedTasks(paths: readonly string[], packages: readonly W
 	}
 	if (needYamlParse) {
 		add(tasks, "yaml-parse", "Workflow YAML parse check", ["bun", "scripts/check-workflow-yaml.ts"]);
+	}
+	if (needPermissionCheck) {
+		add(tasks, "workflow-permissions", "Workflow permission policy regression", ["bun", "test", "scripts/check-workflow-permissions.test.ts", "scripts/release-policy.test.ts"]);
 	}
 
 	ensureNativeBuild(tasks);
@@ -999,12 +1027,20 @@ function isDocOrChangelogPath(changedPath: string): boolean {
 	return changedPath.endsWith(".md") || changedPath.startsWith("docs/") || changedPath.startsWith(".gjc/");
 }
 
+/** The generated index embeds every markdown file under `docs/`, so one test gates both sides. */
+const EMBEDDED_DOCS_GATE_TEST = "packages/coding-agent/test/docs-index-lazy.test.ts";
+const GENERATED_DOCS_INDEX = "packages/coding-agent/src/internal-urls/docs-index.generated.ts";
+
+function isEmbeddedDocsSourcePath(changedPath: string): boolean {
+	return (changedPath.startsWith("docs/") && changedPath.endsWith(".md")) || changedPath === GENERATED_DOCS_INDEX;
+}
+
 function isTestFilePath(changedPath: string): boolean {
 	return /\.test\.tsx?$/.test(changedPath);
 }
 
 function isCiHarnessScriptPath(changedPath: string): boolean {
-	return changedPath === "scripts/ci-dev-affected.ts" || changedPath === "scripts/ci-dev-affected.test.ts" || changedPath === "scripts/dev-ci-guard-topology.test.ts" || changedPath === "scripts/check-workflow-yaml.ts";
+	return changedPath === "scripts/ci-dev-affected.ts" || changedPath === "scripts/ci-dev-affected.test.ts" || changedPath === "scripts/dev-ci-guard-topology.test.ts" || changedPath === "scripts/check-workflow-yaml.ts" || changedPath === "scripts/check-workflow-permissions.ts" || changedPath === "scripts/check-workflow-permissions.test.ts";
 }
 
 
@@ -1405,7 +1441,9 @@ function isWorkflowHarnessPath(changedPath: string): boolean {
 		changedPath === "scripts/ci-dev-affected.ts" ||
 		changedPath === "scripts/ci-dev-affected.test.ts" ||
 		changedPath === "scripts/dev-ci-guard-topology.test.ts" ||
-		changedPath === "scripts/check-workflow-yaml.ts"
+		changedPath === "scripts/check-workflow-yaml.ts" ||
+		changedPath === "scripts/check-workflow-permissions.ts" ||
+		changedPath === "scripts/check-workflow-permissions.test.ts"
 	);
 }
 
@@ -1484,6 +1522,8 @@ export interface AffectedAggregateResults {
 	python: string;
 	windowsDoctor: string;
 	windowsDoctorRequired: string;
+	windowsNativeToolchain: string;
+	windowsNativeToolchainRequired: string;
 	telegramGuard: string;
 	telegramGuardRequired: string;
 	telegramWindows: string;
@@ -1505,6 +1545,8 @@ export function validateAffectedAggregate(results: AffectedAggregateResults): vo
 	if (results.python !== (results.hasPython === "true" ? "success" : "skipped")) throw new Error(results.hasPython === "true" ? "required Python matrix did not succeed" : "unplanned Python matrix was not skipped");
 	if (results.windowsDoctorRequired !== "true" && results.windowsDoctorRequired !== "false") throw new Error(`planner emitted invalid windows_doctor_required=${results.windowsDoctorRequired}`);
 	if (results.windowsDoctor !== (results.windowsDoctorRequired === "true" ? "success" : "skipped")) throw new Error(results.windowsDoctorRequired === "true" ? "required Windows dev:doctor did not succeed" : "unplanned Windows dev:doctor was not skipped");
+	if (results.windowsNativeToolchainRequired !== "true" && results.windowsNativeToolchainRequired !== "false") throw new Error(`planner emitted invalid windows_native_toolchain_required=${results.windowsNativeToolchainRequired}`);
+	if (results.windowsNativeToolchain !== (results.windowsNativeToolchainRequired === "true" ? "success" : "skipped")) throw new Error(results.windowsNativeToolchainRequired === "true" ? "required Windows native build toolchain check did not succeed" : "unplanned Windows native build toolchain check was not skipped");
 	if (results.darwinArm64TabWorkerSmokeRequired !== "true" && results.darwinArm64TabWorkerSmokeRequired !== "false") throw new Error(`planner emitted invalid darwin_arm64_tab_worker_smoke_required=${results.darwinArm64TabWorkerSmokeRequired}`);
 	if (results.darwinArm64TabWorkerSmoke !== (results.darwinArm64TabWorkerSmokeRequired === "true" ? "success" : "skipped")) throw new Error(results.darwinArm64TabWorkerSmokeRequired === "true" ? "required Darwin arm64 tab-worker smoke did not succeed" : "unplanned Darwin arm64 tab-worker smoke was not skipped");
 	if (results.telegramGuardRequired !== "true" && results.telegramGuardRequired !== "false") throw new Error(`planner emitted invalid telegram_guard_required=${results.telegramGuardRequired}`);
@@ -1521,6 +1563,8 @@ async function validateAggregate(): Promise<void> {
 		python: Bun.env.CI_DEV_PYTHON_RESULT?.trim() || "",
 		windowsDoctor: Bun.env.CI_DEV_WINDOWS_DOCTOR_RESULT?.trim() || "",
 		windowsDoctorRequired: Bun.env.CI_DEV_WINDOWS_DOCTOR_REQUIRED?.trim() || "",
+		windowsNativeToolchain: Bun.env.CI_DEV_WINDOWS_NATIVE_TOOLCHAIN_RESULT?.trim() || "",
+		windowsNativeToolchainRequired: Bun.env.CI_DEV_WINDOWS_NATIVE_TOOLCHAIN_REQUIRED?.trim() || "",
 		telegramGuard: Bun.env.CI_DEV_TELEGRAM_GUARD_RESULT?.trim() || "",
 		telegramGuardRequired: Bun.env.CI_DEV_TELEGRAM_GUARD_REQUIRED?.trim() || "",
 		telegramWindows: Bun.env.CI_DEV_TELEGRAM_WINDOWS_RESULT?.trim() || "",
@@ -1542,6 +1586,8 @@ async function validateAggregate(): Promise<void> {
 	console.log(`planned Python work: ${results.hasPython}`);
 	console.log(`windows-dev-doctor: ${results.windowsDoctor}`);
 	console.log(`planned Windows dev:doctor: ${results.windowsDoctorRequired}`);
+	console.log(`windows-native-build-toolchain: ${results.windowsNativeToolchain}`);
+	console.log(`planned Windows native build toolchain: ${results.windowsNativeToolchainRequired}`);
 	console.log(`darwin-arm64 tab-worker smoke: ${results.darwinArm64TabWorkerSmoke}`);
 	console.log(`planned Darwin arm64 tab-worker smoke: ${results.darwinArm64TabWorkerSmokeRequired}`);
 	console.log(`telegram-daemon-generation: ${results.telegramGuard}`);
@@ -1634,6 +1680,8 @@ function aggregateFromEnv(): AffectedAggregateResults {
 		python: requiredEnv("CI_DEV_PYTHON_RESULT"),
 		windowsDoctor: requiredEnv("CI_DEV_WINDOWS_DOCTOR_RESULT"),
 		windowsDoctorRequired: requiredEnv("CI_DEV_WINDOWS_DOCTOR_REQUIRED"),
+		windowsNativeToolchain: requiredEnv("CI_DEV_WINDOWS_NATIVE_TOOLCHAIN_RESULT"),
+		windowsNativeToolchainRequired: requiredEnv("CI_DEV_WINDOWS_NATIVE_TOOLCHAIN_REQUIRED"),
 		telegramGuard: requiredEnv("CI_DEV_TELEGRAM_GUARD_RESULT"),
 		telegramGuardRequired: requiredEnv("CI_DEV_TELEGRAM_GUARD_REQUIRED"),
 		telegramWindows: requiredEnv("CI_DEV_TELEGRAM_WINDOWS_RESULT"),
@@ -1656,6 +1704,8 @@ function parseAggregate(value: unknown): AffectedAggregateResults {
 			"windowsDoctor",
 			"python",
 			"windowsDoctorRequired",
+			"windowsNativeToolchain",
+			"windowsNativeToolchainRequired",
 			"telegramGuard",
 			"telegramGuardRequired",
 			"telegramWindows",
@@ -1676,6 +1726,8 @@ function parseAggregate(value: unknown): AffectedAggregateResults {
 		python: value.python as string,
 		windowsDoctor: value.windowsDoctor as string,
 		windowsDoctorRequired: value.windowsDoctorRequired as string,
+		windowsNativeToolchain: value.windowsNativeToolchain as string,
+		windowsNativeToolchainRequired: value.windowsNativeToolchainRequired as string,
 		telegramGuard: value.telegramGuard as string,
 		telegramGuardRequired: value.telegramGuardRequired as string,
 		telegramWindows: value.telegramWindows as string,

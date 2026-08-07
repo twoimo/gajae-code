@@ -57,10 +57,11 @@ import {
 	discoverAuthStorage,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
-
+import { SessionMigrationBusyError } from "./session/internal/session-open-errors";
 import {
 	type ResumeSessionIdentity,
 	resolveResumableSession,
+	SessionArtifactCapacityError,
 	type SessionDestination,
 	type SessionDirectoryMigrationPolicy,
 	type SessionInfo,
@@ -75,20 +76,13 @@ import { persistTaskTokenLog, resolveTaskTokenLogDir, taskTokenLogFromUsage } fr
 import type { LspStartupServerInfo } from "./tools";
 import { getDisplayChangelogEntries, getInstalledVersionChangelogEntry, getNewEntries } from "./utils/changelog";
 import type { EventBus } from "./utils/event-bus";
+import { fetchLatestPackageVersion } from "./utils/npm-registry";
 
 async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
 	try {
-		const response = await fetch("https://registry.npmjs.org/@gajae-code/coding-agent/latest");
-		if (!response.ok) return undefined;
-
-		const data = (await response.json()) as { version?: string };
-		const latestVersion = data.version;
-
-		if (latestVersion && Bun.semver.order(latestVersion, currentVersion) > 0) {
-			return latestVersion;
-		}
-
-		return undefined;
+		// Resolved from npm config so mirrored/firewalled networks are checked too.
+		const { version } = await fetchLatestPackageVersion("@gajae-code/coding-agent");
+		return Bun.semver.order(version, currentVersion) > 0 ? version : undefined;
 	} catch {
 		return undefined;
 	}
@@ -405,6 +399,7 @@ type StartupModelProfileArgs = {
 	parsedArgs: Pick<Args, "default" | "model" | "mpreset" | "thinking">;
 	startupModel?: CreateAgentSessionOptions["model"];
 	startupThinkingLevel?: CreateAgentSessionOptions["thinkingLevel"];
+	preferCachedModels?: boolean;
 };
 
 async function applyStartupModelProfilesWithPolicy(
@@ -415,16 +410,17 @@ async function applyStartupModelProfilesWithPolicy(
 		profileName: string,
 		persistDefault: boolean,
 		options: { thinkingLevelOverride?: CreateAgentSessionOptions["thinkingLevel"] } = {},
-	): Promise<void> => {
+	): Promise<boolean> => {
 		try {
 			await activateModelProfile(
 				{ session: args.session, modelRegistry: args.modelRegistry, settings: args.settings, profileName },
 				{ persistDefault, thinkingLevelOverride: options.thinkingLevelOverride },
 			);
+			return true;
 		} catch (error) {
 			if (onCredentialError && error instanceof ModelProfileCredentialError) {
 				onCredentialError(error);
-				return;
+				return false;
 			}
 			throw error;
 		}
@@ -435,19 +431,40 @@ async function applyStartupModelProfilesWithPolicy(
 	// deferred `--model <pattern>` path resolved inside createAgentSession.
 	const explicitModel = args.parsedArgs.model ? (args.startupModel ?? args.session.model) : undefined;
 	const defaultProfile = args.settings.get("modelProfile.default");
-	if (defaultProfile || args.parsedArgs.mpreset) {
-		await args.modelRegistry.refresh("online-if-uncached");
-	}
+	const preferCachedProfiles = args.preferCachedModels === true && args.parsedArgs.mpreset !== undefined;
+	const applyConfiguredProfiles = async (): Promise<boolean> => {
+		let applied = true;
+		if (defaultProfile) {
+			applied =
+				(await applyProfile(defaultProfile, false, {
+					thinkingLevelOverride: args.settings.has("defaultThinkingLevel")
+						? args.settings.get("defaultThinkingLevel")
+						: undefined,
+				})) && applied;
+		}
+		if (args.parsedArgs.mpreset) {
+			applied = (await applyProfile(args.parsedArgs.mpreset, args.parsedArgs.default === true)) && applied;
+		}
+		return applied;
+	};
 
-	if (defaultProfile) {
-		await applyProfile(defaultProfile, false, {
-			thinkingLevelOverride: args.settings.has("defaultThinkingLevel")
-				? args.settings.get("defaultThinkingLevel")
-				: undefined,
-		});
-	}
-	if (args.parsedArgs.mpreset) {
-		await applyProfile(args.parsedArgs.mpreset, args.parsedArgs.default === true);
+	if (preferCachedProfiles) {
+		let applied: boolean;
+		let refreshedOnline = false;
+		try {
+			applied = await applyConfiguredProfiles();
+		} catch (error) {
+			if (error instanceof ModelProfileCredentialError) throw error;
+			await args.modelRegistry.refresh("online-if-uncached");
+			refreshedOnline = true;
+			applied = await applyConfiguredProfiles();
+		}
+		if (applied && !refreshedOnline) args.modelRegistry.refreshInBackground();
+	} else {
+		if (defaultProfile || args.parsedArgs.mpreset) {
+			await args.modelRegistry.refresh("online-if-uncached");
+		}
+		await applyConfiguredProfiles();
 	}
 
 	// Explicit CLI --model/--thinking must win over any activated or skipped profile.
@@ -508,17 +525,49 @@ export async function applyStartupModelProfilesForRoot(
 		resumeAction: "continue-tail" | "open-idle" | undefined;
 	},
 ): Promise<{ recoverableErrors: string[] }> {
+	const policyArgs = { ...args, preferCachedModels: args.isInteractive };
 	if (!isStartupModelProfileCredentialRecoveryEligible(args)) {
-		await applyStartupModelProfilesOrExit(args);
+		try {
+			await applyStartupModelProfilesWithPolicy(policyArgs);
+		} catch (error) {
+			await exitForStartupModelProfileError(args, error);
+		}
 		return { recoverableErrors: [] };
 	}
 
 	const recoverableErrors: string[] = [];
 	try {
-		await applyStartupModelProfilesWithPolicy(args, error => recoverableErrors.push(error.message));
+		await applyStartupModelProfilesWithPolicy(policyArgs, error => recoverableErrors.push(error.message));
 	} catch (error) {
 		await exitForStartupModelProfileError(args, error);
 	}
+	return { recoverableErrors };
+}
+
+type DeferredModelProfileStartup = () => Promise<{ recoverableErrors: string[] }>;
+class DeferredModelProfileStartupError extends Error {
+	readonly profileError: unknown;
+
+	constructor(profileError: unknown) {
+		super("Deferred model profile startup failed");
+		this.profileError = profileError;
+	}
+}
+
+async function applyDeferredStartupModelProfilesForRoot(
+	args: StartupModelProfileArgs & {
+		isInteractive: boolean;
+		hasInteractiveTerminal: boolean;
+		initialMessage: string | undefined;
+		initialMessages: readonly string[];
+		resumeAction: "continue-tail" | "open-idle" | undefined;
+	},
+): Promise<{ recoverableErrors: string[] }> {
+	const recoverableErrors: string[] = [];
+	const onCredentialError = isStartupModelProfileCredentialRecoveryEligible(args)
+		? (error: ModelProfileCredentialError) => recoverableErrors.push(error.message)
+		: undefined;
+	await applyStartupModelProfilesWithPolicy({ ...args, preferCachedModels: true }, onCredentialError);
 	return { recoverableErrors };
 }
 
@@ -562,6 +611,22 @@ export function resolveManagedAgentDirForScope(_cwd: string): string {
 	return getAgentDir();
 }
 export const BARE_RESUME_OPEN_ERROR = "Could not open the selected session. Use --resume <id>.";
+const SESSION_ARTIFACT_CAPACITY_RECOVERY_MESSAGE =
+	"The selected legacy session's artifacts exceed the supported migration capacity. Archive or remove only that legacy session's artifacts after confirming they are no longer needed, then retry.";
+
+function operatorFacingSessionOpenMessage(value: unknown): string | undefined {
+	const code =
+		value instanceof SessionArtifactCapacityError
+			? value.code
+			: value instanceof SessionMigrationBusyError
+				? value.code
+				: typeof value === "string"
+					? value
+					: undefined;
+	if (code === "artifact_capacity_exceeded") return SESSION_ARTIFACT_CAPACITY_RECOVERY_MESSAGE;
+	if (code === "migration_busy") return new SessionMigrationBusyError().message;
+	return undefined;
+}
 
 function isBareResume(parsed: Args): boolean {
 	return (
@@ -599,6 +664,8 @@ export async function runInteractiveMode(
 	initialImages?: ImageContent[],
 	createInteractiveMode?: CreateInteractiveMode,
 	resumeAction?: "continue-tail" | "open-idle",
+	startDeferredMcpConfig?: CreateAgentSessionResult["startDeferredMcpConfig"],
+	startDeferredModelProfiles?: DeferredModelProfileStartup,
 ): Promise<void> {
 	const mode = createInteractiveMode
 		? createInteractiveMode({
@@ -642,45 +709,98 @@ export async function runInteractiveMode(
 			mode.showStatus(notify.message);
 		}
 	}
-
-	const hasStartupInput = initialMessage !== undefined || initialMessages.length > 0;
-	if (!hasStartupInput && resumeAction === "continue-tail") {
-		try {
-			await session.continuePersistedHistory();
-		} catch (error: unknown) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
-			mode.showError(errorMessage);
-		}
-	}
-
-	if (initialMessage !== undefined) {
-		try {
-			await session.prompt(initialMessage, { images: initialImages });
-		} catch (error: unknown) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
-			mode.showError(errorMessage);
-		}
-	}
-
-	for (const message of initialMessages) {
-		try {
-			let text = message;
-			const slashResult = await executeBuiltinSlashCommand(text, {
-				ctx: mode,
-				handleBackgroundCommand: () => mode.handleBackgroundCommand(),
+	if (startDeferredMcpConfig) {
+		mode.showStatus("Connecting MCP tools…");
+		void startDeferredMcpConfig()
+			.then(result => {
+				if (result.hasErrors) {
+					mode.showWarning(
+						result.loadedToolCount > 0 ? "Some MCP tools could not be loaded." : "MCP tools could not be loaded.",
+					);
+					return;
+				}
+				mode.showStatus(`${result.loadedToolCount} MCP tool${result.loadedToolCount === 1 ? "" : "s"} connected`);
+			})
+			.catch(() => {
+				logger.warn("Deferred MCP startup failed.");
+				mode.showError("MCP tools could not be loaded.");
 			});
-			if (slashResult === true) continue;
-			if (typeof slashResult === "string") text = slashResult;
-			await session.prompt(text);
-		} catch (error: unknown) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
-			mode.showError(errorMessage);
-		}
+	}
+	let deferredModelProfileFailure: Promise<never> | undefined;
+	if (startDeferredModelProfiles) {
+		mode.showStatus("Loading model profile…");
+		deferredModelProfileFailure = startDeferredModelProfiles().then(
+			result => {
+				for (const error of result.recoverableErrors) mode.showError(error);
+				mode.showStatus("Model profile ready");
+				return Promise.withResolvers<never>().promise;
+			},
+			error => {
+				const message = error instanceof Error ? error.message : "Model profile could not be loaded.";
+				mode.showError(message);
+				throw new DeferredModelProfileStartupError(error);
+			},
+		);
 	}
 
-	while (true) {
-		const input = await mode.getUserInput();
-		await submitInteractiveInput(mode, session, input);
+	const runStartupInputAndPromptLoop = async (): Promise<never> => {
+		const hasStartupInput = initialMessage !== undefined || initialMessages.length > 0;
+		if (!hasStartupInput && resumeAction === "continue-tail") {
+			try {
+				await session.continuePersistedHistory();
+			} catch (error: unknown) {
+				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+				mode.showError(errorMessage);
+			}
+		}
+
+		if (initialMessage !== undefined) {
+			try {
+				await session.prompt(initialMessage, { images: initialImages });
+			} catch (error: unknown) {
+				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+				mode.showError(errorMessage);
+			}
+		}
+
+		for (const message of initialMessages) {
+			try {
+				let text = message;
+				const slashResult = await executeBuiltinSlashCommand(text, {
+					ctx: mode,
+					handleBackgroundCommand: () => mode.handleBackgroundCommand(),
+				});
+				if (slashResult === true) continue;
+				if (typeof slashResult === "string") text = slashResult;
+				await session.prompt(text);
+			} catch (error: unknown) {
+				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+				mode.showError(errorMessage);
+			}
+		}
+
+		while (true) {
+			const input = await mode.getUserInput();
+			await submitInteractiveInput(mode, session, input);
+		}
+	};
+
+	const inputLoop = runStartupInputAndPromptLoop();
+	if (!deferredModelProfileFailure) {
+		await inputLoop;
+		return;
+	}
+	try {
+		await Promise.race([inputLoop, deferredModelProfileFailure]);
+	} catch (error) {
+		if (!(error instanceof DeferredModelProfileStartupError)) throw error;
+		try {
+			await mode.shutdown();
+		} finally {
+			mode.stop();
+		}
+		await inputLoop.catch(() => {});
+		throw error.profileError;
 	}
 }
 
@@ -698,7 +818,7 @@ async function promptForkSession(session: SessionInfo): Promise<boolean> {
 	}
 }
 
-async function getChangelogForDisplay(parsed: Args): Promise<string | undefined> {
+export async function getChangelogForDisplay(parsed: Args): Promise<string | undefined> {
 	if (parsed.continue || parsed.resume) {
 		return undefined;
 	}
@@ -710,15 +830,19 @@ async function getChangelogForDisplay(parsed: Args): Promise<string | undefined>
 
 	const lastVersion = settings.get("lastChangelogVersion");
 	if (!lastVersion) {
-		settings.set("lastChangelogVersion", VERSION);
-		await flushChangelogVersion();
+		if (settings.canWriteDurableConfig()) {
+			settings.set("lastChangelogVersion", VERSION);
+			await flushChangelogVersion();
+		}
 		return getInstalledVersionChangelogEntry(entries, VERSION)?.content;
 	}
 
 	if (lastVersion !== VERSION) {
 		const newEntries = getNewEntries(entries, lastVersion);
-		settings.set("lastChangelogVersion", VERSION);
-		await flushChangelogVersion();
+		if (settings.canWriteDurableConfig()) {
+			settings.set("lastChangelogVersion", VERSION);
+			await flushChangelogVersion();
+		}
 		if (newEntries.length > 0) {
 			return newEntries.map(e => e.content).join("\n\n");
 		}
@@ -1068,6 +1192,7 @@ type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promis
 
 export interface RunRootCommandDependencies {
 	createAgentSession?: typeof createAgentSession;
+	createSessionManager?: typeof createSessionManager;
 	discoverAuthStorage?: typeof discoverAuthStorage;
 	runAcpMode?: (options?: { agentDir?: string }) => Promise<void>;
 	settings?: Settings;
@@ -1204,13 +1329,13 @@ export async function runRootCommand(
 				undefined,
 				resumeMigrationPolicy,
 			);
-		} catch {
-			process.stderr.write(`${BARE_RESUME_OPEN_ERROR}\n`);
+		} catch (error) {
+			process.stderr.write(`${operatorFacingSessionOpenMessage(error) ?? BARE_RESUME_OPEN_ERROR}\n`);
 			if (!deps.suppressProcessExit) process.exitCode = 1;
 			return;
 		}
 		if (opened.kind === "error") {
-			process.stderr.write(`${BARE_RESUME_OPEN_ERROR}\n`);
+			process.stderr.write(`${operatorFacingSessionOpenMessage(opened.reason) ?? BARE_RESUME_OPEN_ERROR}\n`);
 			if (!deps.suppressProcessExit) process.exitCode = 1;
 			return;
 		}
@@ -1377,9 +1502,27 @@ export async function runRootCommand(
 
 	// Create session manager based on CLI flags. A bare resume was strictly opened
 	// before startup discovery, so it never reaches create-or-open behavior here.
-	const sessionManager =
-		bareResumeSessionManager ??
-		(await logger.time("createSessionManager", createSessionManager, parsedArgs, cwd, settingsInstance));
+	let sessionManager: SessionManager | undefined = bareResumeSessionManager;
+	if (!sessionManager) {
+		try {
+			sessionManager = await logger.time(
+				"createSessionManager",
+				deps.createSessionManager ?? createSessionManager,
+				parsedArgs,
+				cwd,
+				settingsInstance,
+			);
+		} catch (error) {
+			const message = operatorFacingSessionOpenMessage(error);
+			if (!message) throw error;
+			process.stderr.write(`${message}\n`);
+			if (!deps.suppressProcessExit) process.exitCode = 1;
+			authStorage.close();
+			stopThemeWatcher();
+			await postmortem.cleanup();
+			return;
+		}
+	}
 
 	// Restore the resumed session's working directory so the HUD branch, the
 	// project path, and the agent's tools all match where the session was
@@ -1454,7 +1597,13 @@ export async function runRootCommand(
 	sessionOptions.notificationHostModeSupported = isInteractive;
 	sessionOptions.sdkHostModeSupported = isInteractive;
 	sessionOptions.settings = settingsInstance;
+	if (isInteractive && sessionOptions.mcpConfigPath) {
+		sessionOptions.deferMcpConfigStartup = true;
+	}
 	const hasRootStartupProfile = Boolean(settingsInstance.get("modelProfile.default") || parsedArgs.mpreset);
+	const deferMemoryBackendStartup =
+		hasRootStartupProfile && !(parsedArgs.authBootstrap === true && isInteractive) && mode !== "acp";
+	sessionOptions.deferMemoryBackendStartup = deferMemoryBackendStartup;
 
 	// Research-mode (RLM) preset: augment session options before session creation.
 	deps.rlmPreset?.applyOptions(sessionOptions, settingsInstance);
@@ -1534,10 +1683,16 @@ export async function runRootCommand(
 			if (!deps.suppressProcessExit) await postmortem.cleanup();
 		}
 	} else {
-		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager, eventBus } = await createSession(
-			sessionOptions,
-			{ skipPostCreateModelRefresh: hasRootStartupProfile },
-		);
+		const {
+			session,
+			setToolUIContext,
+			modelFallbackMessage,
+			lspServers,
+			mcpManager,
+			startDeferredMcpConfig,
+			startDeferredMemoryBackend,
+			eventBus,
+		} = await createSession(sessionOptions, { skipPostCreateModelRefresh: hasRootStartupProfile });
 		applyCliRuntimeApiKeyOverride(authStorage, parsedArgs.apiKey, session.model);
 
 		// Research-mode (RLM) preset: hard tool-boundary assertion after the registry is assembled.
@@ -1554,8 +1709,9 @@ export async function runRootCommand(
 			}
 		}
 
+		let startDeferredModelProfiles: DeferredModelProfileStartup | undefined;
 		if (!(parsedArgs.authBootstrap === true && isInteractive)) {
-			const { recoverableErrors } = await applyStartupModelProfilesForRoot({
+			const profileArgs = {
 				session,
 				settings: settingsInstance,
 				modelRegistry,
@@ -1567,9 +1723,27 @@ export async function runRootCommand(
 				initialMessage,
 				initialMessages: parsedArgs.messages,
 				resumeAction: bareResumeAction,
-			});
-			for (const recoverableError of recoverableErrors) {
-				notifs.push({ kind: "error", message: recoverableError });
+			};
+			if (isInteractive && parsedArgs.mpreset) {
+				const ready = Promise.withResolvers<void>();
+				session.extendStartupTurnBarrier(ready.promise);
+				startDeferredModelProfiles = async () => {
+					try {
+						const result = await applyDeferredStartupModelProfilesForRoot(profileArgs);
+						startDeferredMemoryBackend?.();
+						ready.resolve();
+						return result;
+					} catch (error) {
+						ready.reject(error);
+						throw error;
+					}
+				};
+			} else {
+				const { recoverableErrors } = await applyStartupModelProfilesForRoot(profileArgs);
+				startDeferredMemoryBackend?.();
+				for (const recoverableError of recoverableErrors) {
+					notifs.push({ kind: "error", message: recoverableError });
+				}
 			}
 		}
 
@@ -1650,6 +1824,8 @@ export async function runRootCommand(
 						initialImages,
 						deps.createInteractiveMode,
 						bareResumeAction,
+						startDeferredMcpConfig,
+						startDeferredModelProfiles,
 					);
 				}
 			} catch (error) {

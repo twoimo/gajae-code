@@ -8,7 +8,13 @@
  * - Interact with the user via UI primitives
  */
 
-import type { AgentMessage, AgentToolResult, AgentToolUpdateCallback, ThinkingLevel } from "@gajae-code/agent-core";
+import type {
+	AgentMessage,
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	RunSettlementProof,
+	ThinkingLevel,
+} from "@gajae-code/agent-core";
 import type { CompactionResult } from "@gajae-code/agent-core/compaction";
 import type {
 	Api,
@@ -38,6 +44,7 @@ import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { WorkflowGateEmitter } from "../../modes/shared/agent-wire/workflow-gate-broker";
 import type { Theme } from "../../modes/theme/theme";
 import type {
+	ClientBridge,
 	ClientBridgePermissionOption,
 	ClientBridgePermissionOutcome,
 	ClientBridgePermissionToolCall,
@@ -290,6 +297,18 @@ export interface ExtensionTranscriptEntry {
 	textSummary: string;
 	ts: string;
 	body?: string;
+	/**
+	 * Durable, image-free message blocks used by rich transcript consumers such
+	 * as ACP replay. Binary image payloads intentionally remain unavailable.
+	 */
+	content?: Array<
+		| { type: "text"; text: string }
+		| { type: "thinking"; thinking: string }
+		| { type: "toolCall"; id: string; name: string; arguments: unknown }
+	>;
+	toolCallId?: string;
+	toolName?: string;
+	isError?: boolean;
 }
 
 export interface ContextUsage {
@@ -333,6 +352,8 @@ export interface ExtensionContext {
 	hasUI: boolean;
 	/** Current working directory */
 	cwd: string;
+	/** Aborted when the runner stops waiting for this handler, including handler timeout. */
+	signal?: AbortSignal;
 	/** Session manager (read-only) */
 	sessionManager: ReadonlySessionManager;
 	/** Session classification supplied by the SDK for extension policy decisions. */
@@ -343,8 +364,12 @@ export interface ExtensionContext {
 	model: Model | undefined;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
+	/** Stable resource ownership identifier for the active prompt run. */
+	getActivePromptHandle(): string | undefined;
 	/** Abort the current agent operation */
 	abort(): void;
+	/** Abort and prove whether resources for a specific prompt settled. */
+	abortPromptAndWait?(handle: string, options: { graceMs: number }): Promise<RunSettlementProof>;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
 	/** Typed pending-message counts per queue (steering, follow-up, next-turn). */
@@ -361,6 +386,7 @@ export interface ExtensionContext {
 	resolveTool(name: string): Pick<Tool, "safeSummary" | "safeSummaryFields"> | undefined;
 	/** Session control seams used by the SDK host. */
 	cycleModel(): Promise<{ model: Model; thinkingLevel: ThinkingLevel | undefined } | undefined>;
+	setModelProfile?(name: string): Promise<boolean>;
 	cycleThinkingLevel(): ThinkingLevel | undefined;
 	setQueueMode(kind: "steering" | "follow_up" | "interrupt", mode: unknown): boolean;
 	getSkillState(): unknown;
@@ -379,7 +405,15 @@ export interface ExtensionContext {
 
 	getJobs(): unknown;
 	/** Typed skill and mode controls exposed to the SDK host. */
-	invokeSkill?(name: string, args?: string): Promise<unknown>;
+	invokeSkill?(
+		name: string,
+		args?: string,
+		options?: {
+			onPreflightAccepted?: () => void;
+			onPreflightAcceptCommit?: () => void | Promise<void>;
+			onSkillPrepared?: (meta: { name: string; path: string; lineCount?: number; cleanedArgs?: string }) => void;
+		},
+	): Promise<unknown>;
 	setPlanMode?(on: boolean): unknown;
 	operateGoal?(op: "create" | "get" | "resume" | "pause" | "complete" | "drop", objective?: string): Promise<unknown>;
 
@@ -395,6 +429,8 @@ export interface ExtensionContext {
 			  ) => Promise<ClientBridgePermissionOutcome>)
 			| undefined,
 	): void;
+	/** Install a client bridge backed by a live SDK reverse provider lease. */
+	setSdkClientBridge?(bridge: ClientBridge | undefined): void;
 	/** Names of session SDK seams actually installed by the active runtime. */
 	sdkBindings?(): readonly string[];
 
@@ -1122,7 +1158,11 @@ export interface ExtensionAPI {
 	/** Send a user message to the agent, or queue it when deliverAs is set. */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; onPreflightAccepted?: () => void },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			onPreflightAccepted?: () => void;
+			onPreflightAcceptCommit?: () => void | Promise<void>;
+		},
 	): Promise<void>;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
@@ -1331,7 +1371,11 @@ export type SendMessageHandler = <T = unknown>(
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp"; onPreflightAccepted?: () => void },
+	options?: {
+		deliverAs?: "steer" | "followUp";
+		onPreflightAccepted?: () => void;
+		onPreflightAcceptCommit?: () => void | Promise<void>;
+	},
 ) => void | Promise<void>;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
@@ -1407,7 +1451,10 @@ export interface ExtensionActions {
 export interface ExtensionContextActions {
 	getModel: () => Model | undefined;
 	isIdle: () => boolean;
+	/** Stable resource ownership identifier for the active prompt run. */
+	getActivePromptHandle?: () => string | undefined;
 	abort: () => void;
+	abortPromptAndWait?: (handle: string, options: { graceMs: number }) => Promise<RunSettlementProof>;
 	hasPendingMessages: () => boolean;
 	/** Typed pending-message counts per queue; optional for embedders without a counted queue. */
 	getPendingMessageCounts?: () => { steering: number; followUp: number; nextTurn: number };
@@ -1429,6 +1476,7 @@ export interface ExtensionContextActions {
 	clearContext?: () => Promise<boolean>;
 	/** Session control and query seams exposed to the per-session SDK host. */
 	cycleModel?: () => Promise<{ model: Model; thinkingLevel: ThinkingLevel | undefined } | undefined>;
+	setModelProfile?: (name: string) => Promise<boolean>;
 	cycleThinkingLevel?: () => ThinkingLevel | undefined;
 	setQueueMode?: (kind: "steering" | "follow_up" | "interrupt", mode: unknown) => boolean;
 	getSkillState?: () => unknown;
@@ -1454,8 +1502,17 @@ export interface ExtensionContextActions {
 			  ) => Promise<ClientBridgePermissionOutcome>)
 			| undefined,
 	) => void;
+	setSdkClientBridge?: (bridge: ClientBridge | undefined) => void;
 	sdkControl?: (operation: string, input: Record<string, unknown>) => unknown | Promise<unknown>;
-	invokeSkill?: (name: string, args?: string) => Promise<unknown>;
+	invokeSkill?: (
+		name: string,
+		args?: string,
+		options?: {
+			onPreflightAccepted?: () => void;
+			onPreflightAcceptCommit?: () => void | Promise<void>;
+			onSkillPrepared?: (meta: { name: string; path: string; lineCount?: number; cleanedArgs?: string }) => void;
+		},
+	) => Promise<unknown>;
 	setPlanMode?: (on: boolean) => unknown;
 	operateGoal?: (
 		op: "create" | "get" | "resume" | "pause" | "complete" | "drop",

@@ -12,6 +12,17 @@ type CliResult = { exitCode: number; stdout: string; stderr: string };
 // Capture through files rather than pipes: a piped child that outlives the
 // parent's read teardown can be killed by SIGPIPE (exit 141) under CI load,
 // which masks the CLI's real exit contract.
+function closeCaptureFd(fd: number): void {
+	// Bun.spawn may close inherited capture FDs when a short-lived child exits,
+	// especially on fail-closed CLI paths. Ignore EBADF so teardown does not
+	// mask the CLI exit contract under CI load (see shard-6 post-#3076 red).
+	try {
+		closeSync(fd);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code !== "EBADF") throw error;
+	}
+}
+
 async function runCli(repo: string, agentDir: string, args: string[]): Promise<CliResult> {
 	const captureDir = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-sdk-cli-capture-"));
 	const stdoutPath = path.join(captureDir, "stdout");
@@ -26,14 +37,18 @@ async function runCli(repo: string, agentDir: string, args: string[]): Promise<C
 			stderr: stderrFd,
 		});
 		const exitCode = await child.exited;
-		return {
-			exitCode,
-			stdout: await fs.readFile(stdoutPath, "utf8"),
-			stderr: await fs.readFile(stderrPath, "utf8"),
-		};
+		// Close before reading so file contents are durable even if Bun still
+		// held a write handle; tolerate already-closed FDs from the child.
+		closeCaptureFd(stdoutFd);
+		closeCaptureFd(stderrFd);
+		// Re-open read-only and fsync parent side so CI load cannot observe a
+		// truncated capture of a finished child (exit code alone is not enough).
+		const stdout = await fs.readFile(stdoutPath, "utf8");
+		const stderr = await fs.readFile(stderrPath, "utf8");
+		return { exitCode, stdout, stderr };
 	} finally {
-		closeSync(stdoutFd);
-		closeSync(stderrFd);
+		closeCaptureFd(stdoutFd);
+		closeCaptureFd(stderrFd);
 		await fs.rm(captureDir, { recursive: true, force: true });
 	}
 }
@@ -66,7 +81,18 @@ describe("SDK daemon session CLI", () => {
 			},
 			websocket: {
 				open(socket) {
-					socket.send(JSON.stringify({ type: "server_hello", protocolVersion: 3, connectionId: "test-conn" }));
+					// Defer hello one tick so the client open handler can enter the
+					// hello phase before the first frame is delivered (pairs with the
+					// SdkClient early-hello buffer under load).
+					queueMicrotask(() => {
+						try {
+							socket.send(
+								JSON.stringify({ type: "server_hello", protocolVersion: 3, connectionId: "test-conn" }),
+							);
+						} catch {
+							// connection already closed
+						}
+					});
 				},
 				message(socket, message) {
 					const frame = JSON.parse(String(message)) as Record<string, unknown>;
@@ -141,7 +167,7 @@ describe("SDK daemon session CLI", () => {
 			"--json-input",
 			"{}",
 		]);
-		expect(query.exitCode).toBe(0);
+		expect(query.exitCode, `query stdout=${query.stdout}\nstderr=${query.stderr}`).toBe(0);
 		expect(JSON.parse(query.stdout)).toMatchObject({ ok: true, result: { sessionId: "live" } });
 
 		const refused = await runCli(root, agentDir, [

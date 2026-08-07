@@ -182,16 +182,22 @@ function renderSubagentSnapshotBody(
 		lines.push(`  ${theme.fg("dim", `Agent: ${snapshot.agent} (${snapshot.agentSource})`)}`);
 	}
 	if (snapshot.effectiveModel) {
+		// Fast mode is a property of the tier this model runs under, so the ⚡ glyph
+		// belongs on the model line rather than the id.
+		const fastSuffix = snapshot.fastMode && theme.icon.fast ? ` ${theme.icon.fast}` : "";
 		if (snapshot.modelFellBack && snapshot.requestedModel) {
 			lines.push(
-				`  ${theme.fg("warning", `Model: ${snapshot.effectiveModel} (requested ${snapshot.requestedModel}, fell back — no credentials)`)}`,
+				`  ${theme.fg("warning", `Model: ${snapshot.effectiveModel} (requested ${snapshot.requestedModel}, fell back — no credentials)`)}${fastSuffix}`,
 			);
 		} else {
-			lines.push(`  ${theme.fg("dim", `Model: ${snapshot.effectiveModel}`)}`);
+			lines.push(`  ${theme.fg("dim", `Model: ${snapshot.effectiveModel}`)}${fastSuffix}`);
 		}
 	}
 	if (snapshot.description) lines.push(`  ${theme.fg("dim", `Description: ${snapshot.description}`)}`);
 	if (snapshot.outputRef) lines.push(`  ${theme.fg("dim", `Output: ${snapshot.outputRef}`)}`);
+	if (snapshot.setupFailureSummary) {
+		lines.push(`  ${theme.fg("error", `Setup failure: ${snapshot.setupFailureSummary}`)}`);
+	}
 	if (snapshot.assignment) {
 		lines.push(`  ${theme.fg("dim", "Assignment:")}`);
 		for (const al of snapshot.assignment.split("\n")) lines.push(`    ${theme.fg("toolOutput", replaceTabs(al))}`);
@@ -312,8 +318,9 @@ export const subagentToolRenderer = {
 					);
 				}
 
-				snapshotSignatures ??= subagents.map(snapshot =>
-					subagentAwaitRenderedStateSignature([snapshot], result.details),
+				snapshotSignatures ??= subagents.map(
+					snapshot =>
+						`${subagentAwaitRenderedStateSignature([snapshot], result.details)}:${snapshot.setupFailureSummary ?? ""}`,
 				);
 				subagents.forEach((snapshot, index) => {
 					// Fresh per-subagent status line (cheap), then a cached or dynamic body.

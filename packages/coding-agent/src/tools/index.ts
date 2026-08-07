@@ -292,8 +292,20 @@ export interface ToolSession {
 	strictToolNames?: boolean;
 	/** Get artifacts directory for artifact:// URLs */
 	getArtifactsDir?: () => string | null;
+	/** Additional artifacts directories explicitly authorized for this session's tree (parent/child/sibling reads). Derived only from the explicitly adopted/shared `ArtifactManager`; never enumerates unrelated live sessions. */
+	getAuthorizedArtifactsDirs?: () => readonly string[];
 	/** Get the ArtifactManager backing this session (shared across parent + subagents). */
 	getArtifactManager?: () => ArtifactManager | null;
+	/** Prove that an ArtifactManager belongs to this concrete session or its explicitly adopted parent tree. */
+	isArtifactManagerAuthorized?: (manager: ArtifactManager) => boolean;
+	/** Adopt a task-created fallback manager into the concrete session owner. */
+	adoptArtifactManager?: (manager: ArtifactManager) => void;
+	/** Linearizably establish the concrete session owner's canonical artifact manager. */
+	ensureArtifactManager?: () => Promise<ArtifactManager | null>;
+	/** Release a task-created fallback manager when its logical session ends. */
+	releaseArtifactManager?: (manager: ArtifactManager) => void;
+	/** Register teardown work owned by the current logical session. */
+	registerSessionCleanup?: (cleanup: () => Promise<void> | void) => () => void;
 	/** Allocate a new artifact path and ID for session-scoped truncated output. */
 	allocateOutputArtifact?: (toolType: string) => Promise<{ id?: string; path?: string }>;
 	/** Get session spawns */
@@ -314,6 +326,8 @@ export interface ToolSession {
 	settings: Settings;
 	/** Live service-tier intent of the parent session, inherited by `inherit` subagents. */
 	serviceTier?: ServiceTier;
+	/** Whether the effective subagent tier grants fast mode for a resolved provider. */
+	isFastForSubagentProvider?: (provider?: string) => boolean;
 	/** Plan mode state (if active) */
 	getPlanModeState?: () => PlanModeState | undefined;
 	/** Goal mode state (if active or paused) */

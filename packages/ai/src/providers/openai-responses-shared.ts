@@ -33,6 +33,32 @@ import type { AssistantMessageEventStream } from "../utils/event-stream";
 import { isCompleteJson, parseStreamingJson } from "../utils/json-parse";
 import { joinTextWithImagePlaceholder, NON_VISION_IMAGE_PLACEHOLDER, partitionVisionContent } from "./vision-guard";
 
+const OPENAI_RESPONSES_PROGRESS_EVENT_TYPES = new Set([
+	"response.created",
+	"response.output_item.added",
+	"response.reasoning_summary_part.added",
+	"response.reasoning_summary_text.delta",
+	"response.reasoning_summary_part.done",
+	"response.reasoning_text.delta",
+	"response.content_part.added",
+	"response.output_text.delta",
+	"response.refusal.delta",
+	"response.function_call_arguments.delta",
+	"response.function_call_arguments.done",
+	"response.custom_tool_call_input.delta",
+	"response.custom_tool_call_input.done",
+	"response.output_item.done",
+	"response.completed",
+	"response.failed",
+	"error",
+]);
+
+export function isOpenAIResponsesProgressEvent(event: unknown): boolean {
+	if (!event || typeof event !== "object") return false;
+	const type = (event as { type?: unknown }).type;
+	return typeof type === "string" && OPENAI_RESPONSES_PROGRESS_EVENT_TYPES.has(type);
+}
+
 export function encodeTextSignatureV1(id: string, phase?: TextSignatureV1["phase"]): string {
 	const payload: TextSignatureV1 = { v: 1, id };
 	if (phase) payload.phase = phase;
@@ -960,20 +986,31 @@ export function populateResponsesUsageFromResponse(
 				input_tokens?: number | null;
 				output_tokens?: number | null;
 				total_tokens?: number | null;
-				input_tokens_details?: { cached_tokens?: number | null } | null;
+				input_tokens_details?: {
+					cached_tokens?: number | null;
+					cache_write_tokens?: number | null;
+				} | null;
 				output_tokens_details?: { reasoning_tokens?: number | null } | null;
 		  }
 		| null
 		| undefined,
 ): void {
 	if (!usage) return;
+	const inputTokens = usage.input_tokens || 0;
 	const cachedTokens = usage.input_tokens_details?.cached_tokens || 0;
+	const reportedCacheWrite = usage.input_tokens_details?.cache_write_tokens || 0;
+	const cacheWriteTokens =
+		Number.isSafeInteger(reportedCacheWrite) &&
+		reportedCacheWrite >= 0 &&
+		cachedTokens + reportedCacheWrite <= inputTokens
+			? reportedCacheWrite
+			: 0;
 	const reasoningTokens = usage.output_tokens_details?.reasoning_tokens || 0;
 	output.usage = {
-		input: (usage.input_tokens || 0) - cachedTokens,
+		input: Math.max(0, inputTokens - cachedTokens - cacheWriteTokens),
 		output: usage.output_tokens || 0,
 		cacheRead: cachedTokens,
-		cacheWrite: 0,
+		cacheWrite: cacheWriteTokens,
 		totalTokens: usage.total_tokens || 0,
 		...(reasoningTokens > 0 ? { reasoningTokens } : {}),
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },

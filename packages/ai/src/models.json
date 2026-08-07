@@ -1,5 +1,40 @@
 {
 	"alibaba-token-plan": {
+		"deepseek-v4-flash-0731": {
+			"id": "deepseek-v4-flash-0731",
+			"name": "DeepSeek V4 Flash 0731",
+			"api": "openai-completions",
+			"provider": "alibaba-token-plan",
+			"baseUrl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 384000,
+			"compat": {
+				"supportsDeveloperRole": false,
+				"supportsReasoningEffort": true,
+				"reasoningContentField": "reasoning_content",
+				"requiresReasoningContentForToolCalls": true
+			},
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "low",
+				"maxLevel": "max",
+				"levels": [
+					"low",
+					"high",
+					"max"
+				]
+			}
+		},
 		"deepseek-v4-pro": {
 			"id": "deepseek-v4-pro",
 			"name": "DeepSeek V4 Pro",
@@ -45,6 +80,33 @@
 			},
 			"contextWindow": 1000000,
 			"maxTokens": 131072,
+			"compat": {
+				"supportsDeveloperRole": false
+			},
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
+		},
+		"qwen-3.8-max": {
+			"id": "qwen-3.8-max",
+			"name": "Qwen3.8 Max",
+			"api": "openai-responses",
+			"provider": "alibaba-token-plan",
+			"baseUrl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1000000,
+			"maxTokens": 65536,
 			"compat": {
 				"supportsDeveloperRole": false
 			},
@@ -4028,6 +4090,78 @@
 				"minLevel": "minimal",
 				"maxLevel": "high"
 			}
+		}
+	},
+	"bizrouter": {
+		"anthropic/claude-sonnet-4.5": {
+			"id": "anthropic/claude-sonnet-4.5",
+			"name": "Anthropic Sonnet 4.5",
+			"api": "openai-completions",
+			"provider": "bizrouter",
+			"baseUrl": "https://api.bizrouter.ai/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 3,
+				"output": 15,
+				"cacheRead": 0.3,
+				"cacheWrite": 3.75
+			},
+			"contextWindow": 200000,
+			"maxTokens": 64000,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
+		},
+		"google/gemini-2.5-pro": {
+			"id": "google/gemini-2.5-pro",
+			"name": "Gemini 2.5 Pro",
+			"api": "openai-completions",
+			"provider": "bizrouter",
+			"baseUrl": "https://api.bizrouter.ai/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 1.25,
+				"output": 10,
+				"cacheRead": 0.31,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "high"
+			}
+		},
+		"openai/gpt-4o": {
+			"id": "openai/gpt-4o",
+			"name": "GPT-4o",
+			"api": "openai-completions",
+			"provider": "bizrouter",
+			"baseUrl": "https://api.bizrouter.ai/v1",
+			"reasoning": false,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 2.5,
+				"output": 10,
+				"cacheRead": 1.25,
+				"cacheWrite": 0
+			},
+			"contextWindow": 128000,
+			"maxTokens": 16384
 		}
 	},
 	"cerebras": {
@@ -39810,6 +39944,94 @@
 			"maxTokens": 8888
 		}
 	},
+	"mara": {
+		"DeepSeek-V3.1": {
+			"id": "DeepSeek-V3.1",
+			"name": "DeepSeek V3.1",
+			"api": "openai-completions",
+			"provider": "mara",
+			"baseUrl": "https://api.cloud.mara.com/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.6,
+				"output": 1.7,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 131072,
+			"maxTokens": 16384,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
+		},
+		"MiniMax-M2.5": {
+			"id": "MiniMax-M2.5",
+			"name": "MiniMax M2.5",
+			"api": "openai-completions",
+			"provider": "mara",
+			"baseUrl": "https://api.cloud.mara.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.3,
+				"output": 1.2,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 196608,
+			"maxTokens": 16384
+		},
+		"MiniMax-M2.7": {
+			"id": "MiniMax-M2.7",
+			"name": "MiniMax M2.7",
+			"api": "openai-completions",
+			"provider": "mara",
+			"baseUrl": "https://api.cloud.mara.com/v1",
+			"reasoning": false,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.3,
+				"output": 1.2,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 196608,
+			"maxTokens": 16384
+		},
+		"gpt-oss-120b": {
+			"id": "gpt-oss-120b",
+			"name": "GPT OSS 120B",
+			"api": "openai-completions",
+			"provider": "mara",
+			"baseUrl": "https://api.cloud.mara.com/v1",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0.15,
+				"output": 0.75,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 131072,
+			"maxTokens": 16384,
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
+		}
+	},
 	"minimax": {
 		"MiniMax-M2": {
 			"id": "MiniMax-M2",
@@ -58276,7 +58498,16 @@
 				"minLevel": "low",
 				"maxLevel": "max"
 			},
-			"applyPatchToolType": "freeform"
+			"applyPatchToolType": "freeform",
+			"longContextPricing": {
+				"threshold": 272000,
+				"cost": {
+					"input": 10,
+					"output": 45,
+					"cacheRead": 1,
+					"cacheWrite": 12.5
+				}
+			}
 		},
 		"gpt-5.6-luna": {
 			"id": "gpt-5.6-luna",
@@ -58290,10 +58521,10 @@
 				"image"
 			],
 			"cost": {
-				"input": 1,
-				"output": 6,
-				"cacheRead": 0.1,
-				"cacheWrite": 1.25
+				"input": 0.2,
+				"output": 1.2,
+				"cacheRead": 0.02,
+				"cacheWrite": 0.25
 			},
 			"contextWindow": 1050000,
 			"maxTokens": 128000,
@@ -58302,7 +58533,16 @@
 				"minLevel": "low",
 				"maxLevel": "max"
 			},
-			"applyPatchToolType": "freeform"
+			"applyPatchToolType": "freeform",
+			"longContextPricing": {
+				"threshold": 272000,
+				"cost": {
+					"input": 0.4,
+					"output": 1.8,
+					"cacheRead": 0.04,
+					"cacheWrite": 0.5
+				}
+			}
 		},
 		"gpt-5.6-sol": {
 			"id": "gpt-5.6-sol",
@@ -58328,7 +58568,16 @@
 				"minLevel": "low",
 				"maxLevel": "max"
 			},
-			"applyPatchToolType": "freeform"
+			"applyPatchToolType": "freeform",
+			"longContextPricing": {
+				"threshold": 272000,
+				"cost": {
+					"input": 10,
+					"output": 45,
+					"cacheRead": 1,
+					"cacheWrite": 12.5
+				}
+			}
 		},
 		"gpt-5.6-terra": {
 			"id": "gpt-5.6-terra",
@@ -58342,10 +58591,10 @@
 				"image"
 			],
 			"cost": {
-				"input": 2.5,
-				"output": 15,
-				"cacheRead": 0.25,
-				"cacheWrite": 3.125
+				"input": 2,
+				"output": 12,
+				"cacheRead": 0.2,
+				"cacheWrite": 2.5
 			},
 			"contextWindow": 1050000,
 			"maxTokens": 128000,
@@ -58354,7 +58603,16 @@
 				"minLevel": "low",
 				"maxLevel": "max"
 			},
-			"applyPatchToolType": "freeform"
+			"applyPatchToolType": "freeform",
+			"longContextPricing": {
+				"threshold": 272000,
+				"cost": {
+					"input": 4,
+					"output": 18,
+					"cacheRead": 0.4,
+					"cacheWrite": 5
+				}
+			}
 		},
 		"gpt-image-2": {
 			"id": "gpt-image-2",
@@ -59064,10 +59322,10 @@
 				"image"
 			],
 			"cost": {
-				"input": 1,
-				"output": 6,
-				"cacheRead": 0.1,
-				"cacheWrite": 1.25
+				"input": 0.2,
+				"output": 1.2,
+				"cacheRead": 0.02,
+				"cacheWrite": 0.25
 			},
 			"contextWindow": 272000,
 			"maxTokens": 128000,
@@ -59078,7 +59336,16 @@
 				"minLevel": "low",
 				"maxLevel": "max"
 			},
-			"applyPatchToolType": "freeform"
+			"applyPatchToolType": "freeform",
+			"longContextPricing": {
+				"threshold": 272000,
+				"cost": {
+					"input": 0.4,
+					"output": 1.8,
+					"cacheRead": 0.04,
+					"cacheWrite": 0.5
+				}
+			}
 		},
 		"gpt-5.6-sol": {
 			"id": "gpt-5.6-sol",
@@ -59106,7 +59373,16 @@
 				"minLevel": "low",
 				"maxLevel": "max"
 			},
-			"applyPatchToolType": "freeform"
+			"applyPatchToolType": "freeform",
+			"longContextPricing": {
+				"threshold": 272000,
+				"cost": {
+					"input": 10,
+					"output": 45,
+					"cacheRead": 1,
+					"cacheWrite": 12.5
+				}
+			}
 		},
 		"gpt-5.6-terra": {
 			"id": "gpt-5.6-terra",
@@ -59120,10 +59396,10 @@
 				"image"
 			],
 			"cost": {
-				"input": 2.5,
-				"output": 15,
-				"cacheRead": 0.25,
-				"cacheWrite": 3.125
+				"input": 2,
+				"output": 12,
+				"cacheRead": 0.2,
+				"cacheWrite": 2.5
 			},
 			"contextWindow": 272000,
 			"maxTokens": 128000,
@@ -59134,7 +59410,16 @@
 				"minLevel": "low",
 				"maxLevel": "max"
 			},
-			"applyPatchToolType": "freeform"
+			"applyPatchToolType": "freeform",
+			"longContextPricing": {
+				"threshold": 272000,
+				"cost": {
+					"input": 4,
+					"output": 18,
+					"cacheRead": 0.4,
+					"cacheWrite": 5
+				}
+			}
 		},
 		"gpt-image-2": {
 			"id": "gpt-image-2",

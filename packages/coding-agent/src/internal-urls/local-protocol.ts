@@ -80,10 +80,32 @@ async function listFilesRecursively(rootPath: string): Promise<string[]> {
 
 	return files.sort((a, b) => a.localeCompare(b));
 }
+function localListingLabel(file: string): string {
+	return file.replace(/[\\[\]\r\n]/g, character => {
+		switch (character) {
+			case "\r":
+				return "\\r";
+			case "\n":
+				return "\\n";
+			default:
+				return `\\${character}`;
+		}
+	});
+}
+
+function localListingHref(file: string): string {
+	return file
+		.split("/")
+		.map(component => encodeURIComponent(component).replaceAll("(", "%28").replaceAll(")", "%29"))
+		.join("/");
+}
 
 async function buildListing(url: InternalUrl, localRoot: string): Promise<InternalResource> {
 	const files = await listFilesRecursively(localRoot);
-	const listing = files.length === 0 ? "(empty)" : files.map(file => `- [${file}](local://${file})`).join("\n");
+	const listing =
+		files.length === 0
+			? "(empty)"
+			: files.map(file => `- [${localListingLabel(file)}](local://${localListingHref(file)})`).join("\n");
 	const content =
 		`# Local\n\n` +
 		`Session-scoped scratch space for large intermediate data, subagent handoffs, and reusable planning artifacts.\n\n` +
@@ -103,31 +125,30 @@ async function buildListing(url: InternalUrl, localRoot: string): Promise<Intern
 function extractRelativePath(url: InternalUrl): string {
 	const host = url.rawHost || url.hostname;
 	const pathname = url.rawPathname ?? url.pathname;
-
-	const combined = host
-		? pathname && pathname !== "/"
-			? `${host}${pathname}`
-			: host
-		: pathname && pathname !== "/"
-			? pathname.slice(1)
-			: "";
-
-	if (!combined) {
-		return "";
-	}
-
-	let decoded: string;
+	const encodedAuthority = /^local:\/\/([^/?#]*)/i.exec(url.href)?.[1] ?? "";
+	const validatedHost = host;
+	let decodedPathname = pathname;
 	try {
-		decoded = decodeURIComponent(combined.replaceAll("\\", "/"));
+		const decodedAuthority = decodeURIComponent(encodedAuthority);
+		if (host && decodedAuthority !== host) throw new Error("authority_mismatch");
+		decodedPathname = decodeURIComponent(pathname.replaceAll("\\", "/"));
 	} catch {
 		throw new Error(`Invalid URL encoding in local:// path: ${url.href}`);
 	}
+	const combined = validatedHost
+		? decodedPathname && decodedPathname !== "/"
+			? `${validatedHost}${decodedPathname}`
+			: validatedHost
+		: decodedPathname && decodedPathname !== "/"
+			? decodedPathname.slice(1)
+			: "";
+	if (!combined) return "";
 	try {
-		validateRelativePath(decoded);
+		validateRelativePath(combined);
 	} catch (error) {
 		throw toLocalValidationError(error);
 	}
-	return decoded;
+	return combined;
 }
 
 function safeSessionId(options: LocalProtocolOptions): string {
@@ -146,6 +167,17 @@ const LEGACY_MIGRATION_MARKER = ".gjc-local-legacy-migrated-v1";
 const MAX_LEGACY_LOCAL_BYTES = 64 * 1024 * 1024;
 
 type LegacyMigrationState = "complete" | "cleanup_pending";
+
+/**
+ * Marker values that mean legacy migration has settled for this root and the
+ * synchronous resolver may proceed. `cleanup_pending` counts: the entries are
+ * installed and content-verified, and only retirement of the legacy source is
+ * outstanding. Must stay in sync with {@link readMigrationMarker}, which the
+ * async gate uses to decide the same question.
+ */
+function isSettledMigrationMarkerValue(value: string): boolean {
+	return value === "verified\n" || value === "absent\n" || value === "cleanup_pending\n";
+}
 
 interface LegacyEntrySnapshot {
 	readonly relativePath: string;
@@ -350,7 +382,7 @@ async function migrateManagedLegacyLocal(
 					throw new Error("Legacy local:// migration destination verification failed");
 			}
 		}
-		for (const entry of await fs.readdir(staging)) {
+		for (const entry of (await fs.readdir(staging)).sort()) {
 			const destination = path.join(localRoot, entry);
 			try {
 				await fs.lstat(destination);
@@ -540,8 +572,13 @@ function initializeLocalRootSyncWhenLegacyAbsent(options: LocalProtocolOptions, 
 	if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Unsafe local:// root");
 	const marker = path.join(localRoot, LEGACY_MIGRATION_MARKER);
 	try {
-		const value = fsSync.readFileSync(marker, "utf8");
-		if (value !== "verified\n" && value !== "absent\n") throw new Error("Unsafe local:// migration marker");
+		// Accept exactly the marker states the async gate treats as settled. A
+		// `cleanup_pending` marker means the entries are fully installed and verified
+		// and only retirement of the legacy source is outstanding, so resolution is
+		// safe; rejecting it here made the sync resolver fail closed on a root the
+		// async gate had already completed.
+		if (!isSettledMigrationMarkerValue(fsSync.readFileSync(marker, "utf8")))
+			throw new Error("Unsafe local:// migration marker");
 		initializedLocalRoots.add(localRoot);
 		return;
 	} catch (error) {
@@ -558,7 +595,10 @@ function initializeLocalRootSyncWhenLegacyAbsent(options: LocalProtocolOptions, 
 		fsSync.writeFileSync(marker, "absent\n", { mode: 0o600, flag: "wx" });
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		if (fsSync.readFileSync(marker, "utf8") !== "absent\n") throw new Error("Unsafe local:// migration marker");
+		// A concurrent initializer won the exclusive create. Any settled marker state
+		// it wrote is authoritative; only an unrecognized value is unsafe.
+		if (!isSettledMigrationMarkerValue(fsSync.readFileSync(marker, "utf8")))
+			throw new Error("Unsafe local:// migration marker");
 	}
 	initializedLocalRoots.add(localRoot);
 }

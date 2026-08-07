@@ -32,6 +32,15 @@ const subagentSchema = z.object({
 	id: z.string().optional().describe("single subagent id or backing job id for resume/steer"),
 	message: z.string().optional().describe("message to deliver when resuming or steering a subagent"),
 	pause: z.boolean().optional().describe("pause after steering a currently running subagent"),
+	condition: z
+		.enum(["all_terminal", "any_terminal"])
+		.optional()
+		.describe("terminal wait condition; defaults to all_terminal"),
+	heartbeat_ms: z
+		.number()
+		.refine(value => value === 0 || (Number.isInteger(value) && value >= 100 && value <= 5000))
+		.optional()
+		.describe("heartbeat interval; 0 disables"),
 	timeout_ms: z.number().min(0).max(MAX_AWAIT_TIMEOUT_MS).optional().describe("await timeout in milliseconds"),
 	limit: z.number().min(1).max(MAX_LIST_LIMIT).optional().describe("maximum subagents to return"),
 	verbosity: z
@@ -65,6 +74,8 @@ export interface SubagentSnapshot {
 	durationMs: number;
 	resultText?: string;
 	errorText?: string;
+	/** Safe setup failure cause retained from the executor launch path. */
+	setupFailureSummary?: string;
 	resultPreview?: string;
 	outputRef?: string;
 	truncated?: boolean;
@@ -82,6 +93,8 @@ export interface SubagentSnapshot {
 	requestedModel?: string;
 	/** True when the requested model lacked credentials and fell back to the parent model. */
 	modelFellBack?: boolean;
+	/** True when the effective subagent provider is in fast mode. */
+	fastMode?: boolean;
 }
 
 export type SubagentAwaitOutcome = "completed" | "timed_out" | "interrupted";
@@ -93,6 +106,11 @@ export interface SubagentToolDetails {
 	subagents: SubagentSnapshot[];
 	/** Await outcome for a live await receipt; omitted when no wait was started. */
 	awaitOutcome?: SubagentAwaitOutcome;
+	waitOutcome?: "completed" | "timed_out_wait" | "interrupted";
+	condition?: "all_terminal" | "any_terminal";
+	heartbeatMs?: number;
+	terminalIds?: string[];
+	acknowledgedTerminalIds?: string[];
 	/** True only when the parent await was interrupted; the child was not cancelled. */
 	interrupted?: true;
 }
@@ -340,35 +358,53 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<SubagentToolDetails> | undefined,
 	): Promise<AgentToolResult<SubagentToolDetails>> {
-		const records = params.ids?.length
-			? this.#visibleRecordsByIds(manager, params.ids, ownerFilter)
+		const ids = params.ids
+			?.map(id => id.trim())
+			.filter(Boolean)
+			.filter((id, index, all) => all.indexOf(id) === index);
+		const records = ids?.length
+			? this.#visibleRecordsByIds(manager, ids, ownerFilter)
 			: this.#runningRecords(manager, ownerFilter);
-		const notFoundIds = this.#notFoundRecordIds(manager, params.ids ?? [], ownerFilter);
-		if (records.length === 0) {
-			const missing = notFoundIds.map(id =>
-				this.#missingSnapshot(id, "not_found", "No visible detached subagent matches this id."),
+		const notFoundIds = (ids ?? []).filter(id => !this.#findVisibleRecord(manager, id, ownerFilter));
+		if (records.length === 0)
+			return this.#buildSnapshotResult(
+				notFoundIds.map(id =>
+					this.#missingSnapshot(id, "not_found", "No visible detached subagent matches this id."),
+				),
+				"Subagent await",
 			);
-			return this.#buildSnapshotResult(missing, "Subagent await");
-		}
-
-		const runningJobs = records
-			.filter(record => record.status === "running" && record.currentJobId)
-			.map(record => manager.getJob(record.currentJobId!))
-			.filter((job): job is AsyncJob => job !== undefined);
-		if (runningJobs.length === 0) {
-			return await this.#buildRecordResult(manager, records, {
-				title: "Subagent await",
-				notFoundIds,
-				verbosity: params.verbosity ?? "receipt",
-			});
-		}
-
+		const targets = records
+			.map(record => manager.resolveSubagentWaitTarget(record.subagentId, ownerFilter))
+			.filter((target): target is NonNullable<typeof target> => target !== undefined);
+		if (targets.length === 0) return this.#buildSnapshotResult([], "Subagent await");
+		const condition = params.condition ?? "all_terminal";
+		const handle = manager.subscribeTerminalWait(targets, condition);
 		const timeoutMs = Math.min(
 			MAX_AWAIT_TIMEOUT_MS,
 			Math.max(0, Math.floor(params.timeout_ms ?? DEFAULT_AWAIT_TIMEOUT_MS)),
 		);
-		const watchedJobIds = runningJobs.map(job => job.id);
+		const targetsAlreadyTerminal = targets.every(
+			target =>
+				target.initialStatus === "completed" ||
+				target.initialStatus === "failed" ||
+				target.initialStatus === "cancelled",
+		);
+		if (targetsAlreadyTerminal) {
+			const waitResult = await handle.result;
+			handle.acknowledge(waitResult.terminalJobIds);
+			handle.close();
+			const terminalJobIds = waitResult.terminalJobIds;
+			return await this.#buildRecordResult(manager, records, {
+				title: "Subagent await",
+				verbosity: params.verbosity ?? "receipt",
+				waitOutcome: "completed",
+				condition,
+				terminalIds: terminalJobIds,
+			});
+		}
+		const watchedJobIds = targets.map(target => target.jobId).filter((jobId): jobId is string => jobId !== null);
 		manager.watchJobs(watchedJobIds);
+		const heartbeatMs = params.heartbeat_ms === undefined ? 500 : params.heartbeat_ms;
 		let lastEmittedSignature: string | undefined;
 		const emitIfChanged = (force: boolean): void => {
 			if (!onUpdate) return;
@@ -378,57 +414,50 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 			lastEmittedSignature = signature;
 			onUpdate(result);
 		};
-		const progressTimer = onUpdate ? setInterval(() => emitIfChanged(false), 500) : undefined;
-		// Initial emission so the panel appears immediately; later idle ticks are
-		// gated on a value-based rendered-state signature so unchanged progress no
-		// longer rebuilds the renderer component or mutates transcript lines above
-		// the viewport (the source of the await-panel repaint storms).
+		const progressTimer =
+			onUpdate && heartbeatMs > 0 ? setInterval(() => emitIfChanged(false), heartbeatMs) : undefined;
 		emitIfChanged(true);
-
-		let awaitOutcome: SubagentAwaitOutcome;
-		const { promise: timeoutPromise, resolve: resolveTimeout } = Promise.withResolvers<SubagentAwaitOutcome>();
-		const timeoutTimer = setTimeout(() => resolveTimeout("timed_out"), timeoutMs);
-		const completionPromise = Promise.all(runningJobs.map(job => job.promise)).then(() => "completed" as const);
+		let waitOutcome: "completed" | "timed_out_wait" | "interrupted";
 		let onAbort: (() => void) | undefined;
 		try {
-			if (signal) {
-				const { promise: abortPromise, resolve: resolveAbort } = Promise.withResolvers<SubagentAwaitOutcome>();
-				onAbort = () => resolveAbort("interrupted");
-				if (signal.aborted) onAbort();
-				else signal.addEventListener("abort", onAbort, { once: true });
-				awaitOutcome = await Promise.race([completionPromise, timeoutPromise, abortPromise]);
-			} else {
-				awaitOutcome = await Promise.race([completionPromise, timeoutPromise]);
-			}
+			const abortPromise = new Promise<"interrupted">(resolve => {
+				onAbort = () => resolve("interrupted");
+				if (signal?.aborted) onAbort();
+				else signal?.addEventListener("abort", onAbort, { once: true });
+			});
+			waitOutcome =
+				targetsAlreadyTerminal && !signal?.aborted
+					? "completed"
+					: await Promise.race([
+							handle.result.then(() => "completed" as const),
+							Bun.sleep(timeoutMs).then(() => "timed_out_wait" as const),
+							abortPromise,
+						]);
 		} finally {
-			clearTimeout(timeoutTimer);
 			if (signal && onAbort) signal.removeEventListener("abort", onAbort);
 			if (progressTimer) clearInterval(progressTimer);
 		}
-		if (awaitOutcome !== "interrupted") {
-			const terminalWatchedJobIds = watchedJobIds.filter(jobId => {
-				const status = manager.getJob(jobId)?.status;
-				return status === "completed" || status === "failed" || status === "cancelled";
-			});
-			manager.acknowledgeDeliveries(terminalWatchedJobIds);
-		}
+		const waitResult = waitOutcome === "completed" ? await handle.result : undefined;
+		if (waitOutcome === "completed") handle.acknowledge(waitResult?.terminalJobIds);
 		manager.unwatchJobs(watchedJobIds);
-
+		handle.close();
+		const awaitOutcome: SubagentAwaitOutcome =
+			waitOutcome === "completed" ? "completed" : waitOutcome === "timed_out_wait" ? "timed_out" : "interrupted";
 		const finalRecords = this.#visibleRecordsByIds(
 			manager,
 			records.map(record => record.subagentId),
 			ownerFilter,
 		);
-		const finalNotFoundIds = [...new Set([...notFoundIds, ...records.map(record => record.subagentId)])].filter(
-			id => !finalRecords.some(record => record.subagentId === id),
-		);
 		return await this.#buildRecordResult(manager, finalRecords, {
-			title: awaitOutcome === "interrupted" ? "Subagent await interrupted" : "Subagent await",
-			notFoundIds: finalNotFoundIds,
-			timedOut: awaitOutcome === "timed_out",
+			title: waitOutcome === "interrupted" ? "Subagent await interrupted" : "Subagent await",
+			notFoundIds,
+			timedOut: waitOutcome === "timed_out_wait",
 			verbosity: params.verbosity ?? "receipt",
 			attachLiveProgress: true,
 			awaitOutcome,
+			waitOutcome,
+			condition,
+			terminalIds: waitResult?.terminalJobIds,
 		});
 	}
 
@@ -486,7 +515,8 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 		if (direct && isSubagentJob(direct) && (!ownerId || direct.ownerId === ownerId)) return direct;
 		return manager
 			.getAllJobs(ownerId ? { ownerId } : undefined)
-			.find(job => isSubagentJob(job) && job.metadata?.subagent?.id === id);
+			.filter(job => isSubagentJob(job) && job.metadata?.subagent?.id === id)
+			.sort((a, b) => b.startTime - a.startTime)[0];
 	}
 
 	#visibleRecordsByIds(
@@ -547,6 +577,9 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 			verbosity?: SubagentParams["verbosity"];
 			attachLiveProgress?: boolean;
 			awaitOutcome?: SubagentAwaitOutcome;
+			waitOutcome?: "completed" | "timed_out_wait" | "interrupted";
+			condition?: "all_terminal" | "any_terminal";
+			terminalIds?: string[];
 		},
 	): Promise<AgentToolResult<SubagentToolDetails>> {
 		const verifiedOutputIds = await this.#verifiedOutputIds(records);
@@ -561,33 +594,28 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 		for (const id of options.notFoundIds ?? []) {
 			snapshots.push(this.#missingSnapshot(id, "not_found", "No visible detached subagent matches this id."));
 		}
-		if (options.awaitOutcome !== "interrupted") {
-			manager.acknowledgeDeliveries(
-				snapshots
-					.filter(
-						s =>
-							s.status !== "running" &&
-							s.status !== "paused" &&
-							s.status !== "queued" &&
-							s.status !== "not_found",
-					)
-					.map(s => s.jobId),
-			);
-		}
 		if (options.awaitOutcome === "interrupted") {
 			for (const snapshot of snapshots) {
-				if (snapshot.status === "running" || snapshot.status === "paused" || snapshot.status === "queued") {
+				if (snapshot.status === "running" || snapshot.status === "paused" || snapshot.status === "queued")
 					snapshot.guidance = AWAIT_INTERRUPTED_GUIDANCE;
-				}
 			}
 		}
-		return this.#buildSnapshotResult(snapshots, options.title, options.awaitOutcome);
+		const details: SubagentToolDetails = {
+			subagents: snapshots,
+			...(options.awaitOutcome !== undefined ? { awaitOutcome: options.awaitOutcome } : {}),
+			...(options.waitOutcome !== undefined ? { waitOutcome: options.waitOutcome } : {}),
+			...(options.condition !== undefined ? { condition: options.condition } : {}),
+			...(options.terminalIds !== undefined ? { terminalIds: options.terminalIds } : {}),
+		};
+		if (options.awaitOutcome === "interrupted") details.interrupted = true;
+		return this.#buildSnapshotResult(snapshots, options.title, options.awaitOutcome, details);
 	}
 
 	#buildSnapshotResult(
 		snapshots: SubagentSnapshot[],
 		title: string,
 		awaitOutcome?: SubagentAwaitOutcome,
+		extraDetails?: SubagentToolDetails,
 	): AgentToolResult<SubagentToolDetails> {
 		const lines = [`## ${title} (${snapshots.length})`, ""];
 		for (const snapshot of snapshots) {
@@ -603,6 +631,7 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 			}
 			if (snapshot.description) lines.push(`Description: ${snapshot.description}`);
 			if (snapshot.outputRef) lines.push(`Output: ${snapshot.outputRef}`);
+			if (snapshot.setupFailureSummary) lines.push(`Setup failure: ${snapshot.setupFailureSummary}`);
 			if (snapshot.assignment) lines.push("Assignment:", "```", snapshot.assignment, "```");
 			if (snapshot.steerMessage) {
 				lines.push(`Steer (${snapshot.steerState ?? "queued"}):`, "```", snapshot.steerMessage, "```");
@@ -618,7 +647,7 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 		}
 		return {
 			content: [{ type: "text", text: lines.join("\n").trimEnd() }],
-			details: {
+			details: extraDetails ?? {
 				subagents: snapshots,
 				...(awaitOutcome ? { awaitOutcome } : {}),
 				...(awaitOutcome === "interrupted" ? { interrupted: true } : {}),
@@ -646,8 +675,6 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 	): Pick<SubagentSnapshot, "progress" | "liveProgressAvailable"> {
 		if (!attachLiveProgress) return {};
 		const liveProgressAvailable = manager.hasLiveSubagent(record.subagentId);
-		// Only surface progress when a live producer exists; stale/retained progress
-		// for a record with no live producer must degrade to a static snapshot (AC5).
 		if (!liveProgressAvailable) return { liveProgressAvailable: false };
 		const progress = manager.getSubagentProgress(record.subagentId);
 		return {
@@ -695,6 +722,7 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 		if (record.effectiveModel) fields.effectiveModel = record.effectiveModel;
 		if (record.requestedModel) fields.requestedModel = record.requestedModel;
 		if (record.modelFellBack) fields.modelFellBack = true;
+		if (record.fastMode) fields.fastMode = true;
 		return fields;
 	}
 
@@ -730,6 +758,9 @@ export class SubagentTool implements AgentTool<typeof subagentSchema, SubagentTo
 						resultPreview: output.preview,
 						truncated: output.truncated,
 					}
+				: {}),
+			...(job.setupFailureSummary
+				? { setupFailureSummary: sanitizeText(job.setupFailureSummary, RECEIPT_PREVIEW_WIDTH) }
 				: {}),
 			...(outputRef ? { outputRef } : {}),
 			...(runningTimeoutGuidance ? { guidance: runningTimeoutGuidance } : {}),
@@ -900,6 +931,7 @@ function canonicalizeSnapshotForSignature(snapshot: SubagentSnapshot): unknown {
 		effectiveModel: snapshot.effectiveModel ?? null,
 		requestedModel: snapshot.requestedModel ?? null,
 		modelFellBack: snapshot.modelFellBack ?? false,
+		fastMode: snapshot.fastMode ?? false,
 		// durationMs intentionally excluded (time-derived; would defeat idle gating).
 		progress: snapshot.progress ? canonicalizeProgressForSignature(snapshot.progress) : null,
 	};
@@ -927,6 +959,10 @@ function canonicalizeProgressForSignature(progress: AgentProgress): unknown {
 		cost: progress.cost,
 		modelOverride: progress.modelOverride ?? null,
 		modelSubstitutionWarning: progress.modelSubstitutionWarning ?? null,
+		// The nested task panel renders this, so it must reach the signature or a
+		// fast-mode-only change would render differently while comparing byte-identical,
+		// suppressing the very update that introduces the glyph.
+		fastMode: progress.fastMode ?? false,
 		// durationMs intentionally excluded (time-derived).
 		extractedToolData: progress.extractedToolData
 			? canonicalizeExtractedToolDataForSignature(progress.extractedToolData)

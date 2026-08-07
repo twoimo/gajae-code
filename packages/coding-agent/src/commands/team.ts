@@ -13,6 +13,7 @@ import {
 	readGjcTeamSnapshot,
 	shutdownGjcTeam,
 	startGjcTeam,
+	UnknownGjcTeamApiOperationError,
 } from "../gjc-runtime/team-runtime";
 import { syncSkillActiveState } from "../skill-state/active-state";
 
@@ -173,7 +174,7 @@ export default class Team extends Command {
 					"Supported operations:",
 					"send-message broadcast mailbox-list mailbox-mark-delivered mailbox-mark-notified notification-list notification-read notification-replay notification-mark-pane-attempt worker-startup-ack",
 					"create-task read-task list-tasks update-task claim-task transition-task-status release-task-claim",
-					"read-config read-manifest read-worker-status update-worker-status read-worker-heartbeat recover-stale-claims update-worker-heartbeat write-worker-inbox write-worker-identity",
+					"read-config read-manifest read-worker-status update-worker-status read-worker-heartbeat recover-stale-claims update-worker-heartbeat read-worker-memory-guard update-worker-memory-guard apply-worker-memory-guard write-worker-inbox write-worker-identity",
 					"append-event read-events read-traces await-event write-shutdown-request read-shutdown-ack read-monitor-snapshot write-monitor-snapshot read-task-approval write-task-approval",
 					"Completion example:",
 					'transition-task-status --input \'{"team_name":"demo","task_id":"task-1","to":"completed","claim_token":"...","completion_evidence":{"summary":"done","items":[{"kind":"command","status":"passed","summary":"focused tests passed","command":"bun test packages/coding-agent/test/gjc-runtime/team-runtime.test.ts"}]}}\' --json',
@@ -183,7 +184,24 @@ export default class Team extends Command {
 				return;
 			}
 			const input = parseInputFlag(rest);
-			const result = await executeGjcTeamApiOperation(operation, input);
+			let result: unknown;
+			try {
+				result = await executeGjcTeamApiOperation(operation, input);
+			} catch (error) {
+				if (!(error instanceof UnknownGjcTeamApiOperationError)) throw error;
+				process.exitCode = 1;
+				if (json) {
+					writeReceipt({
+						ok: false,
+						error: error.code,
+						operation: error.operation,
+						suggestions: error.suggestions,
+					});
+				} else {
+					process.stderr.write(`${error.message}\n`);
+				}
+				return;
+			}
 			const teamName = String(input.team_name ?? input.teamName ?? "").trim();
 			if (teamName) {
 				try {

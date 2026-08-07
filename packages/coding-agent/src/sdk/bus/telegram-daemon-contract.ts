@@ -39,12 +39,49 @@ export const NOTIFICATION_PROTOCOL_VERSION = 3;
  * Generation 28 rejects special files before retained native authority opens.
  * Generation 29 adds serving-epoch compatibility, sidecar heartbeat, root GC,
  * and Bot API cooldown structural fixes (#2956, #2960, #3048).
+ * Generation 30 adds opt-in tool activity delivery, closed lifecycle phases,
+ * and capability-versioned mixed-host compatibility. Generation 31 rolls out
+ * non-Linux direct tmux lifecycle cleanup semantics. Generation 32 applies
+ * Telegram sound-notification policy across daemon delivery paths. Generation
+ * 33 adds action-bound multi-select state rendering and replay-safe option
+ * snapshots. Generation 34 converts non-photo image formats (including WebP)
+ * into Telegram-compatible photo uploads when possible. Generation 35 adds
+ * user-created topic adoption (forum-topic folder picker). Generation 36 bound
+ * managed-session replacement to exact native filesystem authority; generation
+ * 37 retires that binding (revert of #3489, which stalled POSIX artifact
+ * cleanup); generation 38 binds exact cleanup to parent and link-count authority.
+ * Generation 39 applies rustfmt and clippy-equivalent cleanup to the pi-shell
+ * process-tree authority (#3682); generation 40 hardens exact Bash process-tree
+ * ownership, settlement, and descendant cleanup authority. Generation 38 also
+ * adds durable provider-intent admission without changing owner, reclaim,
+ * signal, or spawn authority.
+ * Generation 41 applies first-class provider-settings admission to Telegram
+ * lifecycle controls, plus cross-host topic-registry CAS convergence, host-and-epoch
+ * archive fencing, retained topic history, user-topic adoption provenance, and
+ * exact versionless shared-state upgrades with quarantined source snapshots.
+ * Generation 42 applies first-class provider-settings admission to Telegram
+ * lifecycle controls. Generation 43 applies identity-bound exact replacement
+ * cleanup shared by managed-session and daemon filesystem authority. Generation
+ * 44 makes callback recovery restart-safe by revoking persisted routes and
+ * callback receipts durable before routing and binds aliases to exact asks.
+ * Generation 46 stages accepted callback activation and makes callback
+ * consumption transactional under exact pending and lease authority. Generation
+ * 47 settles failed staged revocation and guards the complete callback authority
+ * and polling dependency chain. Generation 48 uses crash-durable callback
+ * receipts, a legacy-disjoint random alias namespace, and exact topic leases.
+ * Generation 49 drains every admitted session-message handler before final
+ * durable persistence and ownership release. Generation 50 resolves intermediate
+ * notifications-directory symlinks before native exact unlink while keeping
+ * final-component file symlinks fail-closed under AT_SYMLINK_NOFOLLOW (bounded
+ * #3761 multi-account activation repair). Generation 51 adds shared durable
+ * topic authority, archive recovery, and requires Telegram's documented error
+ * code for idempotent archive settlement.
  */
-export const DAEMON_GENERATION = 29;
+export const DAEMON_GENERATION = 51;
 
 /**
- * Serving-compatibility boundary for daemon lifecycle requests. Epoch 1 covers
- * all builds published before this field existed; bump this to force serving
- * convergence and reload of compatible live predecessors.
+ * Serving-compatibility boundary for daemon lifecycle requests. Epoch 5
+ * requires the complete generation-36 topic authority contract, so older
+ * epoch-4 daemons cannot keep serving across an upgrade.
  */
-export const SERVING_EPOCH = 2;
+export const SERVING_EPOCH = 5;

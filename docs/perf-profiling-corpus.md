@@ -8,6 +8,7 @@ Implementation:
 - Runner: `packages/coding-agent/bench/perf-corpus.bench.ts`
 - Threshold/evidence ledger: `packages/coding-agent/bench/perf-threshold.ledger.ts`
 - Tests: `packages/coding-agent/test/perf-corpus.test.ts`
+- Deterministic memory surface workloads: `packages/coding-agent/bench/memory-baseline-workloads.ts`
 
 ## Evidence taxonomy
 
@@ -32,7 +33,7 @@ Optimization **status vocabulary** for a hotspot:
 
 A v1–v3 win is **never** called "confirmed" from current-only coverage. `validatePerfCorpusReport()` enforces this: a `CPU-self-time confirmed` classification is rejected unless the report carries profiler self-time evidence.
 
-## Schema (gjc.perf-corpus/1)
+## Schema (gjc.perf-corpus/2)
 
 `PerfCorpusReport` keeps the evidence classes as **separate named fields** per fixture:
 
@@ -41,6 +42,10 @@ A v1–v3 win is **never** called "confirmed" from current-only coverage. `valid
 - `profilerSelfTime: { profiler, artifactPath?, samples? }`
 - `rssMemory: { baselineBytes, peakBytes?, growthBytes, returnBytes, ... }`
 - `byteParity: { renderedGolden?, persistedJsonlGolden?, providerPayloadGolden?, materializedSessionGolden? }`
+- `memoryBaseline?: { surface, profile, iterations, operations, operationsPerSecond, samples, postTeardown, rssSlopeBytesPerSecond, heapSlopeBytesPerSecond, processTreeBaselineRssBytes, processTreePostTeardownRssBytes, processTreeSampler }`
+- `runner: { command, argv, environment, platform, arch, bunVersion?, ci?, profile, durationTargetMs?, memoryIsolation, iterationsTarget, gcExposed, memoryChildGcExposed, memoryChildExecArgv }` pins the actual parent argv, normalized workload controls, isolation, parent GC availability, and the fixed isolated-child runtime flags separately.
+- `gitSha` is the full checked-out `HEAD` when Git is available, with `GITHUB_SHA` used only as a fallback; `gitDirty` explicitly marks tracked or untracked worktree changes so local evidence cannot silently masquerade as a clean commit. The runner captures SHA and the complete porcelain worktree fingerprint before and after the workloads and rejects any in-flight source-state change.
+- Every detailed sample separates `rssBytes`, `heapUsedBytes`, `heapTotalBytes`, `externalBytes`, `arrayBuffersBytes`, and `activeResourceCount`.
 
 `hotspotClassifications: HotspotClassification[]` carry `{ hotspotId, status, evidenceClass, artifactRefs, notes }`. The current v1–v3 reclassification lives in `V1_V3_RECLASSIFICATION`; no entry is `CPU-self-time confirmed` because no profiler artifacts have been captured yet.
 
@@ -58,6 +63,17 @@ bun packages/coding-agent/bench/perf-corpus.bench.ts
 
 # Run the corpus schema/classification/ledger tests
 bun test packages/coding-agent/test/perf-corpus.test.ts
+```
+
+```bash
+# Emit the detailed short memory profile with explicit GC return samples
+bun --smol --expose-gc packages/coding-agent/bench/perf-corpus.bench.ts
+
+# Opt into the longer bounded soak profile
+GJC_MEMORY_PROFILE=soak bun --smol --expose-gc packages/coding-agent/bench/perf-corpus.bench.ts
+
+# Override the per-surface duration (250–60000 ms) and minimum iterations
+GJC_MEMORY_PROFILE=soak GJC_MEMORY_DURATION_MS=10000 GJC_MEMORY_ITERATIONS=100000 bun --smol --expose-gc packages/coding-agent/bench/perf-corpus.bench.ts
 ```
 
 ## Profiler-artifact expectations
@@ -79,6 +95,23 @@ Wall-clock and RSS thresholds are noisy. Promotion is gradual:
 
 Held thresholds (`HELD_PERF_THRESHOLDS`) name candidates that need variance characterization before enforcement.
 
+## Memory baseline protocol
+
+Detailed memory fixtures cover seven explicit surfaces: CLI startup/configuration, AgentSession-style message/context lifecycle, blob/external buffers, worker generations, Telegram reconnect/queue settlement, TUI render/dispose churn, and shared/native transfer boundaries. The fixtures are synthetic lifecycle proxies: they establish a reproducible allocation and teardown envelope but do not by themselves prove a production leak. A production optimization claim still requires a workload adapter that exercises the implicated owner and a same-host before/after artifact.
+The command-line runner executes each memory surface in a fresh Bun subprocess and records `runner.memoryIsolation: "process-per-surface"` so allocator high-water state from one fixture cannot contaminate the next surface's baseline. Programmatic `runPerfCorpusBenchmark()` defaults to in-process fixtures and records `"in-process"` for focused contract tests; pass `{ isolatedMemory: true }` for acceptance-equivalent evidence. Process-tree RSS snapshots exclude the `ps` sampler process and degrade both endpoints to `"unavailable"` when either snapshot fails. The process-tree baseline is captured after GC, followed by another GC that clears sampler allocations before the local baseline and workload begin. Soak workloads use single-iteration batches so approximately 50 ms sampling cannot be hidden behind a large synchronous chunk. Post-teardown return fields remain `null` when GC is unavailable.
+
+Use the `short` profile for deterministic contract and shape checks; its bounded iteration window intentionally reports `null` slopes when less than 250 ms is observed. Use `soak` for repeated sampling and slope characterization. For decision evidence:
+The soak default runs each surface for at least one second and samples at approximately 50 ms intervals. `GJC_MEMORY_DURATION_MS` accepts 250–60000 ms and `GJC_MEMORY_ITERATIONS` accepts 1–10000000; record overrides with the artifact.
+
+1. Pin the source SHA, Bun version, platform/architecture, profile, fixture inputs, and command.
+2. Run at least five short repetitions and three independent soak repetitions on an otherwise idle runner.
+3. Exclude warm-up from slope decisions and report the raw samples, median, p95, variance/confidence interval, peak, and post-teardown values. The runner discards the first quarter of the observed window, capped at 250 ms, before calculating a slope and requires at least 250 ms of steady-state samples.
+4. Interpret heap, external/array-buffer, RSS, and process-tree evidence separately. A high post-GC RSS with a returned heap may be allocator high-water residency, not a reachability leak.
+5. Do not enforce a numeric threshold until variance is characterized and recorded in the threshold ledger. A claimed optimization needs either a statistically supported improvement on the same workload or removal of a reproducible unbounded slope.
+6. Treat active handles and post-teardown residue as lifecycle signals, not byte-parity proof. Behavior, transcript/blob integrity, throughput, and latency remain independent gates.
+
+The default fixtures contain no user or provider data. Raw private transcripts remain prohibited.
+
 ## Memory retention & fail-closed materialization
 
 Resident-memory retention (hotspots M01–M05) was bounded in Optimization Suite v3 (#548): `EphemeralBlobStore` externalizes large resident text to a session-scoped disk cache with an 8 MiB LRU buffer budget, `getEntries()`/`buildSessionContext()` are served from revision-keyed WeakRef caches and return caller-owned clones, and `captureState`/`restoreState` bump revision domains. Materialization is split by byte sensitivity:
@@ -89,3 +122,21 @@ Resident-memory retention (hotspots M01–M05) was bounded in Optimization Suite
 This contract is locked by `packages/coding-agent/test/resident-materialization.test.ts`. Retained growth and post-GC return are measured by `packages/coding-agent/bench/session-memory.bench.ts` (emits the corpus `rssMemory` shape).
 
 **Measured deferral:** further memory rewrites beyond these byte-parity-preserving bounds are deferred to corpus prioritization. Per [`native-ffi-optimization-policy.md`](./native-ffi-optimization-policy.md) and the byte-parity principle, speculative memory rewrites wait for profiler/RSS corpus evidence rather than being undertaken on a static-ranking guess.
+
+## Authenticated sealed-corpus result
+
+- Evidence status: `SUFFICIENT_EVIDENCE`
+- Action decision: `ACTION`
+- Action family: `sustained-heap-growth`
+- Measurement head: `ae37704ea58c5181043ef2a325c3aa1878884c25`
+- Admission: short 5/5, soak 24/24
+- `agent-session` endpoint median: 2232879.966 B/s, BCa lower 2198738.248, Theil-Sen median 917654.71
+- `tui` endpoint median: 170829.216 B/s, BCa lower 154600.451, Theil-Sen median 4391.02
+- p95: `OMITTED_IMPOSSIBLE` (24 blocks insufficient for 95% empirical coverage per exact-order-statistic method)
+- All five preregistered limitations preserved
+- JS heap separated from process RSS/external/native; no production leak or causal site claimed
+- Raw corpus retained outside git, read-only, access-restricted, hash-bound by external receipt
+- Published files:
+  - `artifacts/perf-corpus-memory-evidence-report.json`
+  - `artifacts/perf-corpus-memory-evidence-manifest.json`
+  - `artifacts/perf-corpus-memory-evidence-notebook.ipynb`

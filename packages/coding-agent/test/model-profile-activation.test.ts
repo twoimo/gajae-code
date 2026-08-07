@@ -109,6 +109,11 @@ function fakeRegistry(options?: { missingProviders?: string[]; profiles?: ModelP
 				minLevel: ThinkingLevel.Minimal,
 				maxLevel: ThinkingLevel.XHigh,
 			}),
+			model("alibaba-token-plan", "qwen-3.8-max", {
+				mode: "effort",
+				minLevel: ThinkingLevel.Minimal,
+				maxLevel: ThinkingLevel.XHigh,
+			}),
 			model("alibaba-token-plan", "glm-5.2", {
 				mode: "effort",
 				minLevel: ThinkingLevel.Minimal,
@@ -572,6 +577,16 @@ describe("model profile activation", () => {
 			},
 		],
 		[
+			"lunamaxxing",
+			{
+				default: "openai-codex/gpt-5.6-luna:medium",
+				executor: "openai-codex/gpt-5.6-luna:xhigh",
+				planner: "openai-codex/gpt-5.6-luna:max",
+				critic: "openai-codex/gpt-5.6-luna:max",
+				architect: "openai-codex/gpt-5.6-luna:max",
+			},
+		],
+		[
 			"codex-opencodego",
 			{
 				default: "openai-codex/gpt-5.6-sol:low",
@@ -602,6 +617,16 @@ describe("model profile activation", () => {
 			},
 		],
 		[
+			"alibaba-token-plan-pro",
+			{
+				default: "alibaba-token-plan/qwen3.8-max-preview:medium",
+				executor: "alibaba-token-plan/deepseek-v4-flash-0731:max",
+				planner: "alibaba-token-plan/glm-5.2:high",
+				critic: "alibaba-token-plan/glm-5.2:xhigh",
+				architect: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+			},
+		],
+		[
 			"alibaba-token-plan-qwenmaxxing",
 			{
 				default: "alibaba-token-plan/qwen3.8-max-preview:medium",
@@ -609,6 +634,26 @@ describe("model profile activation", () => {
 				planner: "alibaba-token-plan/qwen3.8-max-preview:medium",
 				critic: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
 				architect: "alibaba-token-plan/qwen3.8-max-preview:xhigh",
+			},
+		],
+		[
+			"alibaba-token-plan-qwen-deepseek",
+			{
+				default: "alibaba-token-plan/qwen-3.8-max:high",
+				executor: "alibaba-token-plan/deepseek-v4-flash-0731:high",
+				planner: "alibaba-token-plan/deepseek-v4-flash-0731:max",
+				critic: "alibaba-token-plan/qwen-3.8-max:xhigh",
+				architect: "alibaba-token-plan/qwen-3.8-max:xhigh",
+			},
+		],
+		[
+			"alibaba-token-plan-glm-deepseek",
+			{
+				default: "alibaba-token-plan/glm-5.2:high",
+				executor: "alibaba-token-plan/deepseek-v4-flash-0731:high",
+				planner: "alibaba-token-plan/deepseek-v4-flash-0731:max",
+				critic: "alibaba-token-plan/glm-5.2:xhigh",
+				architect: "alibaba-token-plan/glm-5.2:xhigh",
 			},
 		],
 	] satisfies Array<

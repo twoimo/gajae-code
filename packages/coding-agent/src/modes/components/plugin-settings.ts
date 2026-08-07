@@ -127,6 +127,7 @@ export interface PluginDetailCallbacks {
 	onFeatureChange: (feature: string, enabled: boolean) => void;
 	onConfigChange: (key: string, value: unknown) => void;
 	onBack: () => void;
+	onRenderRequested?: () => void;
 }
 
 /**
@@ -288,6 +289,7 @@ export class PluginDetailComponent extends Container {
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("dim", "  Enter to edit · Esc to go back"), 0, 0));
 		this.addChild(new DynamicBorder());
+		this.callbacks.onRenderRequested?.();
 	}
 
 	handleInput(data: string): void {
@@ -409,6 +411,7 @@ class ConfigInputSubmenu extends Container {
 export interface PluginSettingsCallbacks {
 	onClose: () => void;
 	onPluginChanged: () => void;
+	onRenderRequested?: () => void;
 }
 
 /** Component with handleInput method */
@@ -450,6 +453,7 @@ export class PluginSettingsComponent extends Container {
 		});
 
 		this.addChild(this.#viewComponent);
+		this.callbacks.onRenderRequested?.();
 	}
 
 	#showPluginDetail(plugin: InstalledPlugin): void {
@@ -477,6 +481,7 @@ export class PluginSettingsComponent extends Container {
 				this.callbacks.onPluginChanged();
 			},
 			onBack: () => this.#showPluginList(),
+			onRenderRequested: () => this.callbacks.onRenderRequested?.(),
 		});
 
 		this.addChild(this.#viewComponent);

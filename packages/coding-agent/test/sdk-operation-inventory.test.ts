@@ -34,9 +34,9 @@ afterEach(async () => {
 
 describe("SDK operation inventory", () => {
 	it("has complete typed operation and adapter coverage", () => {
-		expect(OPERATIONS.filter(operation => operation.kind === "control")).toHaveLength(52);
+		expect(OPERATIONS.filter(operation => operation.kind === "control")).toHaveLength(53);
 		expect(OPERATIONS.filter(operation => operation.kind === "global")).toHaveLength(7);
-		expect(OPERATIONS.filter(operation => operation.kind === "query")).toHaveLength(27);
+		expect(OPERATIONS.filter(operation => operation.kind === "query")).toHaveLength(29);
 		expect(OPERATIONS.filter(operation => operation.kind === "reverse")).toHaveLength(6);
 		for (const operation of OPERATIONS) {
 			expect(Object.keys(operation.adapterDispositions).sort()).toEqual([...ADAPTERS].sort());
@@ -86,6 +86,10 @@ describe("SDK operation inventory", () => {
 			[
 				"agent_session:awaitPendingContextTransformations",
 				"internal context-transformation lifecycle barrier, not a user-facing SDK control seam",
+			],
+			[
+				"agent_session:abortPromptAndWait",
+				"internal SDK prompt-terminalization resource fence over a host-captured run handle, not an independent public SDK control seam",
 			],
 		]);
 		for (const [sourceId, rationale] of expected) {

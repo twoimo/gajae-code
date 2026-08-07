@@ -27,6 +27,13 @@ function writeResult(result: Record<string, unknown>): void {
 function epipeError(message: string, details: EpipeDetails): Error {
 	return Object.assign(new Error(message), { code: "EPIPE", ...details });
 }
+/**
+ * Construct a peer-closed error with an arbitrary code, for EIO/EBADF
+ * regression fixtures that exercise the broader closed-stdout family.
+ */
+function closedFdError(message: string, code: string, details: EpipeDetails): Error {
+	return Object.assign(new Error(message), { code, ...details });
+}
 
 async function throwFromTimer(error: Error): Promise<void> {
 	setTimeout(() => {
@@ -137,6 +144,37 @@ async function runStdoutFdUnhandledRejection(): Promise<void> {
 	await Bun.sleep(2_000);
 }
 
+async function runStdoutFdEioUnhandledRejection(): Promise<void> {
+	const error = closedFdError("fixture: stdout fd EIO (pty gone)", "EIO", {
+		fd: process.stdout.fd,
+		syscall: "write",
+	});
+	void Promise.reject(error);
+	await Bun.sleep(2_000);
+}
+
+async function runStdoutFdEbadfUnhandledRejection(): Promise<void> {
+	const error = closedFdError("fixture: stdout fd EBADF (fd gone)", "EBADF", {
+		fd: process.stdout.fd,
+		syscall: "write",
+	});
+	void Promise.reject(error);
+	await Bun.sleep(2_000);
+}
+
+/**
+ * EIO from a non-stdout descriptor must stay fatal. Guards against
+ * over-broadening the classifier to swallow every EIO in the process.
+ */
+async function runNonStdoutEioFatal(): Promise<void> {
+	await throwFromTimer(
+		closedFdError("fixture: non-stdout EIO stays fatal", "EIO", {
+			fd: process.stderr.fd,
+			syscall: "write",
+		}),
+	);
+}
+
 async function runStdoutFdMissingSyscallEpipe(): Promise<void> {
 	await throwFromTimer(epipeError("fixture: stdout fd EPIPE without syscall", { fd: process.stdout.fd }));
 }
@@ -187,6 +225,18 @@ async function runQuietCleanupLateRegistration(resultPath: string | undefined): 
 		await Bun.write(resultPath, JSON.stringify({ count }));
 	});
 	await runBrokenPipeStdoutWrite();
+}
+
+async function runLateRegistrationAsyncRejection(resultPath: string | undefined): Promise<void> {
+	if (!resultPath) throw new Error("late registration fixture requires a result path");
+	postmortem.register("fixture-late-registration-early", () => {});
+	await postmortem.cleanup();
+	postmortem.register("fixture-late-registration-async-rejection", async () => {
+		await Bun.sleep(20);
+		throw new Error("fixture: late registration async rejection");
+	});
+	await Bun.sleep(200);
+	await Bun.write(resultPath, JSON.stringify({ count: 1 }));
 }
 
 async function runOrdinaryFatalThenBrokenPipe(resultPath: string | undefined): Promise<void> {
@@ -329,6 +379,15 @@ switch (scenario) {
 	case "stdout-fd-unhandled-rejection":
 		await runStdoutFdUnhandledRejection();
 		break;
+	case "stdout-fd-eio-unhandled-rejection":
+		await runStdoutFdEioUnhandledRejection();
+		break;
+	case "stdout-fd-ebadf-unhandled-rejection":
+		await runStdoutFdEbadfUnhandledRejection();
+		break;
+	case "non-stdout-eio-fatal":
+		await runNonStdoutEioFatal();
+		break;
 	case "stdout-fd-missing-syscall-epipe":
 		await runStdoutFdMissingSyscallEpipe();
 		break;
@@ -340,6 +399,9 @@ switch (scenario) {
 		break;
 	case "quiet-cleanup-late-registration":
 		await runQuietCleanupLateRegistration(process.argv[3]);
+		break;
+	case "late-registration-async-rejection":
+		await runLateRegistrationAsyncRejection(process.argv[3]);
 		break;
 	case "ordinary-fatal-then-broken-pipe":
 		await runOrdinaryFatalThenBrokenPipe(process.argv[3]);

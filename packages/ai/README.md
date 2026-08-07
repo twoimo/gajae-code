@@ -70,6 +70,8 @@ Unified LLM API with automatic model discovery, provider configuration, token an
 - **Xiaomi MiMo** (requires `XIAOMI_API_KEY`)
 - **ZenMux** (requires `ZENMUX_API_KEY`)
 - **OpenGateway by Sionic AI** (requires `OPENGATEWAY_API_KEY`)
+- **BizRouter** (requires `BIZROUTER_API_KEY`)
+- **Mara Cloud** (requires `MARA_API_KEY`)
 - **Qwen Portal** (supports `QWEN_OAUTH_TOKEN` or `QWEN_PORTAL_API_KEY`)
 - **Cloudflare AI Gateway** (requires `CLOUDFLARE_AI_GATEWAY_API_KEY` and provider-specific gateway base URL)
 - **Ollama** (local OpenAI-compatible runtime; optional `OLLAMA_API_KEY`)
@@ -956,6 +958,8 @@ In Node.js environments, you can set environment variables to avoid passing API 
 | Xiaomi MiMo    | `XIAOMI_API_KEY`                                                             |
 | ZenMux         | `ZENMUX_API_KEY`                                                             |
 | OpenGateway    | `OPENGATEWAY_API_KEY`                                                        |
+| BizRouter      | `BIZROUTER_API_KEY`                                                          |
+| Mara Cloud     | `MARA_API_KEY`                                                               |
 | vLLM           | `VLLM_API_KEY`                                                               |
 | Cloudflare AI Gateway | `CLOUDFLARE_AI_GATEWAY_API_KEY`                                      |
 | GitHub Copilot | `COPILOT_GITHUB_TOKEN` or `GH_TOKEN` or `GITHUB_TOKEN`                      |
@@ -980,6 +984,8 @@ Provider endpoint defaults for the current OpenAI-compatible integrations:
 - ZenMux (OpenAI): `https://zenmux.ai/api/v1`
 - ZenMux (Anthropic models): `https://zenmux.ai/api/anthropic`
 - OpenGateway by Sionic AI: `https://apis.opengateway.ai/v1`
+- BizRouter: `https://api.bizrouter.ai/v1`
+- Mara Cloud: `https://api.cloud.mara.com/v1`
 - vLLM: `http://127.0.0.1:8000/v1`
 - Ollama: local OpenAI-compatible runtime (`http://127.0.0.1:11434/v1`)
 - Ollama Cloud: native Ollama API host (`https://ollama.com/api`, configured here as base URL `https://ollama.com`)
