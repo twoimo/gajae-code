@@ -868,16 +868,19 @@ describe("fetchLatestPackageVersion", () => {
 	});
 
 	it("never leaks a registry password into the error message", async () => {
+		const registryUser = "test-user";
+		const registryPassword = "test-password";
+		const registryCredentials = [registryUser, registryPassword].join(":");
 		const message = await rejectionMessage(
 			lookup(
-				{ files: { [userNpmrc]: "registry=https://svc-npm:s3cr3t@artifactory.example.com/api/npm/npm/" } },
+				{ files: { [userNpmrc]: `registry=https://${registryCredentials}@artifactory.example.com/api/npm/npm/` } },
 				async () => respond(null, { ok: false, status: 401, statusText: "Unauthorized" }),
 			),
 		);
 
 		expect(message).toContain("artifactory.example.com");
-		expect(message).not.toContain("s3cr3t");
-		expect(message).not.toContain("svc-npm");
+		expect(message).not.toContain(registryPassword);
+		expect(message).not.toContain(registryUser);
 	});
 
 	it("rejects a response without any version field", async () => {
