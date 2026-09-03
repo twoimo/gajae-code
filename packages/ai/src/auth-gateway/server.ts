@@ -606,7 +606,15 @@ async function markManagedGatewayCredentialFailure(
 	format: string,
 	peer: string,
 ): Promise<void> {
-	const trigger = classifyFallbackTrigger(error);
+	let trigger = classifyFallbackTrigger(error);
+	if (trigger.class === "other") {
+		const classified = classifyGatewayError(error);
+		if (classified.status === 429 || (error instanceof Error && error.message.includes("(429)"))) {
+			trigger = { class: "rate_limit" };
+		} else if (classified.status === 401 || (error instanceof Error && error.message.includes("(401)"))) {
+			trigger = { class: "auth", authDisposition: "credential" };
+		}
+	}
 	try {
 		if (trigger.class === "auth" && trigger.authDisposition === "forbidden") {
 			// A plain `forbidden` is an authorization or configuration defect.
@@ -787,37 +795,41 @@ async function handleFormatEndpoint(
 		peer,
 	});
 
-	let apiKey: string;
-	let credentialLease: GatewayCredentialLease;
-	try {
-		credentialLease = await acquireGatewayApiKey(bootOpts, model, peer, controller.signal);
-		apiKey = credentialLease.apiKey;
-		streamOpts.apiKey = apiKey;
-	} catch (error) {
-		if (controller.signal.aborted) return clientClosedResponse(route);
-		if (error instanceof GatewayCredentialError) {
-			return route.module.formatError(error.status, error.type, error.message);
-		}
-		throw error;
-	}
+	const maxFailoverAttempts = 3;
 
-	let events: AssistantMessageEventStream;
-	let releasedAtAdmission = false;
-	const releaseAtAdmission = (): void => {
-		if (releasedAtAdmission) return;
-		releasedAtAdmission = true;
-		credentialLease.release();
-	};
-	streamOpts.onStreamCreated = releaseAtAdmission;
-	try {
-		if (controller.signal.aborted) {
-			credentialLease.release();
-			return clientClosedResponse(route);
+	for (let attempt = 0; attempt < maxFailoverAttempts; attempt++) {
+		if (controller.signal.aborted) return clientClosedResponse(route);
+
+		let apiKey: string;
+		let credentialLease: GatewayCredentialLease;
+		try {
+			credentialLease = await acquireGatewayApiKey(bootOpts, model, peer, controller.signal);
+			apiKey = credentialLease.apiKey;
+			streamOpts.apiKey = apiKey;
+		} catch (error) {
+			if (controller.signal.aborted) return clientClosedResponse(route);
+			if (error instanceof GatewayCredentialError) {
+				return route.module.formatError(error.status, error.type, error.message);
+			}
+			throw error;
 		}
-		events = streamSimple(model, parsed.context, streamOpts);
-	} catch (error) {
-		credentialLease.release();
-		if (streamOpts.fallbackManaged) {
+
+		let events: AssistantMessageEventStream;
+		let releasedAtAdmission = false;
+		const releaseAtAdmission = (): void => {
+			if (releasedAtAdmission) return;
+			releasedAtAdmission = true;
+			credentialLease.release();
+		};
+		streamOpts.onStreamCreated = releaseAtAdmission;
+		try {
+			if (controller.signal.aborted) {
+				credentialLease.release();
+				return clientClosedResponse(route);
+			}
+			events = streamSimple(model, parsed.context, streamOpts);
+		} catch (error) {
+			credentialLease.release();
 			await markManagedGatewayCredentialFailure(
 				bootOpts.storage,
 				model,
@@ -827,13 +839,14 @@ async function handleFormatEndpoint(
 				route.label,
 				peer,
 			);
+			const classified = classifyGatewayError(error);
+			logger.warn("auth-gateway streamSimple threw", { format: route.label, error: classified.message, peer });
+			if (attempt + 1 < maxFailoverAttempts && (classified.status === 429 || classified.status === 401)) {
+				continue;
+			}
+			return route.module.formatError(classified.status, classified.type, classified.message);
 		}
-		const classified = classifyGatewayError(error);
-		logger.warn("auth-gateway streamSimple threw", { format: route.label, error: classified.message, peer });
-		return route.module.formatError(classified.status, classified.type, classified.message);
-	}
-	releaseGatewayCredentialLeaseOnAdmission(events, releaseAtAdmission, controller.signal);
-	if (streamOpts.fallbackManaged) {
+		releaseGatewayCredentialLeaseOnAdmission(events, releaseAtAdmission, controller.signal);
 		events = observeManagedGatewayFailure(events, error =>
 			markManagedGatewayCredentialFailure(
 				bootOpts.storage,
@@ -845,57 +858,149 @@ async function handleFormatEndpoint(
 				peer,
 			),
 		);
-	}
-	events = redactGatewayStream(events);
+		events = redactGatewayStream(events);
 
-	if (!parsed.stream) {
-		try {
-			if (controller.signal.aborted) return clientClosedResponse(route);
-			const message = await events.result();
-			if (message.stopReason === "aborted" || message.stopReason === "error") {
-				const errorMessage =
-					message.errorMessage ??
-					(message.stopReason === "aborted" ? "Request was aborted" : "Upstream request failed");
-				const safeErrorMessage = cleanReason(errorMessage) ?? "Upstream request failed";
-				logger.warn("auth-gateway non-streaming failed", {
+		if (!parsed.stream) {
+			try {
+				if (controller.signal.aborted) return clientClosedResponse(route);
+				const message = await events.result();
+				if (message.stopReason === "aborted" || message.stopReason === "error") {
+					const errorMessage =
+						message.errorMessage ??
+						(message.stopReason === "aborted" ? "Request was aborted" : "Upstream request failed");
+					const safeErrorMessage = cleanReason(errorMessage) ?? "Upstream request failed";
+					logger.warn("auth-gateway non-streaming failed", {
+						format: route.label,
+						reason: message.stopReason,
+						error: safeErrorMessage,
+						peer,
+					});
+					if (message.stopReason === "aborted") {
+						return route.module.formatError(499, "request_aborted", safeErrorMessage);
+					}
+					const classified = classifyGatewayError(new Error(safeErrorMessage));
+					await markManagedGatewayCredentialFailure(
+						bootOpts.storage,
+						model,
+						apiKey,
+						message.transportFailure ?? classified,
+						controller.signal,
+						route.label,
+						peer,
+					);
+					if (attempt + 1 < maxFailoverAttempts && (classified.status === 429 || classified.status === 401)) {
+						continue;
+					}
+					return route.module.formatError(classified.status, classified.type, classified.message);
+				}
+				return json(200, route.module.encodeResponse(message, parsed.modelId));
+			} catch (error) {
+				if (controller.signal.aborted) return clientClosedResponse(route);
+				const classified = classifyGatewayError(error);
+				logger.warn("auth-gateway non-streaming aborted", {
 					format: route.label,
-					reason: message.stopReason,
-					error: safeErrorMessage,
+					error: classified.message,
 					peer,
 				});
-				if (message.stopReason === "aborted") {
-					return route.module.formatError(499, "request_aborted", safeErrorMessage);
+				await markManagedGatewayCredentialFailure(
+					bootOpts.storage,
+					model,
+					apiKey,
+					error,
+					controller.signal,
+					route.label,
+					peer,
+				);
+				if (attempt + 1 < maxFailoverAttempts && (classified.status === 429 || classified.status === 401)) {
+					continue;
 				}
-				const classified = classifyGatewayError(new Error(safeErrorMessage));
 				return route.module.formatError(classified.status, classified.type, classified.message);
 			}
-			return json(200, route.module.encodeResponse(message, parsed.modelId));
-		} catch (error) {
-			if (controller.signal.aborted) return clientClosedResponse(route);
-			const classified = classifyGatewayError(error);
-			logger.warn("auth-gateway non-streaming aborted", {
-				format: route.label,
-				error: classified.message,
-				peer,
+		}
+		if (controller.signal.aborted) return clientClosedResponse(route);
+
+		// Streaming mode: peek first event to catch immediate 429 / 401 before sending HTTP 200 headers!
+		try {
+			const iterator = events[Symbol.asyncIterator]();
+			const firstResult = await iterator.next();
+			if (firstResult.done) {
+				return new Response(route.module.encodeStream(events, parsed.modelId, parsed.options), {
+					status: 200,
+					headers: {
+						"Content-Type": "text/event-stream; charset=utf-8",
+						"Cache-Control": "no-cache",
+						Connection: "keep-alive",
+						"X-Accel-Buffering": "no",
+					},
+				});
+			}
+
+			const firstEvent = firstResult.value;
+			if (firstEvent.type === "error") {
+				const errorStatus = firstEvent.error.errorStatus ?? 500;
+				const isQuotaOrAuth =
+					errorStatus === 429 ||
+					errorStatus === 401 ||
+					(firstEvent.error.errorMessage && firstEvent.error.errorMessage.includes("(429)"));
+				if (attempt + 1 < maxFailoverAttempts && isQuotaOrAuth) {
+					logger.warn("auth-gateway streaming initial turn failed, failing over to next credential", {
+						format: route.label,
+						attempt,
+						error: firstEvent.error.errorMessage,
+					});
+					await markManagedGatewayCredentialFailure(
+						bootOpts.storage,
+						model,
+						apiKey,
+						firstEvent.error.transportFailure ?? { kind: "transport", status: errorStatus },
+						controller.signal,
+						route.label,
+						peer,
+					);
+					continue;
+				}
+			}
+
+			// Reconstruct stream with the peeked first event
+			async function* prepended() {
+				yield firstEvent;
+				for await (const item of iterator) {
+					yield item;
+				}
+			}
+			const reconstructed = prepended() as unknown as AssistantMessageEventStream;
+			reconstructed.result = () => events.result();
+
+			const sseStream = route.module.encodeStream(reconstructed, parsed.modelId, parsed.options);
+			return new Response(sseStream, {
+				status: 200,
+				headers: {
+					"Content-Type": "text/event-stream; charset=utf-8",
+					"Cache-Control": "no-cache",
+					Connection: "keep-alive",
+					"X-Accel-Buffering": "no",
+				},
 			});
+		} catch (streamError) {
+			if (controller.signal.aborted) return clientClosedResponse(route);
+			const classified = classifyGatewayError(streamError);
+			await markManagedGatewayCredentialFailure(
+				bootOpts.storage,
+				model,
+				apiKey,
+				streamError,
+				controller.signal,
+				route.label,
+				peer,
+			);
+			if (attempt + 1 < maxFailoverAttempts && (classified.status === 429 || classified.status === 401)) {
+				continue;
+			}
 			return route.module.formatError(classified.status, classified.type, classified.message);
 		}
 	}
-	if (controller.signal.aborted) return clientClosedResponse(route);
 
-	const sseStream = route.module.encodeStream(events, parsed.modelId, parsed.options);
-	return new Response(sseStream, {
-		status: 200,
-		headers: {
-			"Content-Type": "text/event-stream; charset=utf-8",
-			"Cache-Control": "no-cache",
-			Connection: "keep-alive",
-			// Disable proxy buffering (nginx and ingress controllers honor this).
-			// Without it the SSE stream gets held until the buffer flushes, which
-			// stalls the long-thinking-budget calls we exist to support.
-			"X-Accel-Buffering": "no",
-		},
-	});
+	return route.module.formatError(429, "rate_limit_error", "All credentials exhausted for provider");
 }
 
 /**
