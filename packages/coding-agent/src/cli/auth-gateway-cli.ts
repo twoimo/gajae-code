@@ -263,6 +263,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	// gateway only needs to construct the store and pass it in.
 	const storage = new AuthStorage(store, {
 		sourceLabel: `broker ${redactBrokerUrl(brokerConfig.url)}`,
+	});
 	try {
 		await storage.reload();
 		assertEnabledProviderCredential(storage.exportSnapshot(), provider);
