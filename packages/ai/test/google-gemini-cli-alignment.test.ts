@@ -5,6 +5,8 @@ import {
 	ANTIGRAVITY_SYSTEM_INSTRUCTION,
 	buildRequest,
 	parseGeminiCliCredentials,
+	resolveAntigravityCcaModel,
+	resolveAntigravityEndpoints,
 	shouldRefreshGeminiCliCredentials,
 	streamGoogleGeminiCli,
 } from "../src/providers/google-gemini-cli";
@@ -291,5 +293,80 @@ describe("Google Gemini CLI alignment", () => {
 			expect(result.stopReason).toBe("error");
 			expect(result.transportFailure).toBeUndefined();
 		});
+	});
+
+	it("maps Gemini 3.8 Flash Antigravity ids onto 3.7-flash-tiered with thinkingLevel", () => {
+		const model: Model<"google-gemini-cli"> = {
+			...createModel("google-antigravity"),
+			id: "gemini-3.8-flash-low",
+			reasoning: true,
+		};
+		const payload = buildRequest(model, createContext(), "proj-123", {}, true) as {
+			model: string;
+			request: { generationConfig?: { thinkingConfig?: { thinkingLevel?: string } } };
+		};
+		expect(payload.model).toBe("gemini-3.7-flash-tiered");
+		expect(payload.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("LOW");
+	});
+
+	it("maps Gemini 3.7/3.8 Flash suffix ids onto the tiered CCA model", () => {
+		expect(resolveAntigravityCcaModel("gemini-3.7-flash-high")).toEqual({
+			wireId: "gemini-3.7-flash-tiered",
+			thinkingLevel: "HIGH",
+		});
+		expect(resolveAntigravityCcaModel("gemini-3.7-flash-low")).toEqual({
+			wireId: "gemini-3.7-flash-tiered",
+			thinkingLevel: "LOW",
+		});
+		expect(resolveAntigravityCcaModel("gemini-3.7-flash-medium")).toEqual({
+			wireId: "gemini-3.7-flash-tiered",
+			thinkingLevel: "MEDIUM",
+		});
+		expect(resolveAntigravityCcaModel("gemini-3.8-flash-low")).toEqual({
+			wireId: "gemini-3.7-flash-tiered",
+			thinkingLevel: "LOW",
+		});
+		expect(resolveAntigravityCcaModel("gemini-3.8-flash-medium")).toEqual({
+			wireId: "gemini-3.7-flash-tiered",
+			thinkingLevel: "MEDIUM",
+		});
+		expect(resolveAntigravityCcaModel("gemini-3.8-flash-high")).toEqual({
+			wireId: "gemini-3.7-flash-tiered",
+			thinkingLevel: "HIGH",
+		});
+		expect(resolveAntigravityCcaModel("gemini-3.8-flash-tiered")).toEqual({
+			wireId: "gemini-3.7-flash-tiered",
+		});
+		expect(resolveAntigravityCcaModel("gemini-3.7-flash-tiered")).toEqual({
+			wireId: "gemini-3.7-flash-tiered",
+		});
+		expect(resolveAntigravityCcaModel("gemini-3.6-flash-low")).toEqual({
+			wireId: "gemini-3.6-flash-low",
+		});
+		expect(resolveAntigravityCcaModel("claude-sonnet-4-6")).toEqual({
+			wireId: "claude-sonnet-4-6",
+		});
+	});
+
+	it("maps Gemini 3.8 Flash tiered onto 3.7-flash-tiered without a suffix thinkingLevel", () => {
+		const model: Model<"google-gemini-cli"> = {
+			...createModel("google-antigravity"),
+			id: "gemini-3.8-flash-tiered",
+			reasoning: true,
+		};
+		const payload = buildRequest(model, createContext(), "proj-123", {}, true) as {
+			model: string;
+			request: { generationConfig?: { thinkingConfig?: { thinkingLevel?: string } } };
+		};
+		expect(payload.model).toBe("gemini-3.7-flash-tiered");
+		expect(payload.request.generationConfig?.thinkingConfig).toBeUndefined();
+	});
+
+	it("prefers daily Cloud Code Assist when the catalog pins the sandbox host", () => {
+		expect(resolveAntigravityEndpoints("https://daily-cloudcode-pa.sandbox.googleapis.com")).toEqual([
+			"https://daily-cloudcode-pa.googleapis.com",
+			"https://daily-cloudcode-pa.sandbox.googleapis.com",
+		]);
+		expect(resolveAntigravityEndpoints("https://example.com")).toEqual(["https://example.com"]);
 	});
 });

@@ -1,5 +1,6 @@
 import * as z from "zod/v4";
 import { isRetiredModelKey } from "../../model-retirements";
+import { getBundledModel } from "../../models";
 import { getAntigravityUserAgent } from "../../providers/google-gemini-headers";
 import type { Model } from "../../types";
 
@@ -18,6 +19,12 @@ const ANTIGRAVITY_DISCOVERY_DENYLIST = new Set([
 	"gemini-3-pro-low",
 	"gemini-2.5-pro",
 ]);
+const BUNDLED_GEMINI_38_FLASH_IDS = [
+	"gemini-3.8-flash-high",
+	"gemini-3.8-flash-medium",
+	"gemini-3.8-flash-low",
+	"gemini-3.8-flash-tiered",
+] as const;
 
 /**
  * Raw model metadata returned by Antigravity's `fetchAvailableModels` endpoint.
@@ -257,6 +264,7 @@ export async function fetchAntigravityDiscoveryModels(
 			});
 		}
 
+		appendBundledGemini38FlashModels(models, targetProvider);
 		models.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 		return models;
 	}
@@ -281,4 +289,32 @@ function toPositiveNumber(value: unknown, fallback: number): number {
 
 function trimTrailingSlashes(value: string): string {
 	return value.replace(/\/+$/, "");
+}
+
+/**
+ * agy lists `gemini-3.8-flash-{high,medium,low}` even when
+ * `fetchAvailableModels` omits them. Keep the bundled siblings in the live
+ * discovery set so profile activation does not hide those selectors. CCA still
+ * 404s the user-facing 3.8 ids; invocation remaps them onto
+ * `gemini-3.7-flash-tiered`.
+ */
+function appendBundledGemini38FlashModels(
+	models: Model<"google-gemini-cli">[],
+	targetProvider: "google-antigravity" | "google-gemini-cli",
+): void {
+	if (targetProvider !== "google-antigravity") {
+		return;
+	}
+	const seen = new Set(models.map(model => model.id));
+	for (const id of BUNDLED_GEMINI_38_FLASH_IDS) {
+		if (seen.has(id)) {
+			continue;
+		}
+		const bundled = getBundledModel("google-antigravity", id);
+		if (!bundled || bundled.api !== "google-gemini-cli") {
+			continue;
+		}
+		models.push(bundled as Model<"google-gemini-cli">);
+		seen.add(id);
+	}
 }

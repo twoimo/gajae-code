@@ -8320,7 +8320,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 200000,
+			"contextWindow": 256000,
 			"maxTokens": 64000
 		},
 		"cursor-grok-4.6-high-fast": {
@@ -8339,7 +8339,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 200000,
+			"contextWindow": 256000,
 			"maxTokens": 64000
 		},
 		"cursor-grok-4.6-low": {
@@ -8358,7 +8358,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 200000,
+			"contextWindow": 256000,
 			"maxTokens": 64000
 		},
 		"cursor-grok-4.6-low-fast": {
@@ -8377,7 +8377,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 200000,
+			"contextWindow": 256000,
 			"maxTokens": 64000
 		},
 		"cursor-grok-4.6-medium": {
@@ -8396,7 +8396,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 200000,
+			"contextWindow": 256000,
 			"maxTokens": 64000
 		},
 		"cursor-grok-4.6-medium-fast": {
@@ -8415,7 +8415,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 200000,
+			"contextWindow": 256000,
 			"maxTokens": 64000
 		},
 		"cursor-grok-4.6-xhigh": {
@@ -8434,7 +8434,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 200000,
+			"contextWindow": 256000,
 			"maxTokens": 64000
 		},
 		"cursor-grok-4.6-xhigh-fast": {
@@ -8453,7 +8453,7 @@
 				"cacheRead": 0,
 				"cacheWrite": 0
 			},
-			"contextWindow": 200000,
+			"contextWindow": 256000,
 			"maxTokens": 64000
 		},
 		"default": {
@@ -15888,6 +15888,106 @@
 		"gemini-3.7-flash-tiered": {
 			"id": "gemini-3.7-flash-tiered",
 			"name": "gemini-3.7-flash-tiered",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "low",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-3.8-flash-high": {
+			"id": "gemini-3.8-flash-high",
+			"name": "Gemini 3.8 Flash (High) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "low",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-3.8-flash-medium": {
+			"id": "gemini-3.8-flash-medium",
+			"name": "Gemini 3.8 Flash (Medium) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "low",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-3.8-flash-low": {
+			"id": "gemini-3.8-flash-low",
+			"name": "Gemini 3.8 Flash (Low) (Antigravity)",
+			"api": "google-gemini-cli",
+			"provider": "google-antigravity",
+			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": 65536,
+			"thinking": {
+				"mode": "google-level",
+				"minLevel": "low",
+				"maxLevel": "high"
+			}
+		},
+		"gemini-3.8-flash-tiered": {
+			"id": "gemini-3.8-flash-tiered",
+			"name": "gemini-3.8-flash-tiered",
 			"api": "google-gemini-cli",
 			"provider": "google-antigravity",
 			"baseUrl": "https://daily-cloudcode-pa.sandbox.googleapis.com",

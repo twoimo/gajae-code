@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	injectAlibabaTokenPlanModels,
 	injectImageGenerationModels,
+	injectGemini38FlashAntigravityModels,
 	injectMuseSparkModels,
 } from "../scripts/generate-models";
 import type { Model } from "../src/types";
@@ -152,5 +153,37 @@ describe("injectMuseSparkModels", () => {
 				},
 			}),
 		]);
+	});
+});
+
+describe("injectGemini38FlashAntigravityModels", () => {
+	it("clones 3.7 Flash Antigravity siblings onto the daily Cloud Code Assist host", () => {
+		const source = {
+			id: "gemini-3.7-flash-low",
+			name: "Gemini 3.7 Flash (Low) (Antigravity)",
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+			baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1_048_576,
+			maxTokens: 65_536,
+			sessionLimit: { maxTokens: 1_048_576, reserveTokens: 0 },
+		} as Model;
+
+		const models: Model[] = [source];
+		injectGemini38FlashAntigravityModels(models);
+		injectGemini38FlashAntigravityModels(models);
+
+		const injected = models.filter(model => model.id === "gemini-3.8-flash-low");
+		expect(injected).toHaveLength(1);
+		expect(injected[0]).toEqual(
+			expect.objectContaining({
+				id: "gemini-3.8-flash-low",
+				provider: "google-antigravity",
+				baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			}),
+		);
 	});
 });

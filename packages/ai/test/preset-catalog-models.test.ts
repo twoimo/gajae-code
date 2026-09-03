@@ -167,6 +167,10 @@ describe("preset catalog model entries", () => {
 			["google", "gemini-3.7-flash"],
 			["google-gemini-cli", "gemini-3.7-flash"],
 			["google-antigravity", "gemini-3.7-flash-tiered"],
+			["google-antigravity", "gemini-3.8-flash-high"],
+			["google-antigravity", "gemini-3.8-flash-low"],
+			["google-antigravity", "gemini-3.8-flash-medium"],
+			["google-antigravity", "gemini-3.8-flash-tiered"],
 			["opencode-zen", "gemini-3.7-flash"],
 		] as const;
 
@@ -191,5 +195,18 @@ describe("preset catalog model entries", () => {
 		expect(model.contextWindow).toBe(1_000_000);
 		expect(model.maxTokens).toBe(128_000);
 		expect(model.thinking).toBeUndefined();
+	});
+
+	test("routes Gemini 3.8 Flash Antigravity through daily Cloud Code Assist", () => {
+		const ids = [
+			"gemini-3.8-flash-high",
+			"gemini-3.8-flash-low",
+			"gemini-3.8-flash-medium",
+			"gemini-3.8-flash-tiered",
+		] as const;
+		for (const id of ids) {
+			const model = getBundledModel("google-antigravity", id);
+			expect(model.baseUrl).toBe("https://daily-cloudcode-pa.sandbox.googleapis.com");
+		}
 	});
 });

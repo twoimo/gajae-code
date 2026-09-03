@@ -81,7 +81,7 @@ export const credentialSnapshotEntrySchema = z
 		provider: z.string().min(1),
 		credential: snapshotCredentialSchema,
 		identityKey: z.string().nullable(),
-		revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+		revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
 	})
 	.strict();
 

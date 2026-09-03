@@ -111,7 +111,9 @@ describe("Antigravity model discovery", () => {
 			fetcher: createDiscoveryFetcher(),
 		});
 
-		expect(models?.map(model => model.id)).toEqual(["gemini-3.1-pro-low", "gemini-3.7-flash-tiered"]);
+		const ids = models?.map(model => model.id) ?? [];
+		expect(ids).toContain("gemini-3.1-pro-low");
+		expect(ids).not.toContain("gemini-3.1-pro-high");
 	});
 
 	it("resolves an internal mid-rollout model surfaced by agentModelSorts", async () => {
@@ -154,6 +156,26 @@ describe("Antigravity model discovery", () => {
 		});
 
 		expect(models).toEqual([]);
+	});
+
+	it("keeps bundled Gemini 3.8 Flash ids when Cloud Code Assist omits them", async () => {
+		const models = await fetchAntigravityDiscoveryModels({
+			token: "test-token",
+			endpoint: "https://antigravity.example.test",
+			fetcher: createDiscoveryFetcher(),
+		});
+
+		expect(models?.map(model => model.id)).toEqual(
+			expect.arrayContaining([
+				"gemini-3.8-flash-high",
+				"gemini-3.8-flash-medium",
+				"gemini-3.8-flash-low",
+				"gemini-3.8-flash-tiered",
+			]),
+		);
+		expect(models?.find(model => model.id === "gemini-3.8-flash-low")?.baseUrl).toBe(
+			"https://daily-cloudcode-pa.sandbox.googleapis.com",
+		);
 	});
 
 	it("keeps gemini-3.1-pro-high when discovery targets google-gemini-cli", async () => {

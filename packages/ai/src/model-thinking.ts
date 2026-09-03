@@ -612,6 +612,12 @@ function applyGeneratedModelPolicy(model: ApiModel<Api>): void {
 	if (model.provider === "xai" && (model.id === "grok-4.5" || model.id === "grok-4.6")) {
 		model.maxTokens = Math.min(model.maxTokens, 64_000);
 	}
+	// Cursor's GetUsableModels payload does not include a numeric window, so the
+	// bundled catalog inherited the generic 200k discovery default. Pin Grok 4.6
+	// to 256k so compaction/context-cap use the window Cursor actually serves.
+	if (model.provider === "cursor" && model.id.startsWith("cursor-grok-4.6")) {
+		model.contextWindow = 256_000;
+	}
 	// MiniMax-M3's official Token Plan routes expose a 1M context window.
 	// Scope the correction to the four first-class regional MiniMax routes
 	// (canonical id plus the Anthropic Token Plan `[1m]` id); unrelated

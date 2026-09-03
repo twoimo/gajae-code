@@ -120,6 +120,69 @@ function shouldInjectAntigravitySystemInstruction(modelId: string): boolean {
 }
 
 /**
+ * agy lists `gemini-3.7/3.8-flash-{low,medium,high}` but Cloud Code Assist only
+ * serves those as `gemini-3.7-flash-tiered` plus `thinkingLevel`. Sending the
+ * user-facing id returns HTTP 404 `Requested entity was not found`.
+ * `gemini-3.6-flash-*` remain real CCA model ids and are left unchanged.
+ */
+const ANTIGRAVITY_FLASH_TIERED_ALIASES: Record<string, string> = {
+	"gemini-3.7-flash": "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-low": "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-medium": "gemini-3.7-flash-tiered",
+	"gemini-3.7-flash-high": "gemini-3.7-flash-tiered",
+	"gemini-3.8-flash": "gemini-3.7-flash-tiered",
+	"gemini-3.8-flash-low": "gemini-3.7-flash-tiered",
+	"gemini-3.8-flash-medium": "gemini-3.7-flash-tiered",
+	"gemini-3.8-flash-high": "gemini-3.7-flash-tiered",
+	"gemini-3.8-flash-tiered": "gemini-3.7-flash-tiered",
+};
+
+const ANTIGRAVITY_FLASH_SUFFIX_THINKING: Record<string, GoogleThinkingLevel> = {
+	low: "LOW",
+	medium: "MEDIUM",
+	high: "HIGH",
+};
+
+export function resolveAntigravityCcaModel(modelId: string): {
+	wireId: string;
+	thinkingLevel?: GoogleThinkingLevel;
+} {
+	const wireId = ANTIGRAVITY_FLASH_TIERED_ALIASES[modelId] ?? modelId;
+	if (wireId === modelId) {
+		return { wireId };
+	}
+	const suffix = modelId.match(/-(low|medium|high)$/i)?.[1]?.toLowerCase();
+	const isTieredBare = modelId.endsWith("-tiered");
+	const thinkingLevel = suffix ? ANTIGRAVITY_FLASH_SUFFIX_THINKING[suffix] : isTieredBare ? undefined : "HIGH";
+	return thinkingLevel ? { wireId, thinkingLevel } : { wireId };
+}
+
+function uniqueEndpoints(endpoints: Array<string | undefined>): string[] {
+	const out: string[] = [];
+	for (const endpoint of endpoints) {
+		const trimmed = endpoint?.trim();
+		if (trimmed && !out.includes(trimmed)) {
+			out.push(trimmed);
+		}
+	}
+	return out;
+}
+
+export function resolveAntigravityEndpoints(baseUrl?: string): string[] {
+	const trimmed = baseUrl?.trim();
+	if (!trimmed) {
+		return [...ANTIGRAVITY_ENDPOINT_FALLBACKS];
+	}
+	if (trimmed === ANTIGRAVITY_SANDBOX_ENDPOINT || trimmed.startsWith(`${ANTIGRAVITY_SANDBOX_ENDPOINT}/`)) {
+		return uniqueEndpoints([ANTIGRAVITY_DAILY_ENDPOINT, trimmed, ANTIGRAVITY_SANDBOX_ENDPOINT]);
+	}
+	if (trimmed === ANTIGRAVITY_DAILY_ENDPOINT || trimmed.startsWith(`${ANTIGRAVITY_DAILY_ENDPOINT}/`)) {
+		return uniqueEndpoints([trimmed, ANTIGRAVITY_SANDBOX_ENDPOINT]);
+	}
+	return [trimmed];
+}
+
+/**
  * Extract a clean, user-friendly error message from Google API error response.
  * Parses JSON error responses and returns just the message field.
  */
@@ -351,7 +414,11 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			const { accessToken, projectId } = parsedCredentials;
 
 			const baseUrl = model.baseUrl?.trim();
-			const endpoints = baseUrl ? [baseUrl] : isAntigravity ? ANTIGRAVITY_ENDPOINT_FALLBACKS : [DEFAULT_ENDPOINT];
+			const endpoints = isAntigravity
+				? resolveAntigravityEndpoints(baseUrl)
+				: baseUrl
+					? [baseUrl]
+					: [DEFAULT_ENDPOINT];
 
 			let requestBody = buildRequest(model, context, projectId, options, isAntigravity);
 			const replacementPayload = await options?.onPayload?.(requestBody, model, options?.attemptScope);
@@ -844,16 +911,19 @@ export function buildRequest(
 		generationConfig.repetitionPenalty = options.repetitionPenalty;
 	}
 
+	const ccaModel = isAntigravity ? resolveAntigravityCcaModel(model.id) : { wireId: model.id };
+	const thinkingLevel = options.thinking?.level ?? ccaModel.thinkingLevel;
+
 	// Thinking config
-	if (options.thinking?.enabled && model.reasoning) {
+	if ((options.thinking?.enabled && model.reasoning) || ccaModel.thinkingLevel) {
 		generationConfig.thinkingConfig = {
 			includeThoughts: true,
 		};
 		// Gemini 3 models use thinkingLevel, older models use thinkingBudget
-		if (options.thinking.level !== undefined) {
+		if (thinkingLevel !== undefined) {
 			// Cast to any since our GoogleThinkingLevel mirrors Google's ThinkingLevel enum values
-			generationConfig.thinkingConfig.thinkingLevel = options.thinking.level as any;
-		} else if (options.thinking.budgetTokens !== undefined) {
+			generationConfig.thinkingConfig.thinkingLevel = thinkingLevel as any;
+		} else if (options.thinking?.budgetTokens !== undefined) {
 			generationConfig.thinkingConfig.thinkingBudget = options.thinking.budgetTokens;
 		}
 	}
@@ -956,7 +1026,7 @@ export function buildRequest(
 
 	return {
 		project: projectId,
-		model: model.id,
+		model: ccaModel.wireId,
 		request,
 		...(isAntigravity
 			? {

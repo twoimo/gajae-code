@@ -57,6 +57,8 @@ export interface AuthGatewayCommandArgs {
 		 * to wire token-paste plumbing into every local client.
 		 */
 		noAuth?: boolean;
+		/** When set, `/v1/models` and resolveModel only expose this bundled provider. */
+		provider?: string;
 	};
 }
 
@@ -261,7 +263,6 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	// gateway only needs to construct the store and pass it in.
 	const storage = new AuthStorage(store, {
 		sourceLabel: `broker ${redactBrokerUrl(brokerConfig.url)}`,
-	});
 	try {
 		await storage.reload();
 		assertEnabledProviderCredential(storage.exportSnapshot(), provider);
@@ -270,7 +271,24 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		if (catalog.models.length === 0) {
 			throw new Error(`Auth gateway scope ${provider} has no source-backed models`);
 		}
-		const modelById = new Map(catalog.models.map(model => [model.id, model] as const));
+		const modelById = new Map<string, Model<Api>>(catalog.models.map(model => [model.id, model as Model<Api>] as const));
+		if (modelById.has("gemini-3.8-flash-high") && !modelById.has("gemini-3.8-flash")) {
+			const highModel = modelById.get("gemini-3.8-flash-high")!;
+			modelById.set("gemini-3.8-flash", {
+				...highModel,
+				id: "gemini-3.8-flash",
+				name: "Gemini 3.8 Flash (Antigravity)",
+			});
+		}
+		if (modelById.has("gemini-3.7-flash-high") && !modelById.has("gemini-3.7-flash")) {
+			const highModel = modelById.get("gemini-3.7-flash-high")!;
+			modelById.set("gemini-3.7-flash", {
+				...highModel,
+				id: "gemini-3.7-flash",
+				name: "Gemini 3.7 Flash (Antigravity)",
+			});
+		}
+
 		const gatewayToken = flags.noAuth ? null : await ensureToken();
 		const handle = startAuthGateway({
 			storage,
@@ -286,8 +304,18 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 			providerScope: { provider },
 			bearerTokens: gatewayToken ? [gatewayToken] : [],
 			version: VERSION,
-			resolveModel: (id: string) => modelById.get(id),
-			listModels: () => catalog.models,
+			resolveModel: (id: string) => {
+				const direct = modelById.get(id);
+				if (direct) return direct;
+				const trimmed = id.trim();
+				return (
+					modelById.get(trimmed) ??
+					modelById.get(`${trimmed}-high`) ??
+					modelById.get(`${trimmed}-tiered`) ??
+					modelById.get(`${trimmed}-medium`)
+				);
+			},
+			listModels: () => [...modelById.values()],
 		});
 		process.stdout.write(`auth-gateway listening on ${handle.url}\n`);
 		process.stdout.write(`scope: ${provider}\n`);

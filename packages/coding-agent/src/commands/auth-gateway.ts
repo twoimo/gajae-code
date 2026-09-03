@@ -32,6 +32,9 @@ export default class AuthGateway extends Command {
 			description:
 				"Disable inbound bearer-token auth (serve). Loopback non-browser clients without an Origin header are allowed.",
 		}),
+		provider: Flags.string({
+			description: "Restrict the catalog to one bundled provider id (serve), e.g. google-antigravity",
+		}),
 	};
 
 	static examples = [
@@ -59,6 +62,7 @@ export default class AuthGateway extends Command {
 				provider: flags.provider,
 				regenerate: flags.regenerate,
 				noAuth: flags["no-auth"],
+				provider: flags.provider,
 			},
 		};
 		await initTheme();

@@ -270,6 +270,36 @@ const JETBRAINS_JUNIE_ANTHROPIC_CONTEXT_WINDOW = 1_000_000;
 /** Gateway-enforced prompt ceiling for the GPT lane, probed live. */
 const JETBRAINS_JUNIE_OPENAI_CONTEXT_WINDOW = 922_000;
 
+/**
+ * agy 1.1.24+ lists `gemini-3.8-flash-{high,medium,low}` even when
+ * `fetchAvailableModels` omits them. Auth-gateway `/v1/models` is bundled-only,
+ * so clone the 3.7 Flash Antigravity siblings (including `tiered`) whenever
+ * regeneration does not see 3.8 yet. CCA still 404s the user-facing 3.8 ids;
+ * `resolveAntigravityCcaModel` remaps them onto `gemini-3.7-flash-tiered`.
+ */
+export function injectGemini38FlashAntigravityModels(models: Model[]): void {
+	const suffixes = ["high", "medium", "low", "tiered"] as const;
+	for (const suffix of suffixes) {
+		const targetId = `gemini-3.8-flash-${suffix}`;
+		if (models.some(model => model.provider === "google-antigravity" && model.id === targetId)) {
+			continue;
+		}
+		const source = models.find(
+			model => model.provider === "google-antigravity" && model.id === `gemini-3.7-flash-${suffix}`,
+		);
+		if (!source) continue;
+		const name =
+			suffix === "tiered"
+				? "gemini-3.8-flash-tiered"
+				: `Gemini 3.8 Flash (${suffix.charAt(0).toUpperCase()}${suffix.slice(1)}) (Antigravity)`;
+		models.push({
+			...source,
+			id: targetId,
+			name,
+		});
+	}
+}
+
 export function injectJetBrainsJunieModels(models: Model[]): void {
 	const claudeModels: Model<"anthropic-messages">[] = [
 		{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Junie)" },
@@ -592,7 +622,7 @@ function applyClaudeOpusVisionCorrections(models: readonly Model[]): Model[] {
 	});
 }
 
-const ANTIGRAVITY_ENDPOINT = "https://daily-cloudcode-pa.sandbox.googleapis.com";
+const ANTIGRAVITY_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 
 async function getOAuthAccessFromStorage(provider: OAuthProvider): Promise<OAuthAccess | null> {
 	try {
@@ -758,6 +788,7 @@ async function generateModels() {
 	// This provider-specific correction must run after generic policy inference,
 	// which otherwise caps unknown OpenAI-compatible models at `high`.
 	injectMuseSparkModels(allModels);
+	injectGemini38FlashAntigravityModels(allModels);
 	linkOpenAIPromotionTargets(allModels);
 	injectImageGenerationModels(allModels);
 

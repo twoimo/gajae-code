@@ -151,6 +151,94 @@ describe("auth-broker wire surface", () => {
 		}
 	});
 
+	test("snapshot wire schema accepts revision and still rejects unknown entry keys", async () => {
+		const snapshotBody = {
+			generation: 1,
+			generatedAt: Date.now(),
+			serverNowMs: Date.now(),
+			refresher: { enabled: true, intervalMs: 60_000, skewMs: 300_000, nextSweepInMs: 1_000 },
+			credentials: [
+				{
+					id: 1,
+					provider: "anthropic",
+					credential: {
+						type: "oauth",
+						access: "access-a",
+						refresh: REMOTE_REFRESH_SENTINEL,
+						expires: Date.now() + 60_000,
+					},
+					identityKey: null,
+					revision: 7,
+					rotatesInMs: 1_000,
+				},
+			],
+		};
+		const dummy = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () => Response.json(snapshotBody),
+		});
+		try {
+			const client = new AuthBrokerClient({ url: `http://${dummy.hostname}:${dummy.port}`, token });
+			const result = await client.fetchSnapshot();
+			if (result.status !== 200) throw new Error("expected snapshot");
+			expect(result.snapshot.credentials[0]?.revision).toBe(7);
+		} finally {
+			dummy.stop(true);
+		}
+
+		const omitted = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () => {
+				const { revision: _revision, ...entry } = snapshotBody.credentials[0];
+				return Response.json({ ...snapshotBody, credentials: [entry] });
+			},
+		});
+		try {
+			const client = new AuthBrokerClient({ url: `http://${omitted.hostname}:${omitted.port}`, token });
+			const result = await client.fetchSnapshot();
+			if (result.status !== 200) throw new Error("expected snapshot");
+			expect(result.snapshot.credentials[0]?.revision).toBeUndefined();
+		} finally {
+			omitted.stop(true);
+		}
+
+		const nullable = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () =>
+				Response.json({
+					...snapshotBody,
+					credentials: [{ ...snapshotBody.credentials[0], revision: null }],
+				}),
+		});
+		try {
+			const client = new AuthBrokerClient({ url: `http://${nullable.hostname}:${nullable.port}`, token });
+			const result = await client.fetchSnapshot();
+			if (result.status !== 200) throw new Error("expected snapshot");
+			expect(result.snapshot.credentials[0]?.revision).toBeNull();
+		} finally {
+			nullable.stop(true);
+		}
+
+		const extra = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () =>
+				Response.json({
+					...snapshotBody,
+					credentials: [{ ...snapshotBody.credentials[0], unexpected: true }],
+				}),
+		});
+		try {
+			const client = new AuthBrokerClient({ url: `http://${extra.hostname}:${extra.port}`, token });
+			await expect(client.fetchSnapshot()).rejects.toThrow(/schema validation/);
+		} finally {
+			extra.stop(true);
+		}
+	});
+
 	test("GET /v1/snapshot requires bearer and redacts refresh tokens", async () => {
 		const unauthorized = await fetch(`${handle!.url}/v1/snapshot`);
 		expect(unauthorized.status).toBe(401);
@@ -162,6 +250,7 @@ describe("auth-broker wire surface", () => {
 		expect(snapshot.credentials).toHaveLength(1);
 		const entry = snapshot.credentials[0];
 		expect(entry.provider).toBe("anthropic");
+		expect(entry.revision === null || typeof entry.revision === "number").toBe(true);
 		expect(entry.credential.type).toBe("oauth");
 		if (entry.credential.type === "oauth") {
 			expect(entry.credential.access).toBe("access-a");

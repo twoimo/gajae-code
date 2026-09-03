@@ -84,6 +84,30 @@ describe("model thinking metadata", () => {
 		expect(() => requireSupportedEffort(grok46, Effort.Max)).toThrow(/not supported/);
 	});
 
+	it("raises Cursor Grok 4.6 catalog context from the 200k discovery default to 256k", () => {
+		const models = [
+			createModel({
+				id: "cursor-grok-4.6-high",
+				api: "cursor-agent",
+				provider: "cursor",
+			}),
+			createModel({
+				id: "cursor-grok-4.6-xhigh-fast",
+				api: "cursor-agent",
+				provider: "cursor",
+			}),
+			createModel({
+				id: "cursor-grok-4.5-high",
+				api: "cursor-agent",
+				provider: "cursor",
+			}),
+		];
+
+		applyGeneratedModelPolicies(models);
+
+		expect(models.map(model => model.contextWindow)).toEqual([256_000, 256_000, 200000]);
+	});
+
 	it("exposes Alibaba DeepSeek V4 Flash's documented low/high/max efforts", () => {
 		const model = createModel({
 			id: "deepseek-v4-flash-0731",
