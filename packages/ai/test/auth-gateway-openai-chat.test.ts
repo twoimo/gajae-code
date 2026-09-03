@@ -127,7 +127,7 @@ describe("auth-gateway openai-chat: parseRequest", () => {
 		expect(tool.role).toBe("toolResult");
 		if (tool.role !== "toolResult") throw new Error("unreachable");
 		expect(tool.toolCallId).toBe("call_1");
-		expect(tool.toolName).toBe("");
+		expect(tool.toolName).toBe("lookup");
 		expect(tool.content).toEqual([{ type: "text", text: "result-text" }]);
 
 		expect(parsed.context.tools).toHaveLength(1);
@@ -199,6 +199,44 @@ describe("auth-gateway openai-chat: parseRequest", () => {
 		}
 		// Required-key enforcement is untouched by the null collapse.
 		expect(() => parseRequest({ messages: [] })).toThrow(/model/);
+	});
+
+	it("accepts messages with null content and null tool_calls", () => {
+		const parsed = parseRequest({
+			model: "gpt-5.2",
+			messages: [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: null,
+					tool_calls: [
+						{
+							id: "call_1",
+							type: "function",
+							function: { name: "bash", arguments: '{"command":"ls"}' },
+						},
+					],
+				},
+				{ role: "tool", tool_call_id: "call_1", content: null },
+				{ role: "assistant", content: "done", tool_calls: null },
+			],
+		});
+
+		expect(parsed.context.messages).toHaveLength(4);
+		const [user, a1, tool, a2] = parsed.context.messages;
+		expect(user.role).toBe("user");
+		expect(a1.role).toBe("assistant");
+		if (a1.role !== "assistant") throw new Error("unreachable");
+		expect(a1.content).toHaveLength(1);
+		expect(a1.content[0].type).toBe("toolCall");
+
+		expect(tool.role).toBe("toolResult");
+		if (tool.role !== "toolResult") throw new Error("unreachable");
+		expect(tool.content).toEqual([{ type: "text", text: "" }]);
+
+		expect(a2.role).toBe("assistant");
+		if (a2.role !== "assistant") throw new Error("unreachable");
+		expect(a2.content).toEqual([{ type: "text", text: "done" }]);
 	});
 });
 

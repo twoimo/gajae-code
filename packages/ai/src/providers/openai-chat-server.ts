@@ -69,6 +69,8 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	const systemParts: string[] = [];
 	const messages: Message[] = [];
 
+	const toolNamesByCallId = new Map<string, string>();
+
 	for (const m of data.messages as OpenAIChatMessage[]) {
 		switch (m.role) {
 			case "system": {
@@ -82,25 +84,36 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 			case "user":
 				messages.push({ role: "user", content: parseUserLikeContent(m.content), timestamp: now });
 				break;
-			case "assistant":
+			case "assistant": {
+				if (m.tool_calls) {
+					for (const tc of m.tool_calls) {
+						if (tc.id && tc.function?.name) {
+							toolNamesByCallId.set(tc.id, tc.function.name);
+						}
+					}
+				}
 				messages.push(
 					buildAssistantMessage(
-						(m.content ?? undefined) as string | OpenAIChatContentPart[] | undefined,
+						m.content,
 						m.tool_calls,
 						data.model,
 						now,
 					),
 				);
 				break;
-			case "tool":
-				pushToolResultMessages(messages, m.content, m.tool_call_id, undefined, now);
+			}
+			case "tool": {
+				const toolCallId = m.tool_call_id ?? undefined;
+				const toolName = (m as any).name || (toolCallId ? toolNamesByCallId.get(toolCallId) : undefined) || "tool";
+				pushToolResultMessages(messages, m.content, toolCallId, toolName, now);
 				break;
+			}
 			case "function": {
 				// Legacy `function` role (pre-tools API): the message carries the tool's
 				// name on `name` and its output on `content`. Translate to a canonical
 				// `toolResult` with a synthetic id (no original id on the wire).
-				const fn = m as { role: "function"; name: string; content: string | null };
-				pushToolResultMessages(messages, fn.content ?? "", undefined, fn.name, now);
+				const fn = m as { role: "function"; name: string; content?: string | null };
+				pushToolResultMessages(messages, fn.content ?? "", undefined, fn.name || "function", now);
 				break;
 			}
 		}
@@ -164,25 +177,25 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	};
 }
 
-function stringifyContent(content: string | OpenAIChatContentPart[] | undefined): string {
-	if (content === undefined) return "";
+function stringifyContent(content: string | OpenAIChatContentPart[] | undefined | null): string {
+	if (!content) return "";
 	if (typeof content === "string") return content;
 	const out: string[] = [];
 	for (const part of content) {
-		if (part.type === "text") out.push(part.text);
+		if (part.type === "text" && part.text) out.push(part.text);
 	}
 	return out.join("");
 }
 
 function parseUserLikeContent(
-	content: string | OpenAIChatContentPart[] | undefined,
+	content: string | OpenAIChatContentPart[] | undefined | null,
 ): string | (TextContent | ImageContent)[] {
-	if (content === undefined) return "";
+	if (!content) return "";
 	if (typeof content === "string") return content;
 	const parts: (TextContent | ImageContent)[] = [];
 	for (const part of content) {
 		if (part.type === "text") {
-			parts.push({ type: "text", text: part.text });
+			parts.push({ type: "text", text: part.text ?? "" });
 			continue;
 		}
 		if (part.type !== "image_url") continue;
@@ -215,8 +228,8 @@ function decodeDataUri(url: string): { data: string; mimeType: string } | undefi
 }
 
 function buildAssistantMessage(
-	content: string | OpenAIChatContentPart[] | undefined,
-	toolCalls: OpenAIChatToolCall[] | undefined,
+	content: string | OpenAIChatContentPart[] | undefined | null,
+	toolCalls: OpenAIChatToolCall[] | undefined | null,
 	modelId: string,
 	now: number,
 ): AssistantMessage {

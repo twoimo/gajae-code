@@ -124,7 +124,7 @@ export const toolChoiceSchema = z.union([
 
 // ─── Messages ───────────────────────────────────────────────────────────────
 
-const baseContent = z.union([z.string(), z.array(userContentPartSchema)]);
+const baseContent = z.union([z.string(), z.array(userContentPartSchema)]).nullable();
 
 /**
  * Clients (Aside, LangChain, LiteLLM, the Vercel AI SDK, …) routinely
@@ -140,28 +140,34 @@ const requiredContent = baseContent.nullable().transform(value => value ?? "");
 export const systemMessageSchema = z.object({
 	role: z.literal("system"),
 	content: requiredContent,
+	name: z.string().nullable().optional(),
 });
 
 export const developerMessageSchema = z.object({
 	role: z.literal("developer"),
 	content: requiredContent,
+	name: z.string().nullable().optional(),
 });
 
 export const userMessageSchema = z.object({
 	role: z.literal("user"),
 	content: requiredContent,
+	name: z.string().nullable().optional(),
 });
 
 export const assistantMessageSchema = z.object({
 	role: z.literal("assistant"),
 	content: nullableOptional(baseContent),
 	tool_calls: nullableOptional(z.array(toolCallSchema)),
+	refusal: z.string().nullable().optional(),
+	name: z.string().nullable().optional(),
 });
 
 export const toolMessageSchema = z.object({
 	role: z.literal("tool"),
 	content: nullableOptional(baseContent),
 	tool_call_id: nullableOptional(z.string()),
+	name: z.string().nullable().optional(),
 });
 
 /**
@@ -171,7 +177,7 @@ export const toolMessageSchema = z.object({
 export const functionMessageSchema = z.object({
 	role: z.literal("function"),
 	name: z.string(),
-	content: z.string().nullable(),
+	content: z.string().nullable().optional(),
 });
 
 export const messageSchema = z.discriminatedUnion("role", [
@@ -197,7 +203,7 @@ export const streamOptionsSchema = z.object({
 // ─── Stop sequences ─────────────────────────────────────────────────────────
 
 // OpenAI rejects > 4 stop strings; mirror that at the gateway.
-export const stopSchema = z.union([z.string(), z.array(z.string()).max(4)]);
+export const stopSchema = z.union([z.string(), z.array(z.string()).max(4)]).nullable();
 
 // ─── Top-level request ──────────────────────────────────────────────────────
 

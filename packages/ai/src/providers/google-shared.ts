@@ -347,7 +347,7 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 			const includeId = requiresToolCallId(model.id);
 			const functionResponsePart: Part = {
 				functionResponse: {
-					name: msg.toolName,
+					name: msg.toolName || "tool",
 					response: msg.isError ? { error: responseValue } : { output: responseValue },
 					...(hasImages && modelSupportsMultimodalFunctionResponse && { parts: imageParts }),
 					...(includeId ? { id: msg.toolCallId } : {}),
