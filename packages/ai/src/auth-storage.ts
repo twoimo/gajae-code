@@ -4560,20 +4560,30 @@ export class AuthStorage {
 	async markUsageLimitReached(
 		provider: string,
 		sessionId: string | undefined,
-		options?: { retryAfterMs?: number; baseUrl?: string; signal?: AbortSignal; owner?: object },
+		options?: { retryAfterMs?: number; baseUrl?: string; signal?: AbortSignal; owner?: object; apiKey?: string },
 	): Promise<boolean> {
 		provider = resolveOAuthStorageProvider(provider);
 		const ownerOverride = this.#configOverrideRegistration(provider, options?.owner);
 		if (ownerOverride && !ownerOverride.envSourced) return false;
-		const sessionCredential = this.#getSessionCredential(provider, sessionId);
-		if (!sessionCredential) return false;
+		let targetCredential = this.#getSessionCredential(provider, sessionId);
+		if (!targetCredential && options?.apiKey) {
+			const stored = this.#getStoredCredentials(provider);
+			for (let index = 0; index < stored.length; index++) {
+				const entry = stored[index];
+				if (entry && (await this.#credentialMatchesApiKey(provider, entry.credential, options.apiKey))) {
+					targetCredential = { type: entry.credential.type, index };
+					break;
+				}
+			}
+		}
+		if (!targetCredential) return false;
 
-		const providerKey = this.#getProviderTypeKey(provider, sessionCredential.type);
+		const providerKey = this.#getProviderTypeKey(provider, targetCredential.type);
 		const now = Date.now();
 		let blockedUntil = now + (options?.retryAfterMs ?? AuthStorage.#defaultBackoffMs);
 
-		if (sessionCredential.type === "oauth" && this.#rankingStrategyResolver?.(provider)) {
-			const credential = this.#getCredentialsForProvider(provider)[sessionCredential.index];
+		if (targetCredential.type === "oauth" && this.#rankingStrategyResolver?.(provider)) {
+			const credential = this.#getCredentialsForProvider(provider)[targetCredential.index];
 			if (credential?.type === "oauth") {
 				const report = await this.#getUsageReport(provider, credential, options);
 				if (report && this.#isUsageLimitReached(report)) {
@@ -4585,13 +4595,13 @@ export class AuthStorage {
 			}
 		}
 
-		this.#markCredentialBlocked(providerKey, sessionCredential.index, blockedUntil);
+		this.#markCredentialBlocked(providerKey, targetCredential.index, blockedUntil);
 
 		const remainingCredentials = this.#getCredentialsForProvider(provider)
 			.map((credential, index) => ({ credential, index }))
 			.filter(
 				(entry): entry is { credential: AuthCredential; index: number } =>
-					entry.credential.type === sessionCredential.type && entry.index !== sessionCredential.index,
+					entry.credential.type === targetCredential.type && entry.index !== targetCredential.index,
 			);
 
 		return remainingCredentials.some(candidate => !this.#isCredentialBlocked(providerKey, candidate.index));

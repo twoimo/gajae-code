@@ -618,6 +618,7 @@ async function markManagedGatewayCredentialFailure(
 			await storage.invalidateCredentialMatching(model.provider, apiKey, signal);
 		} else if (trigger.class === "quota" || trigger.class === "rate_limit") {
 			await storage.markUsageLimitReached(model.provider, undefined, {
+				apiKey,
 				retryAfterMs: trigger.retryAfterMs,
 				signal,
 			});
