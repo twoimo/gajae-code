@@ -753,3 +753,66 @@ test("agent end and session shutdown use explicit synthetic terminal phases", as
 		expect(shutdownTerminals).toHaveLength(1);
 	});
 }, 30000);
+
+test("a session that boots without Telegram emits tool_activity after pairing config becomes effective", async () => {
+	const previous = process.env.GJC_NOTIFICATIONS;
+	delete process.env.GJC_NOTIFICATIONS;
+	try {
+		let ensureCalls = 0;
+		const result = await setup(
+			{},
+			{
+				settingsOverrides: {
+					"notifications.enabled": false,
+					"notifications.redact": false,
+					"notifications.verbosity": "lean",
+					"notifications.telegram.botToken": "123456:secret-token",
+					"notifications.telegram.chatId": "42",
+					"notifications.telegram.enabled": true,
+				},
+				ensureTelegramDaemon: async () => {
+					ensureCalls += 1;
+					return "attached";
+				},
+			},
+		);
+		if (!result.settings || !result.controller) throw new Error("Expected isolated notification settings.");
+
+		await result.handlers.get("turn_start")!({ type: "turn_start" } as never, result.ctx);
+		await result.handlers.get("tool_execution_start")!(
+			{
+				type: "tool_execution_start",
+				toolCallId: "before-pairing",
+				toolName: "shell",
+				args: {},
+			} as never,
+			result.ctx,
+		);
+		await sleep(50);
+		expect(activityFrames(result.frames).filter(frame => frame.toolCallId === "before-pairing")).toHaveLength(0);
+		expect(ensureCalls).toBe(0);
+
+		result.settings.set("notifications.enabled", true);
+		const deadline = Date.now() + 8000;
+		while (ensureCalls < 1 && Date.now() < deadline) await sleep(25);
+		expect(ensureCalls).toBeGreaterThanOrEqual(1);
+
+		await result.handlers.get("tool_execution_start")!(
+			{
+				type: "tool_execution_start",
+				toolCallId: "after-pairing",
+				toolName: "shell",
+				args: {},
+			} as never,
+			result.ctx,
+		);
+		await waitFor(
+			() => activityFrames(result.frames).some(frame => frame.toolCallId === "after-pairing" && frame.phase === "started"),
+			"live tool activity after pairing",
+		);
+		await result.handlers.get("session_shutdown")!({ type: "session_shutdown" } as never, result.ctx);
+	} finally {
+		if (previous === undefined) delete process.env.GJC_NOTIFICATIONS;
+		else process.env.GJC_NOTIFICATIONS = previous;
+	}
+}, 30000);

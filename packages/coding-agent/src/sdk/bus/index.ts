@@ -8087,11 +8087,19 @@ export function createNotificationsExtension(
 					// settle callback applies the outcome and re-reconciles.
 					const settled = peekDaemonOwnership(cfg);
 					const isolated = runtime.endpointScope === "chat";
+					const ownershipCtx = binding.context;
 					runtime.notificationOwnerKey = daemonOwnershipKey(cfg);
 					if (settled === undefined) {
-						kickDaemonOwnership(settings, cfg, (outcome, key) =>
-							applyDaemonOwnership(binding.sessionId, runtime, outcome, isolated, key),
-						);
+						kickDaemonOwnership(settings, cfg, (outcome, key) => {
+							applyDaemonOwnership(binding.sessionId, runtime, outcome, isolated, key);
+							if (runtimes.get(binding.sessionId) !== runtime || runtime.stopping || extensionShuttingDown)
+								return;
+							void controller
+								.reconcileCurrentSession(ownershipCtx)
+								.catch(error =>
+									logger.warn(`notifications: post-ownership reconciliation failed: ${String(error)}`),
+								);
+						});
 					} else {
 						applyDaemonOwnership(binding.sessionId, runtime, settled, isolated, runtime.notificationOwnerKey);
 					}
@@ -8248,6 +8256,17 @@ export function createNotificationsExtension(
 	};
 	controller.attachRuntime(sessionRuntime);
 
+	let lastNotificationContext: ExtensionContext | undefined;
+	const { settings: watchedNotificationSettings } = resolveSettings(options.settings);
+	const unsubscribeNotificationSettings = watchedNotificationSettings?.onChanged(path => {
+		if (!path.startsWith("notifications")) return;
+		const ctx = lastNotificationContext;
+		if (!ctx || extensionShuttingDown) return;
+		void controller
+			.reconcileCurrentSession(ctx)
+			.catch(error => logger.warn(`notifications: settings-change reconciliation failed: ${String(error)}`));
+	});
+
 	api.registerCommand("notify", {
 		description: "Control notifications for this session (on, off, status).",
 		async handler(args: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -8334,6 +8353,7 @@ export function createNotificationsExtension(
 	};
 
 	api.on("session_start", async (_event, ctx) => {
+		lastNotificationContext = ctx;
 		const task = startAndReconcileSession(ctx);
 		// Track full start+reconcile so settled startups join replacement-token
 		// reconcile before owner release. Pending native startup (/notify on) stays
@@ -8466,6 +8486,7 @@ export function createNotificationsExtension(
 		trackBranchStartup(newId, ctx, startup);
 	};
 	api.on("session_switch", async (event, ctx) => {
+		lastNotificationContext = ctx;
 		const awaitStartup = shouldAwaitNotificationStartup(event);
 		if (identityControlInFlight) {
 			deferredIdentityRotation = { event, ctx, awaitStartup };
@@ -8474,6 +8495,7 @@ export function createNotificationsExtension(
 		await rotateSessionAuthority(event, ctx, awaitStartup);
 	});
 	api.on("session_branch", async (event, ctx) => {
+		lastNotificationContext = ctx;
 		if (identityControlInFlight) {
 			deferredIdentityRotation = { event, ctx, awaitStartup: true };
 			return;
@@ -9229,6 +9251,8 @@ export function createNotificationsExtension(
 
 	api.on("session_shutdown", async (_event, ctx) => {
 		extensionShuttingDown = true;
+		lastNotificationContext = undefined;
+		unsubscribeNotificationSettings?.();
 		identityControlInFlight = false;
 		deferredIdentityRotation = undefined;
 		const id = sessionId(ctx);

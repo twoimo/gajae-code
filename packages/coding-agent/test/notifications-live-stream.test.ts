@@ -616,6 +616,59 @@ test("a finalized turn frame without a messageRef posts a fresh message (no in-p
 	});
 	expect(bot.calls.filter(c => c.method === "editMessageText").length).toBe(0);
 	expect(bot.calls.some(c => c.method === "sendMessage" && String(c.body.text).includes("All done"))).toBe(true);
+	const turnSend = bot.calls.find(c => c.method === "sendMessage" && String(c.body.text).includes("All done"));
+	expect(turnSend?.body.message_thread_id).toEqual(expect.any(Number));
+}, 60_000);
+
+test("a finalized turn_stream posts into the session forum topic even without a prior identity send", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-stream-daemon-"));
+	const agentDir = path.join(root, ".gjc", "agent");
+	cleanupRoots.push(await createNotificationFixtureRoot(root, agentDir));
+	const bot = new FakeBotApi();
+	const daemon = new TelegramNotificationDaemon({
+		settings: daemonSettings(agentDir),
+		ownerId: "owner",
+		botToken: "tok",
+		chatId: "42",
+		botApi: bot as never,
+	});
+	const session = { sessionId: "S", token: "tok", ws: { readyState: 1, send() {} }, pending: new Map() };
+	await daemon.handleSessionMessage(session as never, {
+		type: "turn_stream",
+		sessionId: "S",
+		phase: "finalized",
+		text: "TOPICPROBE_PONG_20260819",
+	});
+	const turnSend = bot.calls.find(
+		c => c.method === "sendMessage" && String(c.body.text).includes("TOPICPROBE_PONG_20260819"),
+	);
+	expect(turnSend).toBeDefined();
+	expect(turnSend?.body.message_thread_id).toEqual(expect.any(Number));
+	expect(bot.calls.some(c => c.method === "createForumTopic")).toBe(true);
+}, 60_000);
+
+test("a turn_stream concurrent with identity still lands in the created topic", async () => {
+	const { daemon, bot, session } = await bootDaemon();
+	bot.calls.length = 0;
+	await Promise.all([
+		daemon.handleSessionMessage(session as never, {
+			type: "identity_header",
+			sessionId: "S",
+			repo: "gajae-code",
+			branch: "dev",
+		}),
+		daemon.handleSessionMessage(session as never, {
+			type: "turn_stream",
+			sessionId: "S",
+			phase: "finalized",
+			text: "TOPICPROBE_CONCURRENT",
+		}),
+	]);
+	const turnSend = bot.calls.find(
+		c => c.method === "sendMessage" && String(c.body.text).includes("TOPICPROBE_CONCURRENT"),
+	);
+	expect(turnSend).toBeDefined();
+	expect(turnSend?.body.message_thread_id).toEqual(expect.any(Number));
 }, 60_000);
 // ---------------------------------------------------------------------------
 // 4) Finalized turn-text cap: default lets full turns reach split-capable

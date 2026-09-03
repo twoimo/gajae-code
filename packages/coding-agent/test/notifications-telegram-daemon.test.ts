@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { logger } from "@gajae-code/utils";
 import { Settings } from "../src/config/settings";
 import { tokenFingerprint } from "../src/sdk/bus/config";
-import { daemonPaths } from "../src/sdk/bus/daemon-paths";
+import { daemonPaths, HEARTBEAT_TTL_MS } from "../src/sdk/bus/daemon-paths";
 import { exactUnlinkNotificationFile, readNotificationEndpointFile } from "../src/sdk/bus/notification-service";
 import type { NotificationOperatorRuntime } from "../src/sdk/bus/operator-runtime";
 import { pendingTopicFilePath, TELEGRAM_ADOPTION_INTENT_VERSION } from "../src/sdk/bus/telegram-adoption-intent";
@@ -340,6 +340,164 @@ describe("Telegram provider supervisor ownership", () => {
 			fs.rmSync(agentDir, { recursive: true, force: true });
 		}
 	});
+	test("handshake replay ignores an event_replay_result with a different id", async () => {
+		const agentDir = tempAgentDir();
+		try {
+			const daemon = new TelegramNotificationDaemon({
+				settings: settings(agentDir),
+				ownerId: "provider-owner",
+				botToken: BOT_TOKEN,
+				chatId: "42",
+			});
+			const routing = daemon.attachmentRoutingHarnessForTest();
+			const attachment = notificationSubscription("session");
+			routing.attach(attachment);
+			const session = daemon.sessions.get(attachment.sessionId);
+			if (!session) throw new Error("Expected a routed Telegram attachment session.");
+			await daemon.handleSessionMessage(session, {
+				type: "event_replay_result",
+				id: "not-the-handshake-id",
+				ok: true,
+				generation: 1,
+				lastSeq: 0,
+				events: [],
+			});
+			expect(session.replayPending).toBe(true);
+			expect(session.replayQueue).toHaveLength(1);
+			expect(routing.ownsLogicalSession(attachment.sessionId)).toBe(false);
+		} finally {
+			fs.rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+	test("stalled handshake replay drains queued live frames", async () => {
+		const agentDir = tempAgentDir();
+		try {
+			const daemon = new TelegramNotificationDaemon({
+				settings: settings(agentDir),
+				ownerId: "provider-owner",
+				botToken: BOT_TOKEN,
+				chatId: "42",
+				replayFailOpenMs: 20,
+			});
+			const routing = daemon.attachmentRoutingHarnessForTest();
+			const attachment = notificationSubscription("session");
+			routing.attach(attachment);
+			const session = daemon.sessions.get(attachment.sessionId);
+			if (!session) throw new Error("Expected a routed Telegram attachment session.");
+			await routing.ready(attachment);
+			expect(session.replayPending).toBe(true);
+			await daemon.handleSessionMessage(session, {
+				type: "turn_stream",
+				sessionId: "session",
+				text: "hello from the topic",
+			});
+			expect(session.replayPending).toBe(true);
+			expect(session.replayQueue.length).toBeGreaterThan(0);
+			await Bun.sleep(80);
+			expect(session.replayPending).toBe(false);
+			expect(session.replayQueue).toHaveLength(0);
+		} finally {
+			fs.rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+	test("expired topic lease is renewed and live frames still go to the thread", async () => {
+		const agentDir = tempAgentDir();
+		let now = 1_000_000;
+		try {
+			const { bot, calls } = topicAdmissionBot();
+			const daemon = new TelegramNotificationDaemon({
+				settings: settings(agentDir),
+				ownerId: "live-owner",
+				botToken: BOT_TOKEN,
+				chatId: "42",
+				botApi: bot,
+				now: () => now,
+				installationHostId: "host",
+			});
+			await daemon.loadTopics();
+			const routing = daemon.attachmentRoutingHarnessForTest();
+			const attachment = notificationSubscription("session");
+			routing.attach(attachment);
+			const session = daemon.sessions.get(attachment.sessionId);
+			if (!session) throw new Error("Expected a routed Telegram attachment session.");
+			session.replayPending = false;
+			await daemon.handleSessionMessage(session, {
+				type: "identity_header",
+				sessionId: "session",
+				telegramTopicsEnabled: true,
+				title: "Live Session",
+			});
+			expect(calls.filter(call => call.method === "createForumTopic")).toHaveLength(1);
+			now += HEARTBEAT_TTL_MS + 1;
+			await daemon.handleSessionMessage(session, {
+				type: "turn_stream",
+				sessionId: "session",
+				phase: "finalized",
+				text: "hello from the topic",
+				finalAnswer: true,
+			});
+			const threaded = calls.filter(
+				call =>
+					(call.method === "sendMessage" || call.method === "sendRichMessage") &&
+					(call.body as { message_thread_id?: unknown }).message_thread_id === 555,
+			);
+			expect(threaded.length).toBeGreaterThan(0);
+			expect(
+				threaded.some(call => {
+					const body = call.body as {
+						text?: unknown;
+						markdown?: unknown;
+						rich_message?: { markdown?: unknown };
+					};
+					return (
+						String(body.text ?? "").includes("hello from the topic") ||
+						String(body.markdown ?? "").includes("hello from the topic") ||
+						String(body.rich_message?.markdown ?? "").includes("hello from the topic")
+					);
+				}),
+			).toBe(true);
+		} finally {
+			fs.rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+	test("untrusted fail-open sessions keep topic leases alive across heartbeats", async () => {
+		const agentDir = tempAgentDir();
+		let now = 1_000_000;
+		try {
+			const { bot } = topicAdmissionBot();
+			const daemon = new TelegramNotificationDaemon({
+				settings: settings(agentDir),
+				ownerId: "live-owner",
+				botToken: BOT_TOKEN,
+				chatId: "42",
+				botApi: bot,
+				now: () => now,
+				installationHostId: "host",
+			});
+			await daemon.loadTopics();
+			const routing = daemon.attachmentRoutingHarnessForTest();
+			const attachment = notificationSubscription("session");
+			routing.attach(attachment);
+			const session = daemon.sessions.get(attachment.sessionId);
+			if (!session) throw new Error("Expected a routed Telegram attachment session.");
+			session.replayPending = false;
+			await daemon.handleSessionMessage(session, {
+				type: "identity_header",
+				sessionId: "session",
+				telegramTopicsEnabled: true,
+			});
+			const createdExpiry = routing.topicLeaseExpiresAt("session");
+			if (!createdExpiry) throw new Error("Expected a bootstrapped Telegram topic.");
+			now += HEARTBEAT_TTL_MS + 1;
+			await routing.renewActiveTopicLeases();
+			const renewedExpiry = routing.topicLeaseExpiresAt("session") ?? 0;
+			expect(renewedExpiry).toBeGreaterThan(now);
+			expect(renewedExpiry).toBeGreaterThan(createdExpiry);
+		} finally {
+			fs.rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
 	test("persists provider-local cleanup receipts without exposing SDK retirement authority", async () => {
 		const agentDir = tempAgentDir();
 		try {

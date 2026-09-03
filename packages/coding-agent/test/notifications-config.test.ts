@@ -61,6 +61,7 @@ import {
 	isolatedNotificationSettings,
 	registerNotificationRuntime,
 } from "./helpers/notification-settings";
+import { readTestSdkEndpoint } from "./helpers/sdk-endpoint";
 import {
 	createOrchestrationNotificationsExtension,
 	withoutTelegramOrchestrationProvenance,
@@ -2234,6 +2235,89 @@ describe("notifications config", () => {
 			resetSettingsForTest();
 		}
 	}, 60000);
+	test("a top-level session without Telegram still hosts the notifications extension", async () => {
+		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-sdk-notif-pre-pair-"));
+		const agentDir = path.join(cwd, ".gjc", "agent");
+		const cleanup = await createNotificationFixtureRoot(cwd, agentDir);
+		const previousNotif = process.env.GJC_NOTIFICATIONS;
+		delete process.env.GJC_NOTIFICATIONS;
+		const settings = isolatedNotificationSettings(agentDir, {
+			"notifications.enabled": false,
+		});
+		let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+		const sockets: WebSocket[] = [];
+		try {
+			resetSettingsForTest();
+			await Settings.init({ inMemory: true, cwd, agentDir });
+			session = (
+				await createAgentSession({
+					cwd,
+					agentDir,
+					sessionManager: SessionManager.inMemory(cwd),
+					settings,
+					model: getBundledModel("openai", "gpt-4o-mini"),
+					disableExtensionDiscovery: true,
+					ensureNotificationProviderDaemon: async () => "attached",
+					extensions: [],
+					skills: [],
+					contextFiles: [],
+					promptTemplates: [],
+					slashCommands: [],
+					enableMCP: false,
+					enableLsp: false,
+				})
+			).session;
+			const runner = session.extensionRunner;
+			if (!runner) throw new Error("notifications extension runner was not registered");
+			await runner.emit({ type: "session_start" });
+			const endpointFile = path.join(cwd, ".gjc", "state", "sdk", `${session.sessionId}.json`);
+			const deadline = Date.now() + 8000;
+			while (!fs.existsSync(endpointFile) && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
+			expect(fs.existsSync(endpointFile)).toBe(true);
+			const { url, token } = readTestSdkEndpoint(endpointFile);
+			const frames: Array<Record<string, unknown>> = [];
+			const ws = new WebSocket(`${url}/?token=${encodeURIComponent(token)}`);
+			sockets.push(ws);
+			ws.addEventListener("message", event => frames.push(JSON.parse(String((event as MessageEvent).data))));
+			await new Promise<void>((resolve, reject) => {
+				ws.addEventListener("open", () => resolve());
+				ws.addEventListener("error", () => reject(new Error("websocket error")));
+			});
+			ws.send(
+				JSON.stringify({
+					type: "hello",
+					protocolVersion: 3,
+					capabilities: ["tool_activity_v2"],
+				}),
+			);
+			ws.send(
+				JSON.stringify({
+					type: "event_replay",
+					id: "pre-pair",
+					sinceSeq: 0,
+					capabilities: ["tool_activity_v2"],
+				}),
+			);
+			while (!frames.some(frame => frame.type === "event_replay_result" && frame.id === "pre-pair") && Date.now() < deadline) {
+				await new Promise(r => setTimeout(r, 25));
+			}
+			const replay = frames.find(frame => frame.type === "event_replay_result" && frame.id === "pre-pair");
+			expect(replay).toBeDefined();
+			const events = (replay?.events as Array<{ kind?: string; payload?: { type?: string } }> | undefined) ?? [];
+			expect(events.some(event => event.kind === "identity_header" || event.payload?.type === "identity_header")).toBe(
+				true,
+			);
+		} finally {
+			for (const socket of sockets) socket.close();
+			await session?.extensionRunner?.emit({ type: "session_shutdown" });
+			session?.dispose();
+			await cleanupFixtureRoot(cleanup);
+			if (previousNotif === undefined) delete process.env.GJC_NOTIFICATIONS;
+			else process.env.GJC_NOTIFICATIONS = previousNotif;
+			resetSettingsForTest();
+		}
+	}, 30000);
+
 	test("never-registered notifications extension captures no command or daemon artifacts", () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notification-unregistered-"));
 		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "gjc-notification-agent-"));
