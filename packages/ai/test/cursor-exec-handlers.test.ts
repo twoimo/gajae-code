@@ -1257,4 +1257,85 @@ describe("Cursor history encoding", () => {
 			}),
 		]);
 	});
+
+	it("preserves conversation history and formats tool calls when ending with toolResult", async () => {
+		const history = buildCursorHistoryForTest([
+			{ role: "user", content: "Check shopify theme", timestamp: 0 },
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "call_1",
+						name: "bash",
+						arguments: { command: "shopify theme pull" },
+					},
+				],
+				api: "cursor-agent",
+				provider: "cursor",
+				model: "cursor-composer-2.5",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				stopReason: "stop",
+				timestamp: 0,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_1",
+				toolName: "bash",
+				content: [{ type: "text", text: "Horizon (#154127761591) loaded." }],
+				timestamp: 0,
+			},
+		]);
+
+		// Trailing toolResult is the active action, so prior user and assistant messages MUST be in root prompt
+		expect(history.rootPromptMessagesJson).toEqual([
+			{
+				role: "user",
+				content: [{ type: "text", text: "Check shopify theme" }],
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: `[Called tool: bash(${JSON.stringify({ command: "shopify theme pull" })})]` }],
+			},
+		]);
+	});
+
+	it("encodes trailing tool results as userMessageAction in AgentRunRequest", async () => {
+		const payload = await captureCursorPayload({
+			systemPrompt: "You are an assistant",
+			messages: [
+				{ role: "user", content: "Check shopify theme", timestamp: 0 },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "call_1",
+							name: "bash",
+							arguments: { command: "shopify theme pull" },
+						},
+					],
+					api: "cursor-agent",
+					provider: "cursor",
+					model: "cursor-composer-2.5",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					stopReason: "stop",
+					timestamp: 0,
+				},
+				{
+					role: "toolResult",
+					toolCallId: "call_1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Horizon (#154127761591) loaded." }],
+					timestamp: 0,
+				},
+			],
+		});
+
+		expect(payload.action?.action.case).toBe("userMessageAction");
+		if (payload.action?.action.case === "userMessageAction") {
+			expect(payload.action.action.value.userMessage?.text).toContain("[Tool Result: bash]");
+			expect(payload.action.action.value.userMessage?.text).toContain("Horizon (#154127761591) loaded.");
+		}
+	});
 });

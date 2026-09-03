@@ -1719,9 +1719,11 @@ async function handleExecServerMessage(
 		case "piReadArgs": {
 			const args = execMsg.message.value;
 			const toolCallId = crypto.randomUUID();
-			synthesizeCursorExecToolCall(output, stream, toolCallId, "read", {
-				path: piReadDisplayPath(args.path, args.offset, args.limit),
-			});
+			if (execHandlers?.piRead) {
+				synthesizeCursorExecToolCall(output, stream, toolCallId, "read", {
+					path: piReadDisplayPath(args.path, args.offset, args.limit),
+				});
+			}
 			const call = { args, toolCallId };
 			const { execResult } = await resolveExecHandler(
 				call,
@@ -1737,10 +1739,12 @@ async function handleExecServerMessage(
 		case "piBashArgs": {
 			const args = execMsg.message.value;
 			const toolCallId = crypto.randomUUID();
-			synthesizeCursorExecToolCall(output, stream, toolCallId, "bash", {
-				command: args.command,
-				timeout: piTimeout(args.timeout),
-			});
+			if (execHandlers?.piBash) {
+				synthesizeCursorExecToolCall(output, stream, toolCallId, "bash", {
+					command: args.command,
+					timeout: piTimeout(args.timeout),
+				});
+			}
 			const call = { args, toolCallId };
 			const { execResult } = await resolveExecHandler(
 				call,
@@ -1756,10 +1760,12 @@ async function handleExecServerMessage(
 		case "piEditArgs": {
 			const args = execMsg.message.value;
 			const toolCallId = crypto.randomUUID();
-			synthesizeCursorExecToolCall(output, stream, toolCallId, "edit", {
-				path: args.path,
-				edits: args.edits.map(edit => ({ old_text: edit.oldText, new_text: edit.newText })),
-			});
+			if (execHandlers?.piEdit) {
+				synthesizeCursorExecToolCall(output, stream, toolCallId, "edit", {
+					path: args.path,
+					edits: args.edits.map(edit => ({ old_text: edit.oldText, new_text: edit.newText })),
+				});
+			}
 			const call = { args, toolCallId };
 			const { execResult } = await resolveExecHandler(
 				call,
@@ -1775,10 +1781,12 @@ async function handleExecServerMessage(
 		case "piWriteArgs": {
 			const args = execMsg.message.value;
 			const toolCallId = crypto.randomUUID();
-			synthesizeCursorExecToolCall(output, stream, toolCallId, "write", {
-				path: args.path,
-				content: args.content,
-			});
+			if (execHandlers?.piWrite) {
+				synthesizeCursorExecToolCall(output, stream, toolCallId, "write", {
+					path: args.path,
+					content: args.content,
+				});
+			}
 			const call = { args, toolCallId };
 			const { execResult } = await resolveExecHandler(
 				call,
@@ -1794,15 +1802,17 @@ async function handleExecServerMessage(
 		case "piGrepArgs": {
 			const args = execMsg.message.value;
 			const toolCallId = crypto.randomUUID();
-			synthesizeCursorExecToolCall(output, stream, toolCallId, "search", {
-				pattern: args.literal === true ? piEscapeRegexLiteral(args.pattern) : args.pattern,
-				paths: [args.glob ? piJoinPath(args.path, args.glob) : args.path || "."],
-				// The model-facing search schema uses `i: true` for
-				// case-insensitive matching. Keep the field absent otherwise.
-				...(args.ignoreCase === true ? { i: true } : {}),
-				context: args.context,
-				limit: piLimit(args.limit),
-			});
+			if (execHandlers?.piGrep) {
+				synthesizeCursorExecToolCall(output, stream, toolCallId, "search", {
+					pattern: args.literal === true ? piEscapeRegexLiteral(args.pattern) : args.pattern,
+					paths: [args.glob ? piJoinPath(args.path, args.glob) : args.path || "."],
+					// The model-facing search schema uses `i: true` for
+					// case-insensitive matching. Keep the field absent otherwise.
+					...(args.ignoreCase === true ? { i: true } : {}),
+					context: args.context,
+					limit: piLimit(args.limit),
+				});
+			}
 			const call = { args, toolCallId };
 			const { execResult } = await resolveExecHandler(
 				call,
@@ -1818,10 +1828,12 @@ async function handleExecServerMessage(
 		case "piFindArgs": {
 			const args = execMsg.message.value;
 			const toolCallId = crypto.randomUUID();
-			synthesizeCursorExecToolCall(output, stream, toolCallId, "find", {
-				paths: [piJoinPath(args.path, args.pattern)],
-				limit: piLimit(args.limit),
-			});
+			if (execHandlers?.piFind) {
+				synthesizeCursorExecToolCall(output, stream, toolCallId, "find", {
+					paths: [piJoinPath(args.path, args.pattern)],
+					limit: piLimit(args.limit),
+				});
+			}
 			const call = { args, toolCallId };
 			const { execResult } = await resolveExecHandler(
 				call,
@@ -1837,7 +1849,9 @@ async function handleExecServerMessage(
 		case "piLsArgs": {
 			const args = execMsg.message.value;
 			const toolCallId = crypto.randomUUID();
-			synthesizeCursorExecToolCall(output, stream, toolCallId, "read", { path: piLsPath(args.path) });
+			if (execHandlers?.piLs) {
+				synthesizeCursorExecToolCall(output, stream, toolCallId, "read", { path: piLsPath(args.path) });
+			}
 			const call = { args, toolCallId };
 			const { execResult } = await resolveExecHandler(
 				call,
@@ -1980,7 +1994,11 @@ export async function resolveExecHandler<TArgs, TResult>(
 	buildError: (error: string) => TResult,
 ): Promise<{ execResult: TResult; toolResult?: ToolResultMessage }> {
 	if (!handler) {
-		return { execResult: buildRejected("Tool not available") };
+		return {
+			execResult: buildRejected(
+				"Tool execution is unavailable in this environment. Please provide your answer directly in text.",
+			),
+		};
 	}
 
 	try {
@@ -3160,11 +3178,17 @@ function cursorUserContentKey(content: string | (TextContent | ImageContent)[]):
  */
 function extractAssistantMessageText(msg: Message): string {
 	if (msg.role !== "assistant") return "";
+	if (typeof msg.content === "string") return msg.content.trim();
 	if (!Array.isArray(msg.content)) return "";
-	return msg.content
-		.filter((c): c is TextContent => c.type === "text")
-		.map(c => c.text)
-		.join("\n");
+	const parts: string[] = [];
+	for (const c of msg.content) {
+		if (c.type === "text" && c.text) {
+			parts.push(c.text);
+		} else if (c.type === "toolCall") {
+			parts.push(`[Called tool: ${c.name}(${JSON.stringify(c.arguments)})]`);
+		}
+	}
+	return parts.join("\n").trim();
 }
 
 /**
@@ -3181,9 +3205,28 @@ function deterministicMessageId(key: string): CursorMessageId {
 }
 
 /**
+ * Index in `messages` where the active action begins.
+ * Messages before this index belong to historical context (`rootPromptMessagesJson` and `turns[]`).
+ * Messages at or after this index go into `ConversationActionSchema.userMessageAction`.
+ */
+function findActionCutoffIndex(messages: Message[]): number {
+	if (messages.length === 0) return 0;
+	const lastMessage = messages[messages.length - 1];
+	if (lastMessage.role === "user" || lastMessage.role === "developer") {
+		return messages.length - 1;
+	}
+	if (lastMessage.role === "toolResult") {
+		let idx = messages.length - 1;
+		while (idx > 0 && messages[idx - 1].role === "toolResult") {
+			idx--;
+		}
+		return idx;
+	}
+	return messages.length;
+}
+
+/**
  * Index of the last user/developer message in `messages`, or -1 if none.
- * Used to exclude the current user turn from history builders — it goes in
- * `ConversationActionSchema.userMessageAction`, not in history structures.
  */
 function findLastUserMessageIndex(messages: Message[]): number {
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -3235,15 +3278,14 @@ function buildRootPromptMessagesJson(
 	blobStore: Map<string, Uint8Array>,
 ): Uint8Array[] {
 	const entries: Uint8Array[] = [...systemPromptIds];
-	const lastUserIdx = findLastUserMessageIndex(messages);
+	const cutoffIdx = findActionCutoffIndex(messages);
 
 	const pushJson = (obj: unknown) => {
 		const bytes = new TextEncoder().encode(JSON.stringify(obj));
 		entries.push(storeCursorBlob(blobStore, bytes));
 	};
 
-	for (let i = 0; i < messages.length; i++) {
-		if (i === lastUserIdx) break;
+	for (let i = 0; i < cutoffIdx; i++) {
 		const msg = messages[i];
 		if (msg.role === "user" || msg.role === "developer") {
 			const content = buildCursorRootPromptContent(msg.content);
@@ -3256,9 +3298,10 @@ function buildRootPromptMessagesJson(
 		} else if (msg.role === "toolResult") {
 			const text = toolResultToText(msg);
 			if (!text) continue;
+			const toolName = (msg as any).toolName || "tool";
 			pushJson({
 				role: "user",
-				content: [{ type: "text", text: `[Tool Result]\n${text}` }],
+				content: [{ type: "text", text: `[Tool Result: ${toolName}]\n${text}` }],
 			});
 		}
 	}
@@ -3269,35 +3312,24 @@ function buildRootPromptMessagesJson(
 /**
  * Convert context.messages to Cursor's ConversationTurnStructure blob IDs.
  * Groups messages into turns: each turn is a user message followed by the assistant's response.
- * Excludes the last user message (which goes in the action).
+ * Excludes messages at or after cutoffIdx (which go in the action).
  *
  * Each `AgentConversationTurnStructure.user_message`, `steps[]`, and the outer
  * `ConversationStateStructure.turns[]` entry is a blob ID into `blobStore`.
  */
 function buildConversationTurns(messages: Message[], blobStore: Map<string, Uint8Array>): Uint8Array[] {
 	const turns: Uint8Array[] = [];
+	const cutoffIdx = findActionCutoffIndex(messages);
 
 	// Find turn boundaries - each turn starts with a user message
 	let i = 0;
-	while (i < messages.length) {
+	while (i < cutoffIdx) {
 		const msg = messages[i];
 
 		// Skip non-user messages at the start
 		if (msg.role !== "user" && msg.role !== "developer") {
 			i++;
 			continue;
-		}
-
-		// Check if this is the last user message (which goes in the action, not turns)
-		let isLastUserMessage = true;
-		for (let j = i + 1; j < messages.length; j++) {
-			if (messages[j].role === "user" || messages[j].role === "developer") {
-				isLastUserMessage = false;
-				break;
-			}
-		}
-		if (isLastUserMessage) {
-			break;
 		}
 
 		// Create and serialize user message
@@ -3315,11 +3347,11 @@ function buildConversationTurns(messages: Message[], blobStore: Map<string, Uint
 		const userMessageBytes = toBinary(UserMessageSchema, userMessage);
 		const userMessageBlobId = storeCursorBlob(blobStore, userMessageBytes);
 
-		// Collect and serialize steps until next user message
+		// Collect and serialize steps until next user message or cutoffIdx
 		const stepBlobIds: Uint8Array[] = [];
 		i++;
 
-		while (i < messages.length && messages[i].role !== "user" && messages[i].role !== "developer") {
+		while (i < cutoffIdx && messages[i].role !== "user" && messages[i].role !== "developer") {
 			const stepMsg = messages[i];
 
 			if (stepMsg.role === "assistant") {
@@ -3337,10 +3369,11 @@ function buildConversationTurns(messages: Message[], blobStore: Map<string, Uint
 				// Include tool results as assistant text for context
 				const text = toolResultToText(stepMsg);
 				if (text) {
+					const toolName = (stepMsg as any).toolName || "tool";
 					const step = create(ConversationStepSchema, {
 						message: {
 							case: "assistantMessage",
-							value: create(AssistantMessageSchema, { text: `[Tool Result]\n${text}` }),
+							value: create(AssistantMessageSchema, { text: `[Tool Result: ${toolName}]\n${text}` }),
 						},
 					});
 					stepBlobIds.push(storeCursorBlob(blobStore, toBinary(ConversationStepSchema, step)));
@@ -3479,17 +3512,31 @@ function buildGrpcRequest(
 		storeCursorBlob(blobStore, new TextEncoder().encode(json)),
 	);
 
-	const lastMessage = context.messages[context.messages.length - 1];
+	const cutoffIdx = findActionCutoffIndex(context.messages);
 	let userContent: string | (TextContent | ImageContent)[] | undefined;
 	let userText = "";
 	let hasUserImages = false;
-	if (lastMessage?.role === "user" || lastMessage?.role === "developer") {
-		userContent = lastMessage.content;
-		if (typeof userContent === "string") {
-			userText = userContent.trim();
-		} else {
-			userText = extractText(userContent);
-			hasUserImages = hasImages(userContent);
+
+	if (cutoffIdx < context.messages.length) {
+		const actionMessages = context.messages.slice(cutoffIdx);
+		const firstMsg = actionMessages[0];
+		if (firstMsg.role === "user" || firstMsg.role === "developer") {
+			userContent = firstMsg.content;
+			if (typeof userContent === "string") {
+				userText = userContent.trim();
+			} else {
+				userText = extractText(userContent);
+				hasUserImages = hasImages(userContent);
+			}
+		} else if (firstMsg.role === "toolResult") {
+			userText = actionMessages
+				.map(tr => {
+					const toolName = (tr as any).toolName || "tool";
+					return `[Tool Result: ${toolName}]\n${toolResultToText(tr)}`;
+				})
+				.join("\n\n")
+				.trim();
+			userContent = userText;
 		}
 	}
 
